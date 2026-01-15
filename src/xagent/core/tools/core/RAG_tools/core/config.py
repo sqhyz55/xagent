@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Final, Mapping, Sequence
 
 from .schemas import IndexMetric
+
+# ------------------------- Paths -------------------------
+
+DATA_DIR: Final[Path] = Path("data")
+"""Base data directory (relative to CWD)."""
+
+ARTIFACTS_DIR: Final[Path] = DATA_DIR / "artifacts"
+"""Base artifacts directory."""
+
+# ------------------------- Defaults -------------------------
 
 DEFAULT_INDEX_ROW_THRESHOLD: Final[int] = 50_000
 """Row count threshold to consider building ANN index on embeddings tables."""
