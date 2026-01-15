@@ -8,7 +8,7 @@ All models use Pydantic v2 ConfigDict for future compatibility.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -289,6 +289,7 @@ class ParsedTextSegmentDisplay(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    type: Literal["text"] = "text"
     text: str = Field(..., description="The text content of the segment")
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Metadata including positions, style, etc."
@@ -300,6 +301,7 @@ class ParsedTableDisplay(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    type: Literal["table"] = "table"
     html: Optional[str] = Field(None, description="HTML representation of the table")
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Metadata including positions, caption, etc."
@@ -311,10 +313,17 @@ class ParsedFigureDisplay(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    type: Literal["figure"] = "figure"
     text: str = Field(..., description="Caption or text associated with the figure")
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Metadata including positions, image_path, etc."
     )
+
+
+ParsedElementDisplay = Annotated[
+    Union[ParsedTextSegmentDisplay, ParsedTableDisplay, ParsedFigureDisplay],
+    Field(discriminator="type"),
+]
 
 
 class ParseResultResponse(BaseModel):
@@ -324,14 +333,8 @@ class ParseResultResponse(BaseModel):
 
     doc_id: str = Field(..., description="The document ID")
     parse_hash: str = Field(..., description="SHA256 hash of parse configuration")
-    text_segments: List[ParsedTextSegmentDisplay] = Field(
-        default_factory=list, description="List of text segments for current page"
-    )
-    tables: List[ParsedTableDisplay] = Field(
-        default_factory=list, description="List of tables for current page"
-    )
-    figures: List[ParsedFigureDisplay] = Field(
-        default_factory=list, description="List of figures for current page"
+    elements: List[ParsedElementDisplay] = Field(
+        default_factory=list, description="Ordered list of parsed elements"
     )
     pagination: Dict[str, Any] = Field(
         ..., description="Pagination information including page, page_size, total counts"

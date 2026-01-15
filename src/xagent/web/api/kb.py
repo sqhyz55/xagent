@@ -17,9 +17,6 @@ from ...core.tools.core.RAG_tools.core.schemas import (
     ListCollectionsResult,
     ParseMethod,
     ParseResultResponse,
-    ParsedFigureDisplay,
-    ParsedTableDisplay,
-    ParsedTextSegmentDisplay,
     SearchConfig,
     SearchPipelineResult,
     SearchType,
@@ -954,24 +951,19 @@ async def get_parse_result_api(
             )
 
         # Reconstruct parse result from database
-        text_segments, tables, figures, actual_parse_hash = (
-            reconstruct_parse_result_from_db(collection_name, doc_id, parse_hash)
+        elements, actual_parse_hash = reconstruct_parse_result_from_db(
+            collection_name, doc_id, parse_hash
         )
 
         # Apply pagination
-        (
-            paginated_text_segments,
-            paginated_tables,
-            paginated_figures,
-            pagination_info,
-        ) = paginate_parse_results(text_segments, tables, figures, page, page_size)
+        paginated_elements, pagination_info = paginate_parse_results(
+            elements, page, page_size
+        )
 
         return ParseResultResponse(
             doc_id=doc_id,
             parse_hash=actual_parse_hash or "",
-            text_segments=paginated_text_segments,
-            tables=paginated_tables,
-            figures=paginated_figures,
+            elements=paginated_elements,
             pagination=pagination_info,
         )
 
