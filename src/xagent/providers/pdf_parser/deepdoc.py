@@ -89,12 +89,36 @@ def _build_element_metadata(
 ) -> Dict[str, Any]:
     """Build metadata dict for an element."""
     layout_type = bbox.get("layout_type", "text")
-    return {
+    metadata = {
         "layout_type": layout_type,
         "doc_id": doc_id,
         "page_number": bbox.get("page_number", 1),
         **kwargs,
     }
+
+    # Extract col_id for two-column layout support
+    col_id = bbox.get("col_id", 0)
+    metadata["col_id"] = col_id
+
+    # Extract positions for PDF visualization (format: [[page_num, left, right, top, bottom], ...])
+    # We'll enrich it with col_id to format: [[page_num, col_id, left, right, top, bottom], ...]
+    positions = bbox.get("positions", [])
+    if positions:
+        enriched_positions = []
+        for pos in positions:
+            if isinstance(pos, (list, tuple)) and len(pos) >= 5:
+                # pos format: [page_num, left, right, top, bottom]
+                page_num = int(pos[0]) if len(pos) > 0 else bbox.get("page_number", 1)
+                left = float(pos[1]) if len(pos) > 1 else 0.0
+                right = float(pos[2]) if len(pos) > 2 else 0.0
+                top = float(pos[3]) if len(pos) > 3 else 0.0
+                bottom = float(pos[4]) if len(pos) > 4 else 0.0
+                # Enrich with col_id: [page_num, col_id, left, right, top, bottom]
+                enriched_positions.append([page_num, col_id, left, right, top, bottom])
+        if enriched_positions:
+            metadata["positions"] = enriched_positions
+
+    return metadata
 
 
 def _process_table_element(
@@ -109,6 +133,7 @@ def _process_table_element(
     table_metadata = base_metadata.copy()
     table_metadata["image_path"] = image_path
     table_metadata["type"] = "table"
+    # positions and col_id are already in base_metadata from _build_element_metadata
 
     return ParsedTable(html=bbox.get("text", ""), image=None, metadata=table_metadata)
 
@@ -139,6 +164,7 @@ def _process_figure_element(
     figure_metadata = base_metadata.copy()
     figure_metadata["image_path"] = image_path
     figure_metadata["type"] = "figure"
+    # positions and col_id are already in base_metadata from _build_element_metadata
 
     # Ensure figure has text for proper processing
     figure_text = bbox.get("text", "").strip()
