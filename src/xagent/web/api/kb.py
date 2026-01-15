@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from ...core.tools.core.RAG_tools.core.schemas import (
@@ -16,6 +16,10 @@ from ...core.tools.core.RAG_tools.core.schemas import (
     IngestionResult,
     ListCollectionsResult,
     ParseMethod,
+    ParseResultResponse,
+    ParsedFigureDisplay,
+    ParsedTableDisplay,
+    ParsedTextSegmentDisplay,
     SearchConfig,
     SearchPipelineResult,
     SearchType,
@@ -25,6 +29,10 @@ from ...core.tools.core.RAG_tools.core.schemas import (
 from ...core.tools.core.RAG_tools.management.collections import (
     delete_collection,
     list_collections,
+)
+from ...core.tools.core.RAG_tools.parse.parse_display import (
+    paginate_parse_results,
+    reconstruct_parse_result_from_db,
 )
 from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
     run_document_ingestion,
@@ -898,4 +906,83 @@ async def rename_collection_api(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to rename collection: {str(e)}",
+        )
+
+
+@kb_router.get(
+    "/collections/{collection_name}/parses/{doc_id}/parse_result",
+    response_model=ParseResultResponse,
+)
+async def get_parse_result_api(
+    collection_name: str,
+    doc_id: str,
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(20, ge=1, le=100, description="Number of elements per page"),
+    parse_hash: Optional[str] = Query(
+        None, description="Optional parse hash to filter. If None, uses the latest parse."
+    ),
+    _user: User = Depends(get_current_user),
+) -> ParseResultResponse:
+    """Get parsed document results with pagination.
+
+    Args:
+        collection_name: Collection name
+        doc_id: Document ID
+        page: Page number (1-indexed, default: 1)
+        page_size: Number of elements per page (default: 20)
+        parse_hash: Optional parse hash to filter. If None, uses the latest parse.
+
+    Returns:
+        ParseResultResponse with paginated text segments, tables, and figures
+    """
+    try:
+        from ...core.tools.core.RAG_tools.core.exceptions import DocumentNotFoundError
+        from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
+
+        # Validate doc_id to prevent path traversal or invalid format
+        safe_doc_id = sanitize_for_doc_id(doc_id)
+        if safe_doc_id != doc_id:
+            logger.warning(f"Invalid doc_id format detected: {doc_id}")
+            raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+        # Validate pagination parameters (redundant but safe)
+        if page < 1:
+            raise HTTPException(status_code=422, detail="Page number must be >= 1")
+        if page_size < 1 or page_size > 100:
+            raise HTTPException(
+                status_code=422, detail="Page size must be between 1 and 100"
+            )
+
+        # Reconstruct parse result from database
+        text_segments, tables, figures, actual_parse_hash = (
+            reconstruct_parse_result_from_db(collection_name, doc_id, parse_hash)
+        )
+
+        # Apply pagination
+        (
+            paginated_text_segments,
+            paginated_tables,
+            paginated_figures,
+            pagination_info,
+        ) = paginate_parse_results(text_segments, tables, figures, page, page_size)
+
+        return ParseResultResponse(
+            doc_id=doc_id,
+            parse_hash=actual_parse_hash or "",
+            text_segments=paginated_text_segments,
+            tables=paginated_tables,
+            figures=paginated_figures,
+            pagination=pagination_info,
+        )
+
+    except DocumentNotFoundError as e:
+        logger.warning(f"Parse result not found: {e}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get parse result: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get parse result: {str(e)}",
         )

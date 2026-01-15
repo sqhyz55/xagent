@@ -11,6 +11,7 @@ from deepdoc import PdfParser as DeepDocPdfParser
 from deepdoc import TxtParser as DeepDocTxtParser
 from deepdoc.parser import DoclingParser as DeepDocDoclingParser
 
+from ...core.tools.core.RAG_tools.core.config import ARTIFACTS_DIR
 from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
 from .base import (
     DocumentParser,
@@ -70,7 +71,7 @@ def _save_image_to_disk(doc_id: str, image_obj: Any) -> str:
 def _save_bytes_to_disk(doc_id: str, image_bytes: bytes, suffix: str = ".png") -> str:
     """Saves raw image bytes to disk and returns the path."""
     safe_doc_id = sanitize_for_doc_id(doc_id, max_length=64)
-    base_dir = Path("artifacts") / "providers" / "deepdoc"
+    base_dir = ARTIFACTS_DIR / "providers" / "deepdoc"
     image_dir = base_dir / safe_doc_id / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 

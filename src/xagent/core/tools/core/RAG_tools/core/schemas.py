@@ -281,6 +281,63 @@ class ParseDocumentResponse(BaseModel):
     )
 
 
+# ------------------------- Parse Result Display schemas -------------------------
+
+
+class ParsedTextSegmentDisplay(BaseModel):
+    """Display model for a parsed text segment."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(..., description="The text content of the segment")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Metadata including positions, style, etc."
+    )
+
+
+class ParsedTableDisplay(BaseModel):
+    """Display model for a parsed table."""
+
+    model_config = ConfigDict(frozen=True)
+
+    html: Optional[str] = Field(None, description="HTML representation of the table")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Metadata including positions, caption, etc."
+    )
+
+
+class ParsedFigureDisplay(BaseModel):
+    """Display model for a parsed figure."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(..., description="Caption or text associated with the figure")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Metadata including positions, image_path, etc."
+    )
+
+
+class ParseResultResponse(BaseModel):
+    """Response model for displaying parse results with pagination."""
+
+    model_config = ConfigDict(frozen=True)
+
+    doc_id: str = Field(..., description="The document ID")
+    parse_hash: str = Field(..., description="SHA256 hash of parse configuration")
+    text_segments: List[ParsedTextSegmentDisplay] = Field(
+        default_factory=list, description="List of text segments for current page"
+    )
+    tables: List[ParsedTableDisplay] = Field(
+        default_factory=list, description="List of tables for current page"
+    )
+    figures: List[ParsedFigureDisplay] = Field(
+        default_factory=list, description="List of figures for current page"
+    )
+    pagination: Dict[str, Any] = Field(
+        ..., description="Pagination information including page, page_size, total counts"
+    )
+
+
 # ------------------------- Chunk schemas -------------------------
 
 
