@@ -316,7 +316,8 @@ class ParsedFigureDisplay(BaseModel):
     type: Literal["figure"] = "figure"
     text: str = Field(..., description="Caption or text associated with the figure")
     metadata: Dict[str, Any] = Field(
-        default_factory=dict, description="Metadata including positions, image_path, etc."
+        default_factory=dict,
+        description="Metadata including positions, image_path, etc.",
     )
 
 
@@ -337,7 +338,8 @@ class ParseResultResponse(BaseModel):
         default_factory=list, description="Ordered list of parsed elements"
     )
     pagination: Dict[str, Any] = Field(
-        ..., description="Pagination information including page, page_size, total counts"
+        ...,
+        description="Pagination information including page, page_size, total counts",
     )
 
 

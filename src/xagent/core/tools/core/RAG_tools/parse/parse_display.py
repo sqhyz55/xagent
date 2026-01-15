@@ -8,9 +8,14 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ...providers.vector_store.lancedb import get_connection_from_env
+from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import DatabaseOperationError, DocumentNotFoundError
-from ..core.schemas import ParsedElementDisplay
+from ..core.schemas import (
+    ParsedElementDisplay,
+    ParsedFigureDisplay,
+    ParsedTableDisplay,
+    ParsedTextSegmentDisplay,
+)
 from ..LanceDB.schema_manager import ensure_parses_table
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression
@@ -104,9 +109,7 @@ def reconstruct_parse_result_from_db(
                 logger.debug(f"Unknown layout_type '{layout_type}', treating as text")
                 elements.append({"type": "text", "text": text, "metadata": metadata})
 
-        logger.info(
-            f"Reconstructed parse result: {len(elements)} elements"
-        )
+        logger.info(f"Reconstructed parse result: {len(elements)} elements")
 
         return (elements, actual_parse_hash)
 
@@ -146,7 +149,59 @@ def paginate_parse_results(
     end_idx = start_idx + page_size
 
     # Get paginated elements
-    paginated_elements = elements[start_idx:end_idx]
+    paginated_elements_dict = elements[start_idx:end_idx]
+
+    # Convert dicts to Pydantic models
+    paginated_elements: List[ParsedElementDisplay] = []
+    for elem in paginated_elements_dict:
+        elem_type = elem.get("type", "text")
+        try:
+            if elem_type == "text":
+                paginated_elements.append(
+                    ParsedTextSegmentDisplay(
+                        type="text",
+                        text=elem.get("text", ""),
+                        metadata=elem.get("metadata", {}),
+                    )
+                )
+            elif elem_type == "table":
+                paginated_elements.append(
+                    ParsedTableDisplay(
+                        type="table",
+                        html=elem.get("html", ""),
+                        metadata=elem.get("metadata", {}),
+                    )
+                )
+            elif elem_type == "figure":
+                paginated_elements.append(
+                    ParsedFigureDisplay(
+                        type="figure",
+                        text=elem.get("text", ""),
+                        metadata=elem.get("metadata", {}),
+                    )
+                )
+            else:
+                # Unknown type, fallback to text
+                logger.debug(f"Unknown element type '{elem_type}', treating as text")
+                paginated_elements.append(
+                    ParsedTextSegmentDisplay(
+                        type="text",
+                        text=elem.get("text", ""),
+                        metadata=elem.get("metadata", {}),
+                    )
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to convert element to Pydantic model: {e}, elem={elem}"
+            )
+            # Fallback to text segment on conversion error
+            paginated_elements.append(
+                ParsedTextSegmentDisplay(
+                    type="text",
+                    text=elem.get("text", ""),
+                    metadata=elem.get("metadata", {}),
+                )
+            )
 
     pagination_info = {
         "page": page,
@@ -157,8 +212,4 @@ def paginate_parse_results(
         "has_previous": page > 1,
     }
 
-    return (
-        paginated_elements,  # type: ignore # Returning dicts, compatible with Pydantic response model
-        pagination_info,
-    )
-
+    return (paginated_elements, pagination_info)
