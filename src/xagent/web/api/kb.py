@@ -909,7 +909,8 @@ async def get_parse_result_api(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(20, ge=1, le=100, description="Number of elements per page"),
     parse_hash: Optional[str] = Query(
-        None, description="Optional parse hash to filter. If None, uses the latest parse."
+        None,
+        description="Optional parse hash to filter. If None, uses the latest parse.",
     ),
     _user: User = Depends(get_current_user),
 ) -> ParseResultResponse:
