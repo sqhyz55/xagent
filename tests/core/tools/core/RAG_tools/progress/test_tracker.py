@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock
 
 from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
@@ -146,7 +145,7 @@ class TestProgressTracker:
         """Test retrieving step trackers."""
         manager = ProgressManager()
         manager._active_tasks.clear()
-        tracker = ProgressTracker(manager, "test_task")
+        ProgressTracker(manager, "test_task")
 
         pass
 
@@ -208,13 +207,15 @@ class TestIntegrationWithManager:
         manager = ProgressManager()
         manager._active_tasks.clear()
         manager.create_task("ingestion", "test_task")
-        manager.update_task_progress("test_task", status=DocumentProcessingStatus.RUNNING)
+        manager.update_task_progress(
+            "test_task", status=DocumentProcessingStatus.RUNNING
+        )
         tracker = ProgressTracker(manager, "test_task")
 
         try:
             with tracker.track_step("step1") as step:
                 step.fail("Manual fail")
-        except:
+        except Exception:
             pass
 
         task = manager.get_task_progress("test_task")

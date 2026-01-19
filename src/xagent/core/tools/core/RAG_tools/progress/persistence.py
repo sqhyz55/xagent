@@ -21,9 +21,20 @@ class ProgressPersistence:
 
         Args:
             storage_dir: Directory for storing progress data.
-                        Defaults to system temp directory.
+                        Defaults to project_root/data/progress.
         """
-        self.storage_dir = Path(storage_dir or "/tmp/rag_progress")
+        if storage_dir:
+            self.storage_dir = Path(storage_dir)
+        else:
+            # Try to find the data directory relative to this file
+            # src/fenixaos/core/tools/core/RAG_tools/progress/persistence.py -> 7 levels up to root
+            try:
+                base_dir = Path(__file__).resolve().parents[7]
+                self.storage_dir = base_dir / "data" / "progress"
+            except (IndexError, ValueError):
+                # Fallback to current working directory if path structure is unexpected
+                self.storage_dir = Path("data/progress")
+
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
     def save_task_progress(self, task_progress: TaskProgress) -> None:
