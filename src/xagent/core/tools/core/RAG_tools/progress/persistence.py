@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-from typing import List, Optional
 from pathlib import Path
+from typing import List, Optional
 
-from ..core.schemas import DocumentProcessingStatus, TaskProgress
 from ..core.exceptions import ProgressPersistenceError
+from ..core.schemas import DocumentProcessingStatus, TaskProgress
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +103,9 @@ class ProgressPersistence:
             logger.error(f"Failed to delete task progress for {task_id}: {e}")
             return False
 
-    def list_active_tasks(self, task_type: Optional[str] = None, user_id: Optional[int] = None) -> List[TaskProgress]:
+    def list_active_tasks(
+        self, task_type: Optional[str] = None, user_id: Optional[int] = None
+    ) -> List[TaskProgress]:
         """List all active (non-completed) tasks.
 
         Args:

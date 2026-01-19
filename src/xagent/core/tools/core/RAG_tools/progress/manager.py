@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import uuid
-import asyncio
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 
 from ..core.schemas import DocumentProcessingStatus, TaskProgress
-from ..core.exceptions import ProgressPersistenceError
 from .persistence import ProgressPersistence
 from .realtime import ProgressBroadcaster, progress_broadcaster
 
@@ -56,7 +55,7 @@ class ProgressManager:
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-            
+
         self._initialized = True
 
     def _reset(self) -> None:
@@ -106,12 +105,15 @@ class ProgressManager:
             # Critical failure: if we can't save initial state, we should fail early
             self.persistence.save_task_progress(task_progress)
 
-            logger.info(f"Created progress task: {task_id} ({task_type}) for user {user_id}")
+            logger.info(
+                f"Created progress task: {task_id} ({task_type}) for user {user_id}"
+            )
             return task_id
 
     def _cleanup_stale_tasks(self, max_age_seconds: int = 60) -> None:
         """Cleanup completed tasks that are older than max_age_seconds."""
         import time
+
         now = time.time()
         tasks_to_remove = []
 
@@ -141,7 +143,7 @@ class ProgressManager:
         current_step: Optional[str] = None,
         overall_progress: Optional[float] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         """Update progress for a task."""
         with self._lock:
@@ -162,16 +164,21 @@ class ProgressManager:
 
             # Update timestamps
             import time
+
             if status == DocumentProcessingStatus.RUNNING and not task.start_time:
                 task.start_time = time.time()
-            elif status in (DocumentProcessingStatus.SUCCESS, DocumentProcessingStatus.FAILED, DocumentProcessingStatus.CANCELLED):
+            elif status in (
+                DocumentProcessingStatus.SUCCESS,
+                DocumentProcessingStatus.FAILED,
+                DocumentProcessingStatus.CANCELLED,
+            ):
                 if not task.end_time:
                     task.end_time = time.time()
 
             # Persist
             try:
                 self.persistence.save_task_progress(task)
-                
+
                 # Broadcast (handling async from sync)
                 if self.broadcaster:
                     try:
@@ -180,8 +187,8 @@ class ProgressManager:
                     except RuntimeError:
                         if self._main_loop:
                             asyncio.run_coroutine_threadsafe(
-                                self.broadcaster.broadcast_progress(task), 
-                                self._main_loop
+                                self.broadcaster.broadcast_progress(task),
+                                self._main_loop,
                             )
             except Exception as e:
                 # For updates, we log as error but don't crash the pipeline
@@ -189,21 +196,33 @@ class ProgressManager:
 
     def complete_task(self, task_id: str, success: bool = True) -> None:
         """Mark a task as completed."""
-        status = DocumentProcessingStatus.SUCCESS if success else DocumentProcessingStatus.FAILED
+        status = (
+            DocumentProcessingStatus.SUCCESS
+            if success
+            else DocumentProcessingStatus.FAILED
+        )
         overall_progress = 1.0 if success else None
-        self.update_task_progress(task_id, status=status, overall_progress=overall_progress)
-        
+        self.update_task_progress(
+            task_id, status=status, overall_progress=overall_progress
+        )
+
         try:
             self._cleanup_stale_tasks()
         except Exception:
             pass
 
     @contextmanager
-    def track_task(self, task_type: str, task_id: Optional[str] = None, user_id: Optional[int] = None, **metadata: Any) -> Iterator[Any]:
+    def track_task(
+        self,
+        task_type: str,
+        task_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        **metadata: Any,
+    ) -> Iterator[Any]:
         """Context manager for tracking a complete task lifecycle."""
         # Circular import prevention
         from .tracker import ProgressTracker
-        
+
         task_id = self.create_task(task_type, task_id, user_id, metadata)
         tracker = ProgressTracker(self, task_id)
 
@@ -213,18 +232,25 @@ class ProgressManager:
             self.complete_task(task_id, success=True)
         except Exception as e:
             logger.exception(f"Task {task_id} failed: {e}")
-            self.update_task_progress(task_id, status=DocumentProcessingStatus.FAILED, metadata={"error": str(e)})
+            self.update_task_progress(
+                task_id,
+                status=DocumentProcessingStatus.FAILED,
+                metadata={"error": str(e)},
+            )
             self.complete_task(task_id, success=False)
             raise
 
-    def get_active_tasks(self, user_id: Optional[int] = None) -> Dict[str, TaskProgress]:
+    def get_active_tasks(
+        self, user_id: Optional[int] = None
+    ) -> Dict[str, TaskProgress]:
         """Get all currently active tasks, optionally filtered by user."""
         self._cleanup_stale_tasks()
-        
+
         with self._lock:
             if user_id:
                 return {
-                    tid: t for tid, t in self._active_tasks.items() 
+                    tid: t
+                    for tid, t in self._active_tasks.items()
                     if t.user_id == user_id
                 }
             return self._active_tasks.copy()
