@@ -56,13 +56,6 @@ class ProgressManager:
         except RuntimeError:
             pass
 
-        self._initialized = True
-
-    def _reset(self) -> None:
-        """Reset the manager state (FOR TESTING ONLY)."""
-        with self._lock:
-            self._active_tasks.clear()
-
     def create_task(
         self,
         task_type: str,

@@ -36,7 +36,8 @@ class TestProgressBroadcaster:
     async def test_connect_and_disconnect(self):
         """Test connecting and disconnecting WebSocket connections."""
         broadcaster = ProgressBroadcaster()
-        await broadcaster._reset()
+        async with broadcaster._lock:
+            broadcaster._connections.clear()
 
         task_id = "test_task_123"
         connection = MockWebSocketConnection()
@@ -61,7 +62,8 @@ class TestProgressBroadcaster:
     async def test_multiple_connections_same_task(self):
         """Test multiple connections to the same task."""
         broadcaster = ProgressBroadcaster()
-        await broadcaster._reset()
+        async with broadcaster._lock:
+            broadcaster._connections.clear()
 
         task_id = "multi_conn_task"
         conn1 = MockWebSocketConnection()
@@ -83,7 +85,8 @@ class TestProgressBroadcaster:
     async def test_broadcast_event(self):
         """Test broadcasting events to all connections of a task."""
         broadcaster = ProgressBroadcaster()
-        await broadcaster._reset()
+        async with broadcaster._lock:
+            broadcaster._connections.clear()
 
         task_id = "broadcast_test"
         conn1 = MockWebSocketConnection()
@@ -111,7 +114,8 @@ class TestProgressBroadcaster:
     async def test_connection_failure_handling(self):
         """Test handling of connection failures during broadcast."""
         broadcaster = ProgressBroadcaster()
-        await broadcaster._reset()
+        async with broadcaster._lock:
+            broadcaster._connections.clear()
 
         task_id = "failure_test"
 
@@ -147,7 +151,8 @@ class TestProgressBroadcaster:
     async def test_isolate_different_tasks(self):
         """Test that broadcasts to different tasks are isolated."""
         broadcaster = ProgressBroadcaster()
-        await broadcaster._reset()
+        async with broadcaster._lock:
+            broadcaster._connections.clear()
 
         task1 = "task_1"
         task2 = "task_2"
@@ -177,7 +182,8 @@ class TestProgressBroadcaster:
     async def test_get_connection_count(self):
         """Test getting connection count for tasks."""
         broadcaster = ProgressBroadcaster()
-        await broadcaster._reset()
+        async with broadcaster._lock:
+            broadcaster._connections.clear()
 
         task1 = "count_test_1"
         task2 = "count_test_2"

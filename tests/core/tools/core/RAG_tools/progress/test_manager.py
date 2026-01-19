@@ -22,12 +22,12 @@ class TestProgressManager:
         # Should share the same tasks dict
         manager1._active_tasks["test"] = "value"
         assert manager2._active_tasks["test"] == "value"
-        manager1._reset()
+        manager1._active_tasks.clear()
 
     def test_create_task(self):
         """Test task creation."""
         manager = ProgressManager()
-        manager._reset()  # Clear any existing tasks
+        manager._active_tasks.clear()  # Clear any existing tasks
 
         task_id = "test_task_123"
         task_type = "ingestion"
@@ -52,7 +52,7 @@ class TestProgressManager:
     def test_get_task_progress(self):
         """Test retrieving task progress."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         task_id = "test_task_789"
         manager.create_task("search", task_id)
@@ -69,7 +69,7 @@ class TestProgressManager:
     def test_update_task_progress(self):
         """Test task progress updates."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         task_id = "test_update"
         manager.create_task("ingestion", task_id)
@@ -93,7 +93,7 @@ class TestProgressManager:
     def test_update_task_progress_start_time(self):
         """Test that start_time is set when status changes to RUNNING."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         task_id = "test_start_time"
         manager.create_task("ingestion", task_id)
@@ -108,7 +108,7 @@ class TestProgressManager:
     def test_update_task_progress_end_time(self):
         """Test that end_time is set when task completes."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         task_id = "test_end_time"
         manager.create_task("ingestion", task_id)
@@ -127,10 +127,18 @@ class TestProgressManager:
         assert task2.status == DocumentProcessingStatus.FAILED
         assert task2.end_time is not None
 
+        # Complete with cancellation
+        task_id3 = "test_end_time3"
+        manager.create_task("search", task_id3)
+        manager.update_task_progress(task_id3, DocumentProcessingStatus.CANCELLED)
+        task3 = manager._active_tasks[task_id3]
+        assert task3.status == DocumentProcessingStatus.CANCELLED
+        assert task3.end_time is not None
+
     def test_complete_task(self):
         """Test task completion."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         task_id = "test_complete"
         manager.create_task("ingestion", task_id)
@@ -146,7 +154,7 @@ class TestProgressManager:
     def test_get_active_tasks(self):
         """Test retrieving active tasks."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         # Create tasks with different statuses
         manager.create_task("ingestion", "active_task")
@@ -175,7 +183,7 @@ class TestProgressManager:
     def test_task_isolation(self):
         """Test that tasks are properly isolated."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         # Create two separate tasks
         manager.create_task("ingestion", "task1")
@@ -192,7 +200,7 @@ class TestProgressManager:
     def test_concurrent_access_safety(self):
         """Test that concurrent access doesn't break the manager."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         # Simulate concurrent task creation and updates
         tasks = []
@@ -215,7 +223,7 @@ class TestProgressManager:
     def test_timestamp_handling(self):
         """Test proper timestamp handling."""
         manager = ProgressManager()
-        manager._reset()
+        manager._active_tasks.clear()
 
         task_id = "timestamp_test"
         manager.create_task("ingestion", task_id)
