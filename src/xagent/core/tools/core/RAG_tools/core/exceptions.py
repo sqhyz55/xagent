@@ -132,3 +132,13 @@ class CascadeCleanupError(RagCoreException):
     """
 
     pass
+
+
+class ProgressPersistenceError(RagCoreException):
+    """Exception raised when progress persistence operations fail.
+
+    This exception is raised when saving or loading task progress fails,
+    typically due to IO errors or storage issues.
+    """
+
+    pass
