@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from ..core.exceptions import ProgressPersistenceError
 from ..core.schemas import DocumentProcessingStatus, TaskProgress
+from ..utils import validate_and_convert_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +122,17 @@ class ProgressPersistence:
 
         Args:
             task_type: Optional filter by task type
-            user_id: Optional filter by user ID for tenant isolation
+            user_id: Optional filter by user ID for tenant isolation (must be int or convertible to int)
 
         Returns:
             List of active TaskProgress objects
+
+        Raises:
+            ConfigurationError: If user_id cannot be converted to int
         """
+        # Validate and convert user_id to int if provided
+        user_id = validate_and_convert_user_id(user_id)
+
         active_tasks = []
 
         try:
@@ -167,11 +174,17 @@ class ProgressPersistence:
         """List all tasks stored in persistence.
 
         Args:
-            user_id: Optional filter by user ID
+            user_id: Optional filter by user ID (must be int or convertible to int)
 
         Returns:
             List of all TaskProgress objects
+
+        Raises:
+            ConfigurationError: If user_id cannot be converted to int
         """
+        # Validate and convert user_id to int if provided
+        user_id = validate_and_convert_user_id(user_id)
+
         all_tasks = []
 
         try:

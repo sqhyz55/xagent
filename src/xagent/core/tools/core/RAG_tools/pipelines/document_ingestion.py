@@ -845,6 +845,7 @@ def process_document(
                         create_index=(
                             batch_start + cfg.embedding_batch_size >= len(chunks)
                         ),
+                        user_id=user_id,
                     )
                     last_write_response = (
                         write_response

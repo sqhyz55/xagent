@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 
 from ..core.schemas import DocumentProcessingStatus, TaskProgress
+from ..utils import validate_and_convert_user_id
 from .persistence import ProgressPersistence
 from .realtime import ProgressBroadcaster, progress_broadcaster
 
@@ -68,12 +69,18 @@ class ProgressManager:
         Args:
             task_type: Type of task ("ingestion", "retrieval", etc.)
             task_id: Optional custom task ID, auto-generated if not provided
-            user_id: Optional user identifier for isolation
+            user_id: Optional user identifier for isolation (must be int or convertible to int)
             metadata: Optional metadata for the task
 
         Returns:
             The task ID
+
+        Raises:
+            ConfigurationError: If user_id is provided but cannot be converted to int
         """
+        # Validate and convert user_id to int if provided
+        user_id = validate_and_convert_user_id(user_id)
+
         # Lazily cleanup old tasks when creating a new one
         self._cleanup_stale_tasks()
 
@@ -236,7 +243,20 @@ class ProgressManager:
     def get_active_tasks(
         self, user_id: Optional[int] = None
     ) -> Dict[str, TaskProgress]:
-        """Get all currently active tasks, optionally filtered by user."""
+        """Get all currently active tasks, optionally filtered by user.
+
+        Args:
+            user_id: Optional user ID to filter tasks (must be int or convertible to int)
+
+        Returns:
+            Dictionary of active tasks, optionally filtered by user_id
+
+        Raises:
+            ConfigurationError: If user_id cannot be converted to int
+        """
+        # Validate and convert user_id to int if provided
+        user_id = validate_and_convert_user_id(user_id)
+
         self._cleanup_stale_tasks()
 
         with self._lock:

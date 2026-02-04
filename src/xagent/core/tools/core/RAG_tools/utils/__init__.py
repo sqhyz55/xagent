@@ -13,6 +13,7 @@ from .string_utils import (
     generate_doc_id_from_filename,
     sanitize_for_doc_id,
 )
+from .validation_utils import validate_and_convert_user_id
 
 __all__ = [
     # File utilities
@@ -32,4 +33,6 @@ __all__ = [
     "build_lancedb_filter_expression",
     "sanitize_for_doc_id",
     "generate_doc_id_from_filename",
+    # Validation utilities
+    "validate_and_convert_user_id",
 ]

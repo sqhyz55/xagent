@@ -31,7 +31,7 @@ class TestProgressManager:
 
         task_id = "test_task_123"
         task_type = "ingestion"
-        user_id = "user_1"
+        user_id = 1
         metadata = {"collection": "docs", "source": "test.pdf"}
 
         manager.create_task(

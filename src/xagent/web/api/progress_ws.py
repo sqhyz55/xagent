@@ -186,7 +186,7 @@ async def list_active_tasks(
 ) -> Dict[str, Any]:
     """List all active progress tasks for the current user."""
     try:
-        active_tasks = get_progress_manager().get_active_tasks(user_id=user.id)
+        active_tasks = get_progress_manager().get_active_tasks(user_id=int(user.id))
 
         # Filter by task type if specified
         if task_type:
