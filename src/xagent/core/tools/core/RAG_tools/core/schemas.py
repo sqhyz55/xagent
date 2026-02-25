@@ -925,6 +925,32 @@ class IngestionConfig(BaseModel):
     separators: Optional[List[str]] = Field(
         default=None, description="Custom separators for recursive/markdown strategies"
     )
+    use_token_count: bool = Field(
+        default=False,
+        description="If True, chunk_size and chunk_overlap are in tokens (tiktoken); only applies to RECURSIVE strategy",
+    )
+    tiktoken_encoding: str = Field(
+        default="cl100k_base",
+        description="tiktoken encoding name when use_token_count=True (e.g. cl100k_base for GPT-4/3.5). Should align with config.DEFAULT_TIKTOKEN_ENCODING.",
+    )
+    enable_protected_content: bool = Field(
+        default=True,
+        description="If True, do not split inside code blocks, formulas, tables (P1).",
+    )
+    protected_patterns: Optional[List[str]] = Field(
+        default=None,
+        description="Optional regex patterns for protected regions; None uses config default.",
+    )
+    table_context_size: int = Field(
+        default=0,
+        ge=0,
+        description="Chars from prev/next chunk to attach to table chunks; 0 = off (P2).",
+    )
+    image_context_size: int = Field(
+        default=0,
+        ge=0,
+        description="Chars from prev/next chunk to attach to image chunks; 0 = off (P2).",
+    )
     embedding_model_id: Optional[str] = Field(
         default=None,
         description=(

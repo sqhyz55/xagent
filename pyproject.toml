@@ -51,6 +51,7 @@ dependencies = [
   "docker>=7.1.0",
   "pypdf2>=3.0.1",
   "docling>=2.68.0",
+  "tiktoken>=0.8.0",
   # Database dependencies
   "sqlalchemy>=2.0.0",
   "alembic>=1.13.0",

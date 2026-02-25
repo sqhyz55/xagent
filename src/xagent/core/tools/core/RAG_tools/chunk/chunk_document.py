@@ -12,6 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from ......providers.vector_store.lancedb import get_connection_from_env
+from ..core.config import (
+    DEFAULT_IMAGE_CONTEXT_SIZE,
+    DEFAULT_TABLE_CONTEXT_SIZE,
+    DEFAULT_TIKTOKEN_ENCODING,
+)
 from ..core.exceptions import (
     DatabaseOperationError,
     DocumentNotFoundError,
@@ -28,6 +33,7 @@ from .chunk_strategies import (
     apply_fixed_size_strategy,
     apply_markdown_strategy,
     apply_recursive_strategy,
+    attach_media_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +48,12 @@ def chunk_document(
     chunk_overlap: int = 200,
     headers_to_split_on: Optional[List[Tuple[str, str]]] = None,
     separators: Optional[List[str]] = None,
+    use_token_count: bool = False,
+    tiktoken_encoding: str = DEFAULT_TIKTOKEN_ENCODING,
+    enable_protected_content: bool = True,
+    protected_patterns: Optional[List[str]] = None,
+    table_context_size: int = DEFAULT_TABLE_CONTEXT_SIZE,
+    image_context_size: int = DEFAULT_IMAGE_CONTEXT_SIZE,
     user_id: Optional[int] = None,
     is_admin: bool = False,
     **kwargs: Any,
@@ -54,10 +66,16 @@ def chunk_document(
         doc_id: Document ID whose parsed result to chunk
         parse_hash: Parse version hash to select parsed content
         chunk_strategy: Chunking strategy identifier
-        chunk_size: Target chunk size in characters/tokens. If None, semantic splitting is used without size limits
-        chunk_overlap: Overlap between consecutive chunks
+        chunk_size: Target chunk size in characters (or tokens when use_token_count=True). If None, semantic splitting is used without size limits
+        chunk_overlap: Overlap between consecutive chunks (characters or tokens when use_token_count=True)
         headers_to_split_on: Markdown header rules for markdown strategy
         separators: Separators for recursive strategy
+        use_token_count: If True, chunk_size and chunk_overlap are in tokens (tiktoken); only applies to RECURSIVE strategy
+        tiktoken_encoding: tiktoken encoding name when use_token_count=True (e.g. "cl100k_base")
+        enable_protected_content: If True (default), do not split inside code blocks, formulas, tables (P1)
+        protected_patterns: Optional list of regex patterns for protected regions; None uses config default
+        table_context_size: Chars from prev/next chunk to attach to table chunks; 0 = off (P2)
+        image_context_size: Chars from prev/next chunk to attach to image chunks; 0 = off (P2)
         user_id: Optional user ID for multi-tenancy data isolation
 
     Returns:
@@ -79,6 +97,12 @@ def chunk_document(
         "chunk_overlap": int(chunk_overlap),
         "headers_to_split_on": headers_to_split_on,
         "separators": separators,
+        "use_token_count": use_token_count,
+        "tiktoken_encoding": tiktoken_encoding,
+        "enable_protected_content": enable_protected_content,
+        "protected_patterns": protected_patterns,
+        "table_context_size": table_context_size,
+        "image_context_size": image_context_size,
     }
 
     logger.info(
@@ -136,6 +160,17 @@ def chunk_document(
     except Exception as e:
         logger.error(f"Document chunking failed: {e}")
         raise DocumentValidationError(f"Chunking failed: {e}") from e
+
+    # P2: Attach surrounding context to table/image chunks
+    if chunks and (
+        params.get("table_context_size", 0) > 0
+        or params.get("image_context_size", 0) > 0
+    ):
+        attach_media_context(
+            chunks,
+            table_context_size=int(params.get("table_context_size", 0)),
+            image_context_size=int(params.get("image_context_size", 0)),
+        )
 
     # Assign ids and indices
     indexed_chunks = []
@@ -197,7 +232,12 @@ def _validate_chunk_params(
 
     chunk_size = params.get("chunk_size", 1000)
     chunk_overlap = params.get("chunk_overlap", 200)
+    use_token_count = bool(params.get("use_token_count"))
 
+    if use_token_count and chunk_size is None:
+        raise DocumentValidationError(
+            "chunk_size is required when use_token_count is True"
+        )
     if chunk_size is not None and chunk_size <= 0:
         raise DocumentValidationError("chunk_size must be positive")
     if chunk_overlap < 0:

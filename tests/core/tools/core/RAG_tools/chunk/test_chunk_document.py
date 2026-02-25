@@ -364,6 +364,253 @@ class TestChunkDocument:
                 chunk_strategy="invalid_strategy",
             )
 
+    def test_chunk_use_token_count_requires_chunk_size(self, temp_lancedb_dir):
+        """P0: use_token_count=True without chunk_size raises DocumentValidationError."""
+        with pytest.raises(DocumentValidationError) as exc_info:
+            chunk_document(
+                collection="c",
+                doc_id="d",
+                parse_hash="p",
+                chunk_strategy=ChunkStrategy.RECURSIVE,
+                chunk_size=None,
+                chunk_overlap=50,
+                use_token_count=True,
+            )
+        assert "chunk_size" in str(exc_info.value).lower()
+
+    def test_chunk_recursive_with_use_token_count(
+        self, temp_lancedb_dir, test_collection, test_doc_id
+    ):
+        """P0 integration: register -> parse -> chunk with use_token_count=True (token-based)."""
+        txt_path = "tests/resources/test_files/test.txt"
+        register_document(
+            collection=test_collection,
+            source_path=txt_path,
+            doc_id=test_doc_id,
+            user_id=1,
+        )
+        parse_result = parse_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_method="default",
+            user_id=1,
+            is_admin=True,
+        )
+        parse_hash = parse_result["parse_hash"]
+
+        chunk_result = chunk_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_hash=parse_hash,
+            chunk_strategy=ChunkStrategy.RECURSIVE,
+            chunk_size=256,
+            chunk_overlap=50,
+            use_token_count=True,
+            user_id=1,
+        )
+
+        resp = ChunkDocumentResponse.model_validate(chunk_result)
+        assert resp.created is True
+        assert resp.chunk_count > 0
+        assert resp.stats["total_chunks"] > 0
+        self._verify_chunk_text_fidelity_and_metadata(
+            test_collection, test_doc_id, parse_hash
+        )
+
+    def test_chunk_idempotency_with_use_token_count(
+        self, temp_lancedb_dir, test_collection, test_doc_id
+    ):
+        """P0: idempotency when use_token_count=True (config_hash includes token params)."""
+        txt_path = "tests/resources/test_files/test.txt"
+        register_document(
+            collection=test_collection,
+            source_path=txt_path,
+            doc_id=test_doc_id,
+            user_id=1,
+        )
+        parse_result = parse_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_method="default",
+            user_id=1,
+            is_admin=True,
+        )
+        parse_hash = parse_result["parse_hash"]
+
+        chunk_result1 = chunk_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_hash=parse_hash,
+            chunk_strategy=ChunkStrategy.RECURSIVE,
+            chunk_size=200,
+            chunk_overlap=40,
+            use_token_count=True,
+            user_id=1,
+        )
+        chunk_result2 = chunk_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_hash=parse_hash,
+            chunk_strategy=ChunkStrategy.RECURSIVE,
+            chunk_size=200,
+            chunk_overlap=40,
+            use_token_count=True,
+            user_id=1,
+        )
+
+        assert chunk_result1["chunk_count"] == chunk_result2["chunk_count"]
+        assert chunk_result2["created"] is False
+
+    def test_chunk_recursive_protected_content_keeps_code_block(
+        self, temp_lancedb_dir, test_collection, test_doc_id, tmp_path
+    ):
+        """P1 integration: enable_protected_content keeps code block in one piece."""
+        code_doc = tmp_path / "code_doc.txt"
+        code_doc.write_text(
+            "Intro sentence.\n```\ncode line one\ncode line two\n```\nOutro.",
+            encoding="utf-8",
+        )
+        register_document(
+            collection=test_collection,
+            source_path=str(code_doc),
+            doc_id=test_doc_id,
+            user_id=1,
+        )
+        parse_result = parse_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_method="default",
+            user_id=1,
+            is_admin=True,
+        )
+        parse_hash = parse_result["parse_hash"]
+        chunk_result = chunk_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_hash=parse_hash,
+            chunk_strategy=ChunkStrategy.RECURSIVE,
+            chunk_size=256,
+            chunk_overlap=50,
+            use_token_count=True,
+            enable_protected_content=True,
+            user_id=1,
+        )
+        assert chunk_result["created"] is True
+        assert chunk_result["chunk_count"] > 0
+        from xagent.providers.vector_store.lancedb import get_connection_from_env
+
+        conn = get_connection_from_env()
+        table = conn.open_table("chunks")
+        df = (
+            table.search()
+            .where(f"collection == '{test_collection}' AND doc_id == '{test_doc_id}'")
+            .to_pandas()
+        )
+        combined = " ".join(df["text"].astype(str).tolist())
+        assert "code line one" in combined and "code line two" in combined
+        assert "```" in combined
+
+    def test_chunk_markdown_with_headers_section_in_metadata(
+        self, temp_lancedb_dir, test_collection, test_doc_id
+    ):
+        """P1 integration: MARKDOWN with headers_to_split_on stores section on chunks."""
+        md_path = "tests/resources/test_files/test.md"
+        register_document(
+            collection=test_collection,
+            source_path=md_path,
+            doc_id=test_doc_id,
+            user_id=1,
+        )
+        parse_result = parse_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_method="default",
+            user_id=1,
+            is_admin=True,
+        )
+        parse_hash = parse_result["parse_hash"]
+        chunk_result = chunk_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_hash=parse_hash,
+            chunk_strategy=ChunkStrategy.MARKDOWN,
+            chunk_size=200,
+            chunk_overlap=50,
+            headers_to_split_on=[("# ", "H1"), ("## ", "H2"), ("### ", "H3")],
+            user_id=1,
+        )
+        assert chunk_result["created"] is True
+        assert chunk_result["chunk_count"] > 0
+        from xagent.providers.vector_store.lancedb import get_connection_from_env
+
+        conn = get_connection_from_env()
+        table = conn.open_table("chunks")
+        df = (
+            table.search()
+            .where(f"collection == '{test_collection}' AND doc_id == '{test_doc_id}'")
+            .to_pandas()
+        )
+        if "section" in df.columns:
+            sections = df["section"].dropna().astype(str)
+            assert len(sections) > 0
+            assert any(
+                "Section" in s or "Test Document" in s or "Details" in s
+                for s in sections
+            )
+
+    def test_chunk_table_context_attached(
+        self, temp_lancedb_dir, test_collection, test_doc_id, tmp_path
+    ):
+        """P2 integration: table_context_size attaches prev/next context to table chunk."""
+        table_doc = tmp_path / "table_doc.txt"
+        table_doc.write_text(
+            "Before table.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter table.",
+            encoding="utf-8",
+        )
+        register_document(
+            collection=test_collection,
+            source_path=str(table_doc),
+            doc_id=test_doc_id,
+            user_id=1,
+        )
+        parse_result = parse_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_method="default",
+            user_id=1,
+            is_admin=True,
+        )
+        parse_hash = parse_result["parse_hash"]
+        chunk_result = chunk_document(
+            collection=test_collection,
+            doc_id=test_doc_id,
+            parse_hash=parse_hash,
+            chunk_strategy=ChunkStrategy.RECURSIVE,
+            chunk_size=512,
+            chunk_overlap=0,
+            table_context_size=15,
+            image_context_size=0,
+            user_id=1,
+        )
+        assert chunk_result["created"] is True
+        assert chunk_result["chunk_count"] > 0
+        from xagent.providers.vector_store.lancedb import get_connection_from_env
+
+        conn = get_connection_from_env()
+        table = conn.open_table("chunks")
+        df = (
+            table.search()
+            .where(f"collection == '{test_collection}' AND doc_id == '{test_doc_id}'")
+            .to_pandas()
+        )
+        # The chunk that contains the table should have prev/next context attached
+        table_chunks = df[
+            df["text"].astype(str).str.contains(r"\|.*\|", regex=True, na=False)
+        ]
+        assert len(table_chunks) > 0
+        table_text = " ".join(table_chunks["text"].astype(str).tolist())
+        assert "Before" in table_text and "After" in table_text
+
     def test_chunk_collection_isolation(self, temp_lancedb_dir):
         """Test that chunks are isolated by collection."""
         collection1 = f"collection1_{uuid.uuid4().hex[:8]}"

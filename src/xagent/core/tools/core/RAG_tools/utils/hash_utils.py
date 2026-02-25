@@ -198,6 +198,12 @@ def get_chunk_params_whitelist() -> list[str]:
         "chunk_overlap",
         "headers_to_split_on",
         "separators",
+        "use_token_count",
+        "tiktoken_encoding",
+        "enable_protected_content",
+        "protected_patterns",
+        "table_context_size",
+        "image_context_size",
     ]
 
 

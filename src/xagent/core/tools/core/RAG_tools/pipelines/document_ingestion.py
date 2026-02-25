@@ -13,6 +13,11 @@ from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 
 from ..chunk.chunk_document import chunk_document
+from ..core.config import (
+    DEFAULT_IMAGE_CONTEXT_SIZE,
+    DEFAULT_TABLE_CONTEXT_SIZE,
+    DEFAULT_TIKTOKEN_ENCODING,
+)
 from ..core.exceptions import (
     DatabaseOperationError,
     DocumentValidationError,
@@ -590,6 +595,18 @@ def process_document(
             chunk_overlap=cfg.chunk_overlap,
             headers_to_split_on=getattr(cfg, "headers_to_split_on", None),
             separators=getattr(cfg, "separators", None),
+            use_token_count=getattr(cfg, "use_token_count", False),
+            tiktoken_encoding=getattr(
+                cfg, "tiktoken_encoding", DEFAULT_TIKTOKEN_ENCODING
+            ),
+            enable_protected_content=getattr(cfg, "enable_protected_content", True),
+            protected_patterns=getattr(cfg, "protected_patterns", None),
+            table_context_size=getattr(
+                cfg, "table_context_size", DEFAULT_TABLE_CONTEXT_SIZE
+            ),
+            image_context_size=getattr(
+                cfg, "image_context_size", DEFAULT_IMAGE_CONTEXT_SIZE
+            ),
             user_id=user_id,
         )
         chunk_count = int(chunk_response.get("chunk_count", 0))
