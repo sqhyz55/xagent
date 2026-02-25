@@ -8,7 +8,7 @@ context length estimation.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Callable
 
 from ..core.config import DEFAULT_TIKTOKEN_ENCODING
 
@@ -133,7 +133,6 @@ def split_text_by_tokens(
     if n <= max_tokens:
         return [text]
 
-    step = max(1, max_tokens - overlap_tokens)
     segments: list[str] = []
     start = 0
     while start < n:

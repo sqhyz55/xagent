@@ -1,7 +1,5 @@
 """Unit tests for token_utils (P0: token counting and split)."""
 
-import pytest
-
 from xagent.core.tools.core.RAG_tools.utils.token_utils import (
     get_token_counter,
     num_tokens_from_string,

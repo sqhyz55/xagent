@@ -1,7 +1,5 @@
 """Unit tests for chunk strategies (P0 token merge, P1 protected content & headers)."""
 
-import pytest
-
 from xagent.core.tools.core.RAG_tools.chunk.chunk_strategies import (
     _find_protected_ranges,
     _split_by_headers,
@@ -30,7 +28,10 @@ class TestApplyRecursiveStrategyTokenMode:
     def test_use_token_count_merges_by_token_limit(self) -> None:
         """With use_token_count=True, chunks respect token limit."""
         paragraphs = [
-            {"text": "First sentence. Second sentence. Third sentence.", "metadata": {}},
+            {
+                "text": "First sentence. Second sentence. Third sentence.",
+                "metadata": {},
+            },
             {"text": "Another paragraph with some content here.", "metadata": {}},
         ]
         params = {
@@ -184,7 +185,10 @@ class TestMarkdownHeadersAndSection:
     def test_markdown_strategy_preserves_section_metadata(self) -> None:
         """Chunks from markdown strategy have section in metadata."""
         paragraphs = [
-            {"text": "# Intro\nThis is intro.\n\n## Body\nThis is body.", "metadata": {}},
+            {
+                "text": "# Intro\nThis is intro.\n\n## Body\nThis is body.",
+                "metadata": {},
+            },
         ]
         params = {
             "chunk_size": 100,
@@ -193,7 +197,9 @@ class TestMarkdownHeadersAndSection:
         }
         chunks = apply_markdown_strategy(paragraphs, params)
         assert len(chunks) >= 2
-        sections = [c.get("section") or c.get("metadata", {}).get("section") for c in chunks]
+        sections = [
+            c.get("section") or c.get("metadata", {}).get("section") for c in chunks
+        ]
         sections = [s for s in sections if s]
         assert any("Intro" in (s or "") for s in sections)
         assert any("Body" in (s or "") for s in sections)
@@ -236,7 +242,9 @@ class TestAttachMediaContext:
         # Table chunk (index 1) should have prefix from chunk 0 and suffix from chunk 2
         text = chunks[1]["text"]
         assert "paragraph here." in text or "here." in text  # last 10 of intro
-        assert "Conclusion" in text or "Conclusion paragraph" in text  # first 10 of conclusion
+        assert (
+            "Conclusion" in text or "Conclusion paragraph" in text
+        )  # first 10 of conclusion
         assert "| col1 | col2 |" in text
 
     def test_image_chunk_gets_context(self) -> None:
