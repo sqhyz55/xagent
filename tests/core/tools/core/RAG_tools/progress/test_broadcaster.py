@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 
 import pytest
-from fenixaos.core.tools.core.RAG_tools.progress.realtime import ProgressBroadcaster
+
+from xagent.core.tools.core.RAG_tools.progress.realtime import ProgressBroadcaster
 
 
 class MockWebSocketConnection:

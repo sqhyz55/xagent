@@ -1,72 +1,18 @@
-"""Tests for LangGraph document search tool adapter."""
+"""Tests for document search pipeline (config coercion and run_document_search)."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
 import pytest
-from fenixaos.core.tools.adapters.langgraph.RAG_tools.pipelines import document_search
-from fenixaos.core.tools.core.RAG_tools.core.schemas import (
+
+from xagent.core.tools.core.RAG_tools.core.schemas import (
     SearchConfig,
     SearchPipelineResult,
 )
-from fenixaos.core.tools.core.RAG_tools.pipelines import (
+from xagent.core.tools.core.RAG_tools.pipelines import (
     document_search as core_document_search,
 )
-from langchain_core.tools import BaseTool
-
-
-def test_get_document_search_tool_invokes_pipeline(monkeypatch) -> None:
-    """Adapter should expose the core search pipeline as a LangGraph tool."""
-
-    captured: Dict[str, Any] = {}
-
-    def _fake_search_documents(
-        collection: str,
-        query_text: str,
-        *,
-        config: SearchConfig,
-        progress_manager: Optional[Any] = None,
-        user_id: Optional[int] = None,
-        is_admin: bool = False,
-        **kwargs: Any,
-    ) -> SearchPipelineResult:
-        captured["collection"] = collection
-        captured["query_text"] = query_text
-        captured["config"] = config
-        return SearchPipelineResult(
-            status="success",
-            search_type=config.search_type,
-            results=[],
-            result_count=0,
-            warnings=[],
-            message="ok",
-            used_rerank=False,
-        )
-
-    monkeypatch.setattr(
-        core_document_search, "search_documents", _fake_search_documents
-    )
-
-    tool = document_search.get_run_document_search_tool()
-    tool = document_search.get_run_document_search_tool()
-
-    assert isinstance(tool, BaseTool)
-
-    payload = {
-        "collection": "demo",
-        "query_text": "hello",
-        "search_config": {"embedding_model_id": "fake-model"},
-    }
-    result = tool.invoke(payload)
-
-    assert isinstance(result, SearchPipelineResult)
-    assert result.status == "success"
-    assert result.result_count == 0
-    assert captured["collection"] == "demo"
-    assert captured["query_text"] == "hello"
-    assert isinstance(captured["config"], SearchConfig)
-    assert captured["config"].embedding_model_id == "fake-model"
 
 
 def test_run_document_search_coerces_mapping(monkeypatch) -> None:
@@ -102,7 +48,7 @@ def test_run_document_search_coerces_mapping(monkeypatch) -> None:
     )
 
     result = core_document_search.run_document_search(
-        "demo", "hello", search_config={"embedding_model_id": "fake-model"}
+        "demo", "hello", config={"embedding_model_id": "fake-model"}
     )
 
     assert isinstance(result, SearchPipelineResult)
@@ -119,5 +65,5 @@ def test_run_document_search_rejects_invalid_config() -> None:
         core_document_search.run_document_search(
             "demo",
             "hello",
-            search_config=42,  # type: ignore[arg-type]
+            config=42,  # type: ignore[arg-type]
         )

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
-from fenixaos.core.tools.core.RAG_tools.progress.manager import ProgressManager
-from fenixaos.core.tools.core.RAG_tools.progress.tracker import (
+from xagent.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
+from xagent.core.tools.core.RAG_tools.progress.manager import ProgressManager
+from xagent.core.tools.core.RAG_tools.progress.tracker import (
     ProgressTracker,
     StepTracker,
 )

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 
-from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
-from fenixaos.core.tools.core.RAG_tools.progress.manager import ProgressManager
+from xagent.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
+from xagent.core.tools.core.RAG_tools.progress.manager import ProgressManager
 
 
 class TestProgressManager:

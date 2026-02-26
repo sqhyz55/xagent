@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import WebSocket
 from fastapi.testclient import TestClient
-from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
-from fenixaos.core.tools.core.RAG_tools.progress import ProgressManager
-from fenixaos.web.api.progress_ws import progress_ws_router
-from fenixaos.web.models.user import User
+
+from xagent.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
+from xagent.core.tools.core.RAG_tools.progress import ProgressManager
+from xagent.web.api.progress_ws import progress_ws_router
+from xagent.web.models.user import User
 
 
 class TestProgressWebSocketAPI:
@@ -20,7 +21,8 @@ class TestProgressWebSocketAPI:
     def client(self):
         """Create test client with progress WebSocket routes."""
         from fastapi import FastAPI
-        from fenixaos.web.auth_dependencies import get_current_user
+
+        from xagent.web.auth_dependencies import get_current_user
 
         app = FastAPI()
         app.include_router(progress_ws_router)
@@ -39,7 +41,7 @@ class TestProgressWebSocketAPI:
     def mock_progress_manager(self):
         """Mock progress manager for testing."""
         with patch(
-            "fenixaos.web.api.progress_ws.get_progress_manager"
+            "xagent.web.api.progress_ws.get_progress_manager"
         ) as mock_get_manager:
             mock_manager = MagicMock(spec=ProgressManager)
 
@@ -153,7 +155,8 @@ class TestProgressWebSocketAPI:
     async def test_websocket_connection_and_initial_status(self):
         """Test WebSocket connection and initial status broadcast."""
         from fastapi import WebSocketDisconnect
-        from fenixaos.web.api.progress_ws import progress_websocket_endpoint
+
+        from xagent.web.api.progress_ws import progress_websocket_endpoint
 
         # Mock WebSocket
         mock_websocket = AsyncMock(spec=WebSocket)
@@ -174,14 +177,14 @@ class TestProgressWebSocketAPI:
 
         with (
             patch(
-                "fenixaos.web.api.progress_ws.get_progress_manager"
+                "xagent.web.api.progress_ws.get_progress_manager"
             ) as mock_get_manager,
             patch(
-                "fenixaos.web.api.progress_ws.progress_broadcaster", spec=True
+                "xagent.web.api.progress_ws.progress_broadcaster", spec=True
             ) as mock_broadcaster,
-            patch("fenixaos.web.api.progress_ws.get_db") as mock_get_db,
+            patch("xagent.web.api.progress_ws.get_db") as mock_get_db,
             patch(
-                "fenixaos.web.api.progress_ws.get_user_from_websocket_token"
+                "xagent.web.api.progress_ws.get_user_from_websocket_token"
             ) as mock_get_user,
         ):
             # Mock DB generator
@@ -213,19 +216,20 @@ class TestProgressWebSocketAPI:
     async def test_websocket_with_invalid_token(self):
         """Test WebSocket connection with invalid token."""
         from fastapi import WebSocketDisconnect
-        from fenixaos.web.api.progress_ws import progress_websocket_endpoint
+
+        from xagent.web.api.progress_ws import progress_websocket_endpoint
 
         mock_websocket = AsyncMock(spec=WebSocket)
         mock_websocket.receive_text.side_effect = WebSocketDisconnect()
 
         with (
             patch(
-                "fenixaos.web.api.progress_ws.get_progress_manager"
+                "xagent.web.api.progress_ws.get_progress_manager"
             ) as mock_get_manager,
-            patch("fenixaos.web.api.progress_ws.progress_broadcaster", spec=True),
-            patch("fenixaos.web.api.progress_ws.get_db") as mock_get_db,
+            patch("xagent.web.api.progress_ws.progress_broadcaster", spec=True),
+            patch("xagent.web.api.progress_ws.get_db") as mock_get_db,
             patch(
-                "fenixaos.web.api.progress_ws.get_user_from_websocket_token"
+                "xagent.web.api.progress_ws.get_user_from_websocket_token"
             ) as mock_get_user,
         ):
             # Mock DB generator

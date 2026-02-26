@@ -7,8 +7,9 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
-from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
-from fenixaos.core.tools.core.RAG_tools.progress import ProgressTracker
+
+from xagent.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
+from xagent.core.tools.core.RAG_tools.progress import ProgressTracker
 
 
 class MockWebSocketConnection:
@@ -33,7 +34,7 @@ class TestProgressMonitoringIntegration:
         """Create a fresh progress manager for each test."""
         # Since it's a singleton now, we might want to be careful.
         # But for integration tests, creating a new instance is better.
-        from fenixaos.core.tools.core.RAG_tools.progress.manager import ProgressManager
+        from xagent.core.tools.core.RAG_tools.progress.manager import ProgressManager
 
         manager = ProgressManager()
         return manager
@@ -41,7 +42,7 @@ class TestProgressMonitoringIntegration:
     @pytest.fixture
     async def mock_broadcaster(self):
         """Create mock broadcaster for testing."""
-        from fenixaos.core.tools.core.RAG_tools.progress import ProgressBroadcaster
+        from xagent.core.tools.core.RAG_tools.progress import ProgressBroadcaster
 
         broadcaster = ProgressBroadcaster()
 
@@ -225,7 +226,7 @@ class TestProgressMonitoringIntegration:
     async def test_realtime_broadcasting(self, progress_manager, mock_broadcaster):
         """Test real-time progress broadcasting to WebSocket connections."""
         # Initialize broadcaster inside the test to ensure it uses the current event loop
-        from fenixaos.core.tools.core.RAG_tools.progress import ProgressBroadcaster
+        from xagent.core.tools.core.RAG_tools.progress import ProgressBroadcaster
 
         broadcaster = ProgressBroadcaster()
         mock_conn = MockWebSocketConnection()
@@ -293,7 +294,7 @@ class TestProgressMonitoringIntegration:
 
     def test_progress_persistence_integration(self, progress_manager, tmp_path):
         """Test integration with progress persistence."""
-        from fenixaos.core.tools.core.RAG_tools.progress import ProgressPersistence
+        from xagent.core.tools.core.RAG_tools.progress import ProgressPersistence
 
         # Create persistence layer
         persistence = ProgressPersistence(storage_dir=str(tmp_path))
@@ -316,7 +317,7 @@ class TestProgressMonitoringIntegration:
         """Test proper cleanup of completed/failed tasks."""
         import tempfile
 
-        from fenixaos.core.tools.core.RAG_tools.progress import ProgressPersistence
+        from xagent.core.tools.core.RAG_tools.progress import ProgressPersistence
 
         with tempfile.TemporaryDirectory() as temp_dir:
             persistence = ProgressPersistence(storage_dir=temp_dir)

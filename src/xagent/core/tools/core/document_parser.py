@@ -71,12 +71,16 @@ class DocumentParseWithOutputResult(BaseModel):
     pass
 
 
-async def parse_document(tool_args: DocumentParseArgs) -> ParseResult:
+async def parse_document(
+    tool_args: DocumentParseArgs,
+    progress_callback: Any = None,
+) -> ParseResult:
     """Parse a document using the specified parser and capabilities.
 
     Args:
         tool_args: Configuration object containing file path, parser name (optional),
                    and capabilities requirements.
+        progress_callback: Optional callback for progress updates during parsing.
 
     Returns:
         ParseResult containing extracted text, segments, figures, tables, and metadata.
@@ -145,7 +149,11 @@ async def parse_document(tool_args: DocumentParseArgs) -> ParseResult:
     # Get parser instance and parse the file
     try:
         parser = document_parser_registry.get_parser(selected_parser)
-        result = await parser.parse(resolved_file_path, **tool_args.parser_kwargs)
+        result = await parser.parse(
+            resolved_file_path,
+            progress_callback=progress_callback,
+            **tool_args.parser_kwargs,
+        )
 
         logger.info(f"Successfully parsed document with {selected_parser}")
         return result

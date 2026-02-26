@@ -28,7 +28,7 @@ class ProgressPersistence:
             self.storage_dir = Path(storage_dir)
         else:
             # Try to find the data directory relative to this file
-            # src/fenixaos/core/tools/core/RAG_tools/progress/persistence.py -> 7 levels up to root
+            # src/xagent/core/tools/core/RAG_tools/progress/persistence.py -> 7 levels up to root
             try:
                 base_dir = Path(__file__).resolve().parents[7]
                 self.storage_dir = base_dir / "data" / "progress"

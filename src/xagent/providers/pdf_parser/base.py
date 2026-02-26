@@ -323,15 +323,27 @@ class ParseResult(BaseModel):
 
 # Document Parser Provider Interface
 class DocumentParser(Protocol):
-    async def parse(self, file_path: str | Any, **kwargs: Any) -> ParseResult:
+    async def parse(
+        self,
+        file_path: str | Any,
+        progress_callback: Any = None,
+        **kwargs: Any,
+    ) -> ParseResult:
         """
         Extract content from a document file (PDF, DOCX, etc.).
         Different implementations (vendors) will utilize distinct libraries or services to achieve this.
         Returns a ParseResult object containing structured content.
+
+        Args:
+            file_path: Path to the document file or file-like object.
+            progress_callback: Optional callback for progress updates during parsing.
+            **kwargs: Parser-specific options.
         """
         if isinstance(file_path, str):
             validate_file_exists(file_path)
-        result = await self._parse_impl(file_path, **kwargs)
+        result = await self._parse_impl(
+            file_path, progress_callback=progress_callback, **kwargs
+        )
 
         if isinstance(self, SegmentedTextResult) and result.text_segments is not None:
             full_text = "\n\n".join([segment.text for segment in result.text_segments])

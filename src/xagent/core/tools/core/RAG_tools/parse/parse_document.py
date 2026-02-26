@@ -47,6 +47,7 @@ def parse_document(
     params: Optional[Dict[str, Any]] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
+    progress_callback: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Parse a document using the specified method.
@@ -56,6 +57,9 @@ def parse_document(
         doc_id: Document ID to parse
         parse_method: Parsing method to use
         params: Optional parameters for parsing
+        user_id: Optional user ID for ownership tracking
+        is_admin: Whether the user has admin privileges
+        progress_callback: Optional callback for progress updates
 
     Returns:
         Dictionary containing parse results
@@ -72,13 +76,14 @@ def parse_document(
         is_admin=is_admin,
     )
 
-    response = asyncio.run(_parse_document_internal(request))
+    response = asyncio.run(_parse_document_internal(request, progress_callback))
 
     return response.model_dump()
 
 
 async def _parse_document_internal(
     request: ParseDocumentRequest,
+    progress_callback: Optional[Any] = None,
 ) -> ParseDocumentResponse:
     """
     Internal document parsing logic.
@@ -167,7 +172,7 @@ async def _parse_document_internal(
             timing_data["ocr_start"] = time.perf_counter()
             logger.debug("[PARSE TIMING] Starting OCR processing...")
 
-        parse_result = await core_parse_document(tool_args)
+        parse_result = await core_parse_document(tool_args, progress_callback)
 
         if enable_timing:
             assert timing_data is not None  # Type guard for mypy

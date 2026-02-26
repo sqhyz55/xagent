@@ -5,11 +5,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from fenixaos.core.tools.core.RAG_tools.core.schemas import (
+from xagent.core.tools.core.RAG_tools.core.schemas import (
     DocumentProcessingStatus,
     TaskProgress,
 )
-from fenixaos.core.tools.core.RAG_tools.progress.persistence import ProgressPersistence
+from xagent.core.tools.core.RAG_tools.progress.persistence import ProgressPersistence
 
 
 class TestProgressPersistence:

@@ -30,6 +30,7 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 )
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
+from ...core.tools.core.RAG_tools.progress import get_progress_manager
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import MAX_FILE_SIZE, get_upload_path, is_allowed_file
@@ -184,12 +185,16 @@ async def ingest(
         # Run document ingestion in a separate thread to avoid event loop conflict
         import concurrent.futures
 
+        progress_manager = get_progress_manager()
+
         def _run_ingestion() -> IngestionResult:
             return run_document_ingestion(
                 collection=collection,
                 source_path=str(file_path),
                 ingestion_config=config,
+                progress_manager=progress_manager,
                 user_id=int(_user.id),
+                is_admin=bool(_user.is_admin),
             )
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -363,10 +368,12 @@ async def search(
             else True,
         )
 
+        progress_manager = get_progress_manager()
         result = run_document_search(
             collection=collection,
             query_text=query_text,
-            search_config=config,
+            config=config,
+            progress_manager=progress_manager,
             user_id=int(_user.id),
             is_admin=bool(_user.is_admin),
         )

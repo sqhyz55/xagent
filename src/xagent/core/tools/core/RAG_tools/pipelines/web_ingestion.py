@@ -8,7 +8,7 @@ import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Mapping, Optional, Union
 
 from ..core.schemas import (
     CrawlResult,
@@ -17,21 +17,24 @@ from ..core.schemas import (
     WebCrawlConfig,
     WebIngestionResult,
 )
+from ..progress import get_progress_manager
 from ..web_crawler import WebCrawler
 from .document_ingestion import run_document_ingestion
 
 logger = logging.getLogger(__name__)
 
+IngestionConfigInput = Union[IngestionConfig, Mapping[str, Any]]
+
 
 def _coerce_ingestion_config(
-    config: Optional[IngestionConfig],
+    config: Optional[IngestionConfigInput],
 ) -> IngestionConfig:
     """Normalize user-provided ingestion configuration into IngestionConfig."""
     if config is None:
         return IngestionConfig()
     if isinstance(config, IngestionConfig):
         return config
-    if not isinstance(config, dict):
+    if not isinstance(config, Mapping):
         raise TypeError(
             "ingestion_config must be an IngestionConfig instance or a mapping."
         )
@@ -159,11 +162,14 @@ async def run_web_ingestion(
                 # Ingest the temporary file
                 import concurrent.futures
 
+                progress_manager = get_progress_manager()
+
                 def _ingest_file() -> IngestionResult:
                     return run_document_ingestion(
                         collection=collection,
                         source_path=str(temp_file),
                         ingestion_config=ing_cfg,
+                        progress_manager=progress_manager,
                         user_id=user_id,
                         is_admin=is_admin,
                     )

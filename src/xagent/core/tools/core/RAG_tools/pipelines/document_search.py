@@ -26,6 +26,7 @@ from ..core.schemas import (
     SearchType,
     SparseSearchResponse,
 )
+from ..progress import ProgressManager, ProgressTracker
 from ..retrieval.search_dense import search_dense
 from ..retrieval.search_hybrid import _rrf_fusion, search_hybrid
 from ..retrieval.search_sparse import search_sparse
@@ -451,9 +452,13 @@ def _execute_sparse_search(
 SearchConfigInput = Union[SearchConfig, Mapping[str, Any]]
 
 
-def _coerce_search_config(search_config: SearchConfigInput) -> SearchConfig:
+def _coerce_search_config(
+    search_config: Optional[SearchConfigInput],
+) -> SearchConfig:
     """Normalize arbitrary search configuration input into ``SearchConfig``."""
 
+    if search_config is None:
+        search_config = {}
     if isinstance(search_config, SearchConfig):
         return search_config
     if not isinstance(search_config, Mapping):
@@ -488,7 +493,8 @@ def search_documents(
     collection: str,
     query_text: str,
     *,
-    config: SearchConfig,
+    config: Optional[SearchConfig] = None,
+    progress_manager: Optional[ProgressManager] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> SearchPipelineResult:
@@ -503,9 +509,11 @@ def search_documents(
         collection: Logical collection to search within; must correspond to an
             existing chunk/embedding dataset with bound embedding model.
         query_text: Natural-language query or keyword phrase issued by the caller.
-        config: Normalised search configuration describing desired search mode,
-            filters, and optional rerank/fallback knobs. embedding_model_id will
-            be overridden by collection's bound model if available.
+        config: Optional search configuration override. When provided, embedding_model_id
+            will be overridden by collection's bound model if available.
+        progress_manager: Optional progress manager for tracking.
+        user_id: Optional user ID for ownership tracking.
+        is_admin: Whether the user has admin privileges for accessing any documents.
 
     Returns:
         SearchPipelineResult: Structured result containing status, selected search
@@ -517,12 +525,17 @@ def search_documents(
         VectorValidationError: Query embedding fails and fallback is disabled.
     """
 
-    cfg = config
+    cfg = config if isinstance(config, SearchConfig) else _coerce_search_config(config)
 
     if not collection or not isinstance(collection, str):
         raise DocumentValidationError("collection must be a non-empty string")
     if not query_text or not isinstance(query_text, str):
         raise DocumentValidationError("query_text must be a non-empty string")
+
+    if progress_manager is None:
+        from ..progress import get_progress_manager as _get_pm
+
+        progress_manager = _get_pm()
 
     requested_type = cfg.search_type
     fetch_top_k = max(cfg.top_k, cfg.rerank_top_k or 0)
@@ -569,6 +582,18 @@ def search_documents(
         raise
 
     current_step = "initialize"
+    task_id = f"search_{collection}_{hash(query_text) % 10000:04d}"
+    progress_tracker = ProgressTracker(progress_manager, task_id)
+    progress_manager.create_task(
+        task_type="search",
+        task_id=task_id,
+        user_id=user_id,
+        metadata={
+            "collection": collection,
+            "query": query_text[:100],
+        },
+    )
+
     try:
         embedding_config, embedding_adapter = resolve_embedding_adapter(
             cfg.embedding_model_id,
@@ -584,6 +609,8 @@ def search_documents(
         message = "Search completed successfully"
 
         if requested_type == SearchType.SPARSE:
+            with progress_tracker.track_step("sparse_search"):
+                pass
             current_step = "search_sparse"
             results, status, sparse_warnings, message = _execute_sparse_search(
                 collection, query_text, cfg, model_tag, user_id, is_admin
@@ -592,6 +619,8 @@ def search_documents(
         else:
             # Use embedding adapter for dense/hybrid paths
             try:
+                with progress_tracker.track_step("encode_query"):
+                    pass
                 current_step = "encode_query_vector"
                 query_vector = _encode_query_vector(embedding_adapter, query_text)
             except VectorValidationError:
@@ -612,6 +641,8 @@ def search_documents(
                     raise
             else:
                 if requested_type == SearchType.DENSE:
+                    with progress_tracker.track_step("dense_search"):
+                        pass
                     dense_response: DenseSearchResponse = search_dense(
                         collection=collection,
                         model_tag=model_tag,
@@ -633,6 +664,8 @@ def search_documents(
                     )
                 else:  # HYBRID
                     try:
+                        with progress_tracker.track_step("hybrid_search"):
+                            pass
                         hybrid_response: HybridSearchResponse = search_hybrid(
                             collection=collection,
                             model_tag=model_tag,
@@ -723,7 +756,8 @@ def run_document_search(
     collection: str,
     query_text: str,
     *,
-    search_config: SearchConfigInput,
+    config: Optional[SearchConfigInput] = None,
+    progress_manager: Optional[ProgressManager] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> SearchPipelineResult:
@@ -736,13 +770,21 @@ def run_document_search(
     Args:
         collection: Target collection name.
         query_text: Query string issued by the caller.
-        search_config: Search configuration instance or JSON-like mapping.
+        config: Optional search configuration instance or JSON-like mapping.
+        progress_manager: Optional progress manager for tracking.
+        user_id: Optional user ID for ownership tracking.
+        is_admin: Whether the user has admin privileges.
 
     Returns:
         SearchPipelineResult: Same contract as :func:`search_documents`.
     """
 
-    cfg = _coerce_search_config(search_config)
+    cfg = _coerce_search_config(config)
     return search_documents(
-        collection, query_text, config=cfg, user_id=user_id, is_admin=is_admin
+        collection,
+        query_text,
+        config=cfg,
+        progress_manager=progress_manager,
+        user_id=user_id,
+        is_admin=is_admin,
     )

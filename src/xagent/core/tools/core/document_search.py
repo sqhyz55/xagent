@@ -245,7 +245,7 @@ async def search_knowledge_base(
                 result = run_document_search(
                     collection=collection_name,
                     query_text=tool_args.query,
-                    search_config=search_config,
+                    config=search_config,
                     user_id=user_id,
                     is_admin=is_admin,
                 )
