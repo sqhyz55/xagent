@@ -74,9 +74,69 @@ class DocumentProcessingStatus(str, Enum):
     PARTIALLY_EMBEDDED = "partially_embedded"  # Document has some embeddings but not all chunks are embedded
     SUCCESS = "success"  # Document fully processed: all chunks have embeddings
     FAILED = "failed"
+    CANCELLED = "cancelled"  # Task was cancelled by user or system
 
     def __str__(self) -> str:
         return self.value
+
+
+class TaskProgress(BaseModel):
+    """Progress state for a single RAG task (ingestion, retrieval, etc.)."""
+
+    task_id: str = Field(..., description="Unique task identifier")
+    user_id: Optional[int] = Field(default=None, description="User ID for isolation")
+    task_type: str = Field(..., description="Type of task (e.g. ingestion, retrieval)")
+    status: DocumentProcessingStatus = Field(
+        default=DocumentProcessingStatus.PENDING,
+        description="Current task status",
+    )
+    current_step: Optional[str] = Field(
+        default=None,
+        description="Human-readable current step",
+    )
+    overall_progress: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Progress in [0, 1]",
+    )
+    start_time: Optional[float] = Field(
+        default=None, description="Unix timestamp when started"
+    )
+    end_time: Optional[float] = Field(
+        default=None, description="Unix timestamp when ended"
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra task metadata",
+    )
+
+
+class ProgressUpdateEvent(BaseModel):
+    """Event payload for real-time progress WebSocket broadcasts."""
+
+    task_id: str = Field(..., description="Task identifier")
+    task_type: str = Field(..., description="Task type")
+    status: DocumentProcessingStatus = Field(
+        ...,
+        description="Current status",
+    )
+    current_step: Optional[str] = Field(default=None, description="Current step label")
+    overall_progress: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Progress in [0, 1]",
+    )
+    timestamp: float = Field(..., description="Event time (Unix timestamp)")
+    data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra event data (e.g. start_time, end_time, metadata)",
+    )
+    event_type: str = Field(
+        default="progress",
+        description="Event kind (e.g. progress, custom)",
+    )
 
 
 class IndexType(Enum):
