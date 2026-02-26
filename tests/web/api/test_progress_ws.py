@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import WebSocket
 from fastapi.testclient import TestClient
-
 from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
 from fenixaos.core.tools.core.RAG_tools.progress import ProgressManager
 from fenixaos.web.api.progress_ws import progress_ws_router
@@ -21,7 +20,6 @@ class TestProgressWebSocketAPI:
     def client(self):
         """Create test client with progress WebSocket routes."""
         from fastapi import FastAPI
-
         from fenixaos.web.auth_dependencies import get_current_user
 
         app = FastAPI()
@@ -155,7 +153,6 @@ class TestProgressWebSocketAPI:
     async def test_websocket_connection_and_initial_status(self):
         """Test WebSocket connection and initial status broadcast."""
         from fastapi import WebSocketDisconnect
-
         from fenixaos.web.api.progress_ws import progress_websocket_endpoint
 
         # Mock WebSocket
@@ -216,7 +213,6 @@ class TestProgressWebSocketAPI:
     async def test_websocket_with_invalid_token(self):
         """Test WebSocket connection with invalid token."""
         from fastapi import WebSocketDisconnect
-
         from fenixaos.web.api.progress_ws import progress_websocket_endpoint
 
         mock_websocket = AsyncMock(spec=WebSocket)

@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import pytest
-from langchain_core.tools import BaseTool
-
 from fenixaos.core.tools.adapters.langgraph.RAG_tools.pipelines import document_search
 from fenixaos.core.tools.core.RAG_tools.core.schemas import (
     SearchConfig,
@@ -15,6 +13,7 @@ from fenixaos.core.tools.core.RAG_tools.core.schemas import (
 from fenixaos.core.tools.core.RAG_tools.pipelines import (
     document_search as core_document_search,
 )
+from langchain_core.tools import BaseTool
 
 
 def test_get_document_search_tool_invokes_pipeline(monkeypatch) -> None:

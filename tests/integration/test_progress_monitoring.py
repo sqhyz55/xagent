@@ -7,7 +7,6 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
-
 from fenixaos.core.tools.core.RAG_tools.core.schemas import DocumentProcessingStatus
 from fenixaos.core.tools.core.RAG_tools.progress import ProgressTracker
 
