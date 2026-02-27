@@ -19,6 +19,7 @@ from ..core.schemas import (
 from ..LanceDB.schema_manager import ensure_parses_table
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression
+from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +28,19 @@ def reconstruct_parse_result_from_db(
     collection: str,
     doc_id: str,
     parse_hash: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Reconstruct ParseResult-like structure from database.
 
     Args:
         collection: Collection name
         doc_id: Document ID
-        parse_hash: Optional parse hash to filter. If None, uses the latest parse.
+        parse_hash: Optional parse hash to filter. If None, uses the latest parse
+            (by created_at desc).
+        user_id: Optional user ID for multi-tenancy filtering. If provided with
+            is_admin=False, only parses owned by this user are visible.
+        is_admin: If True, user_id filter is not applied (admin sees all).
 
     Returns:
         Tuple of (elements, parse_hash)
@@ -44,15 +51,23 @@ def reconstruct_parse_result_from_db(
         ensure_parses_table(conn)
         table = conn.open_table("parses")
 
-        # Build filter expression
-        query_filters = {
+        # Build base filter expression
+        query_filters: Dict[str, Any] = {
             "collection": collection,
             "doc_id": doc_id,
         }
         if parse_hash:
             query_filters["parse_hash"] = parse_hash
 
-        filter_expr = build_lancedb_filter_expression(query_filters)
+        base_filter_expr = build_lancedb_filter_expression(query_filters)
+        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
+
+        if user_filter_expr and base_filter_expr:
+            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
+        elif user_filter_expr:
+            filter_expr = user_filter_expr
+        else:
+            filter_expr = base_filter_expr
 
         if table.count_rows(filter_expr) == 0:
             if parse_hash:
@@ -70,9 +85,14 @@ def reconstruct_parse_result_from_db(
                 f"No parse results found for document: doc_id={doc_id}"
             )
 
-        # If parse_hash not specified, use the latest parse (first record)
-        # TODO: Consider sorting by timestamp if available
-        record = records[0]
+        # When multiple records match (e.g. parse_hash not specified), use latest by created_at
+        def _created_at_key(r: Dict[str, Any]) -> Any:
+            t = r.get("created_at")
+            # (True, t) for real timestamps, (False, x) for None -> reverse=True puts latest first, None last
+            return (t is not None, t)
+
+        records_sorted = sorted(records, key=_created_at_key, reverse=True)
+        record = records_sorted[0]
         actual_parse_hash = record.get("parse_hash")
 
         parsed_content = record.get("parsed_content")

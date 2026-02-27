@@ -951,9 +951,13 @@ async def get_parse_result_api(
                 status_code=422, detail="Page size must be between 1 and 100"
             )
 
-        # Reconstruct parse result from database
+        # Reconstruct parse result from database (with multi-tenancy filter)
         elements, actual_parse_hash = reconstruct_parse_result_from_db(
-            collection_name, doc_id, parse_hash
+            collection_name,
+            doc_id,
+            parse_hash,
+            user_id=int(_user.id),
+            is_admin=bool(_user.is_admin),
         )
 
         # Apply pagination
