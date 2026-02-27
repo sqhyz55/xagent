@@ -229,11 +229,15 @@ def create_metadata(
     Returns:
         Standard metadata dictionary
     """
+    # Exclude progress_callback and other non-serializable objects from metadata
+    filtered_extra = {
+        key: value for key, value in extra.items() if key not in ("progress_callback",)
+    }
     metadata = {
         "source": source_path,
         "file_type": file_type,
         "parse_method": parse_method,
-        **extra,
+        **filtered_extra,
     }
     return metadata
 

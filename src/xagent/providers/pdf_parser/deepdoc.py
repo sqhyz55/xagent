@@ -89,11 +89,15 @@ def _build_element_metadata(
 ) -> Dict[str, Any]:
     """Build metadata dict for an element."""
     layout_type = bbox.get("layout_type", "text")
+    # Exclude progress_callback and other non-serializable objects from metadata
+    filtered_kwargs = {
+        key: value for key, value in kwargs.items() if key not in ("progress_callback",)
+    }
     return {
         "layout_type": layout_type,
         "doc_id": doc_id,
         "page_number": bbox.get("page_number", 1),
-        **kwargs,
+        **filtered_kwargs,
     }
 
 
@@ -328,7 +332,9 @@ class DeepDocParser(
                 doc_id = kwargs.get("doc_id", str(Path(file_path).stem))
 
             base_kwargs = {
-                key: value for key, value in kwargs.items() if key != "doc_id"
+                key: value
+                for key, value in kwargs.items()
+                if key not in ("doc_id", "progress_callback")
             }
             metadata = {
                 "source": str(file_path)

@@ -251,7 +251,7 @@ async def test_document_parse_tool_successful_run(
 
     assert result == parse_result_full
     mock_parser_registry["instances"][parser_name].parse.assert_called_once_with(
-        "/mock/workspace/input.pdf"
+        "/mock/workspace/input.pdf", progress_callback=None
     )
 
 
@@ -406,7 +406,7 @@ async def test_document_parse_with_output_tool_successful_execution(
 
     assert result == DocumentParseWithOutputResult()
     mock_parser_registry["instances"][parser_name].parse.assert_called_once_with(
-        "/mock/workspace/input.pdf"
+        "/mock/workspace/input.pdf", progress_callback=None
     )
     mock_open.assert_called_once_with(
         "/mock/workspace/output.txt", "w", encoding="utf-8"
