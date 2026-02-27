@@ -1,9 +1,10 @@
 """Knowledge base API route handlers"""
 
 import asyncio
+import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
@@ -75,6 +76,14 @@ async def ingest(
         ge=0,
         description="Chunk overlap in characters (default: 200)",
     ),
+    separators: Optional[str] = Form(
+        None,
+        description=(
+            "Custom chunk separators as JSON array of strings, e.g. "
+            '["\\n\\n", "\\n", "。"]. Only used when chunk_strategy is recursive. '
+            "Omit or empty to use default separators."
+        ),
+    ),
     embedding_model_id: str = Form(
         "text-embedding-v4",
         description="Embedding model ID (default: text-embedding-v4)",
@@ -105,6 +114,7 @@ async def ingest(
         chunk_strategy: Strategy for chunking the document.
         chunk_size: Target chunk size in characters.
         chunk_overlap: Overlap between consecutive chunks.
+        separators: Optional JSON array of custom chunk separators (recursive only).
         embedding_model_id: Embedding model ID from model hub.
         embedding_batch_size: Batch size for embedding operations.
         max_retries: Maximum retry attempts for failures.
@@ -167,6 +177,20 @@ async def ingest(
                 f"to ensure it's less than chunk_size ({final_chunk_size})"
             )
 
+        # Parse optional custom separators (JSON array of strings)
+        parsed_separators: Optional[List[str]] = None
+        if separators and separators.strip():
+            try:
+                raw = json.loads(separators)
+                if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+                    parsed_separators = [s for s in raw if s]
+                else:
+                    logger.warning(
+                        "ingest: separators must be a list of strings; ignoring"
+                    )
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning("ingest: invalid separators JSON, using default: %s", e)
+
         config = IngestionConfig(
             parse_method=parse_method
             if parse_method is not None
@@ -176,6 +200,7 @@ async def ingest(
             else ChunkStrategy.RECURSIVE,
             chunk_size=final_chunk_size,
             chunk_overlap=final_chunk_overlap,
+            separators=parsed_separators,
             embedding_model_id=embedding_model_id,
             embedding_batch_size=embedding_batch_size
             if embedding_batch_size is not None and embedding_batch_size > 0
@@ -474,6 +499,13 @@ async def ingest_web(
         ge=0,
         description="Chunk overlap (default: 200)",
     ),
+    separators: Optional[str] = Form(
+        None,
+        description=(
+            "Custom chunk separators as JSON array of strings; "
+            "only used when chunk_strategy is recursive."
+        ),
+    ),
     embedding_model_id: str = Form(
         "text-embedding-v4",
         description="Embedding model ID",
@@ -571,6 +603,22 @@ async def ingest_web(
                 f"to ensure it's less than chunk_size ({final_chunk_size})"
             )
 
+        # Parse optional custom separators (JSON array of strings)
+        web_parsed_separators: Optional[List[str]] = None
+        if separators and separators.strip():
+            try:
+                raw = json.loads(separators)
+                if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+                    web_parsed_separators = [s for s in raw if s]
+                else:
+                    logger.warning(
+                        "ingest_web: separators must be a list of strings; ignoring"
+                    )
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(
+                    "ingest_web: invalid separators JSON, using default: %s", e
+                )
+
         ingestion_config = IngestionConfig(
             parse_method=(
                 parse_method if parse_method is not None else ParseMethod.DEFAULT
@@ -582,6 +630,7 @@ async def ingest_web(
             ),
             chunk_size=final_chunk_size,
             chunk_overlap=final_chunk_overlap,
+            separators=web_parsed_separators,
             embedding_model_id=embedding_model_id,
             embedding_batch_size=(
                 embedding_batch_size

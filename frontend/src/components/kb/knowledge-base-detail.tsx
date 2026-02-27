@@ -14,6 +14,7 @@ import { SelectRadix, SelectContent, SelectItem, SelectTrigger, SelectValue } fr
 import { Badge } from "@/components/ui/badge"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl } from "@/lib/utils"
+import { parseSeparatorsInput } from "@/lib/separators"
 import { useI18n } from "@/contexts/i18n-context"
 import { toast } from "sonner"
 
@@ -31,6 +32,7 @@ interface IngestionConfig {
   chunk_strategy: string
   chunk_size: number
   chunk_overlap: number
+  separators?: string
   embedding_model_id: string
   embedding_batch_size: number
   max_retries: number
@@ -163,6 +165,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
     chunk_strategy: "recursive",
     chunk_size: 1000,
     chunk_overlap: 200,
+    separators: "",
     embedding_model_id: "",
     embedding_batch_size: 10,
     max_retries: 3,
@@ -320,6 +323,12 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
         formData.append("chunk_strategy", ingestionConfig.chunk_strategy)
         formData.append("chunk_size", ingestionConfig.chunk_size.toString())
         formData.append("chunk_overlap", ingestionConfig.chunk_overlap.toString())
+        if (ingestionConfig.chunk_strategy === "recursive" && ingestionConfig.separators?.trim()) {
+          const parsed = parseSeparatorsInput(ingestionConfig.separators)
+          if (parsed.length > 0) {
+            formData.append("separators", JSON.stringify(parsed))
+          }
+        }
         formData.append("embedding_model_id", ingestionConfig.embedding_model_id)
         formData.append("embedding_batch_size", ingestionConfig.embedding_batch_size.toString())
         formData.append("max_retries", ingestionConfig.max_retries.toString())
@@ -395,6 +404,12 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       formData.append("chunk_strategy", ingestionConfig.chunk_strategy)
       formData.append("chunk_size", ingestionConfig.chunk_size.toString())
       formData.append("chunk_overlap", ingestionConfig.chunk_overlap.toString())
+      if (ingestionConfig.chunk_strategy === "recursive" && ingestionConfig.separators?.trim()) {
+        const parsed = parseSeparatorsInput(ingestionConfig.separators)
+        if (parsed.length > 0) {
+          formData.append("separators", JSON.stringify(parsed))
+        }
+      }
       formData.append("embedding_model_id", ingestionConfig.embedding_model_id)
       formData.append("embedding_batch_size", ingestionConfig.embedding_batch_size.toString())
       formData.append("max_retries", ingestionConfig.max_retries.toString())
@@ -846,6 +861,21 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                     onChange={(e) => setIngestionConfig(prev => ({ ...prev, chunk_overlap: parseInt(e.target.value) || 200 }))}
                   />
                 </div>
+
+                {ingestionConfig.chunk_strategy === "recursive" && (
+                  <div>
+                    <Label htmlFor="separators" title={t("kb.index.separatorsTip")}>
+                      {t("kb.index.separators")}
+                    </Label>
+                    <Input
+                      id="separators"
+                      type="text"
+                      value={ingestionConfig.separators ?? ""}
+                      onChange={(e) => setIngestionConfig(prev => ({ ...prev, separators: e.target.value }))}
+                      placeholder={t("kb.index.separatorsPlaceholder")}
+                    />
+                  </div>
+                )}
 
                 <div>
                   <Label htmlFor="embedding_model_id_settings">{t("kb.index.embeddingModelId")}</Label>
