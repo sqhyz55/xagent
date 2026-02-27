@@ -386,6 +386,19 @@ class DeepDocParser(
     for advanced visualization features.
     """
 
+    # DeepDoc supports multiple structured document formats
+    supported_extensions = [
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".md",
+        ".txt",
+        ".json",
+        ".html",
+    ]
+
     def __init__(self, enable_raw_output: bool = False) -> None:
         """
         Initialize the DeepDoc parser.

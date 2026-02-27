@@ -9,6 +9,27 @@ from xagent.core.tools.core.RAG_tools.core.parser_registry import (
 )
 
 
+def test_get_supported_parsers_uses_dynamic_mapping_for_pdf() -> None:
+    """PDF 扩展名应返回基于 parser 注册表动态推导出的解析器集合."""
+    parsers = get_supported_parsers(".pdf")
+
+    # 来自 document_parser_registry 的核心解析器
+    assert "pypdf" in parsers
+    assert "pdfplumber" in parsers
+    assert "pymupdf" in parsers
+    assert "unstructured" in parsers
+    assert "deepdoc" in parsers
+
+
+def test_get_supported_parsers_uses_dynamic_mapping_for_docx() -> None:
+    """DOCX 扩展名应优先使用动态兼容表，反映 Unstructured / DeepDoc 的声明."""
+    parsers = get_supported_parsers(".docx")
+
+    # Unstructured 与 DeepDoc 都声明支持 .docx
+    assert "unstructured" in parsers
+    assert "deepdoc" in parsers
+
+
 class TestGetSupportedParsers:
     """Test getting supported parsers for file extensions."""
 
@@ -25,10 +46,10 @@ class TestGetSupportedParsers:
         assert "code" in py_parsers
         assert "python_ast" in py_parsers
 
-        # Test markdown parsers
+        # Test markdown parsers (dynamic: unstructured, deepdoc; static fallback not used for .md)
         md_parsers = get_supported_parsers(".md")
-        assert "markdown" in md_parsers
-        assert "commonmark" in md_parsers
+        assert "unstructured" in md_parsers
+        assert "deepdoc" in md_parsers
 
     def test_get_supported_parsers_unknown_extension(self):
         """Test getting parsers for unknown file extensions."""
@@ -60,10 +81,11 @@ class TestValidateParserCompatibility:
 
     def test_validate_parser_compatibility_mixed_not_allowed(self):
         """Test validation when mixed parsers are not allowed."""
-        # Valid combinations
+        # Valid combinations (.pdf/.md use dynamic map; .py uses static fallback)
         assert validate_parser_compatibility(".pdf", "deepdoc", allow_mixed=False)
         assert validate_parser_compatibility(".py", "code", allow_mixed=False)
-        assert validate_parser_compatibility(".md", "markdown", allow_mixed=False)
+        assert validate_parser_compatibility(".md", "unstructured", allow_mixed=False)
+        assert validate_parser_compatibility(".md", "deepdoc", allow_mixed=False)
 
         # Invalid combinations
         assert not validate_parser_compatibility(".pdf", "code", allow_mixed=False)
@@ -120,21 +142,20 @@ class TestRegisterParserSupport:
             del PARSER_COMPATIBILITY[".xyz"]
 
     def test_register_parser_support_existing_extension(self):
-        """Test registering additional parser for existing extension."""
-        # Get original count for PDF
-        original_count = len(get_supported_parsers(".pdf"))
+        """Test registering additional parser for existing extension (static-only)."""
+        # Use .py: only in static map, so register_parser_support affects get_supported_parsers
+        original_parsers = get_supported_parsers(".py")
+        original_count = len(original_parsers)
 
-        # Register additional parser for PDF
-        register_parser_support(".pdf", "new_pdf_parser")
+        register_parser_support(".py", "new_py_parser")
 
-        # Should have one more parser
-        new_parsers = get_supported_parsers(".pdf")
+        new_parsers = get_supported_parsers(".py")
         assert len(new_parsers) == original_count + 1
-        assert "new_pdf_parser" in new_parsers
+        assert "new_py_parser" in new_parsers
 
         # Clean up
-        if "new_pdf_parser" in PARSER_COMPATIBILITY[".pdf"]:
-            PARSER_COMPATIBILITY[".pdf"].remove("new_pdf_parser")
+        if "new_py_parser" in PARSER_COMPATIBILITY[".py"]:
+            PARSER_COMPATIBILITY[".py"].remove("new_py_parser")
 
     def test_register_parser_support_normalizes_extension(self):
         """Test that extension gets normalized with leading dot."""

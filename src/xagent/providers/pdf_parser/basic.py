@@ -13,12 +13,18 @@ from ..pdf_parser.base import (
 class PyPdfParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing):
     """Use PyPDFLoader to extract text from PDF (text only)."""
 
+    # Basic PDF-only support
+    supported_extensions = [".pdf"]
+
     async def _parse_impl(self, file_path: str, **kwargs: Any) -> ParseResult:
         return await extract_text_with_pypdf(file_path, **kwargs)
 
 
 class PdfPlumberParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing):
     """Use pdfplumber to extract text from PDF (text only)."""
+
+    # Basic PDF-only support
+    supported_extensions = [".pdf"]
 
     async def _parse_impl(self, file_path: str, **kwargs: Any) -> ParseResult:
         return await extract_text_with_pdfplumber(file_path, **kwargs)
@@ -29,12 +35,29 @@ class UnstructuredParser(
 ):
     """Use UnstructuredPDFLoader to extract text from PDF with AI-powered element detection."""
 
+    # Unstructured supports multiple modern office/text formats
+    supported_extensions = [
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".pptx",
+        ".ppt",
+        ".xlsx",
+        ".xls",
+        ".txt",
+        ".md",
+        ".json",
+    ]
+
     async def _parse_impl(self, file_path: str, **kwargs: Any) -> ParseResult:
         return await extract_text_with_unstructured(file_path, **kwargs)
 
 
 class PyMuPdfParser(DocumentParser, TextParsing, SegmentedTextResult, LocalParsing):
     """Use PyMuPDF (fitz) to extract text from PDF (text only)."""
+
+    # Basic PDF-only support
+    supported_extensions = [".pdf"]
 
     async def _parse_impl(self, file_path: str, **kwargs: Any) -> ParseResult:
         return await extract_text_with_pymupdf(file_path, **kwargs)

@@ -2,8 +2,11 @@
 
 from typing import Dict, List, Set
 
-# File extension to supported parser methods mapping
-# This ensures type-based parse method consistency when allow_mixed_parse_methods=False
+from ...document_parser import document_parser_registry
+
+# Static fallback mapping for file extension to supported parser methods.
+# Dynamic compatibility derived from `document_parser_registry` and
+# per-parser `supported_extensions` will take precedence when available.
 PARSER_COMPATIBILITY: Dict[str, List[str]] = {
     # Documents
     ".pdf": ["deepdoc", "pymupdf", "pdfplumber", "unstructured"],
@@ -48,6 +51,34 @@ PARSER_COMPATIBILITY: Dict[str, List[str]] = {
     ".webp": ["image", "image_caption"],
 }
 
+# Lazily populated dynamic compatibility map derived from registered parsers.
+_DYNAMIC_COMPATIBILITY: Dict[str, List[str]] | None = None
+
+
+def _normalize_extension(file_extension: str) -> str:
+    """Normalize file extension to canonical form with leading dot and lowercase."""
+    if not file_extension.startswith("."):
+        file_extension = "." + file_extension
+    return file_extension.lower()
+
+
+def _build_dynamic_compatibility() -> Dict[str, List[str]]:
+    """Build dynamic extension → parser mapping from registered parsers."""
+    mapping: Dict[str, List[str]] = {}
+
+    for parser_name, parser_class in document_parser_registry.parsers().items():
+        supported = getattr(parser_class, "supported_extensions", None)
+        if not supported:
+            continue
+        for ext in supported:
+            norm_ext = _normalize_extension(ext)
+            if norm_ext not in mapping:
+                mapping[norm_ext] = []
+            if parser_name not in mapping[norm_ext]:
+                mapping[norm_ext].append(parser_name)
+
+    return mapping
+
 
 def get_supported_parsers(file_extension: str) -> List[str]:
     """Get supported parser methods for a file extension.
@@ -58,12 +89,20 @@ def get_supported_parsers(file_extension: str) -> List[str]:
     Returns:
         List of supported parser method names
     """
-    # Normalize extension
-    if not file_extension.startswith("."):
-        file_extension = "." + file_extension
+    global _DYNAMIC_COMPATIBILITY
 
-    file_extension = file_extension.lower()
-    return PARSER_COMPATIBILITY.get(file_extension, [])
+    norm_ext = _normalize_extension(file_extension)
+
+    # Initialize dynamic compatibility lazily
+    if _DYNAMIC_COMPATIBILITY is None:
+        _DYNAMIC_COMPATIBILITY = _build_dynamic_compatibility()
+
+    # Prefer dynamically derived mapping when available
+    if norm_ext in _DYNAMIC_COMPATIBILITY:
+        return _DYNAMIC_COMPATIBILITY[norm_ext]
+
+    # Fallback to static mapping
+    return PARSER_COMPATIBILITY.get(norm_ext, [])
 
 
 def validate_parser_compatibility(

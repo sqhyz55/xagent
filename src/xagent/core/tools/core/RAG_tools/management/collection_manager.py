@@ -415,33 +415,36 @@ class CollectionManager:
         Raises:
             ValueError: If validation fails
         """
+        # First-layer: basic type compatibility based purely on extension and parser method.
+        # This runs regardless of collection existence, enforcing a consistent baseline.
         try:
             collection = await self.get_collection(collection_name)
         except ValueError:
-            # Collection doesn't exist yet, skip validation (it will be initialized later)
-            return
+            collection = None
 
-        # Skip validation if configured
-        if collection.skip_config_validation:
-            return
+        # Respect collection-level skip flag only for collection-specific rules,
+        # not for the basic type compatibility check.
+        allow_mixed = (
+            bool(collection.allow_mixed_parse_methods) if collection else False
+        )
 
-        # Check collection lock
-        if collection.collection_locked:
-            # Strict validation - could add more rules here
-            pass
-
-        # Check parsing method compatibility
-        if not collection.allow_mixed_parse_methods and parsing_method != "default":
+        if parsing_method != "default" and not allow_mixed:
             file_ext = os.path.splitext(file_path)[1]
 
-            if not validate_parser_compatibility(
-                file_ext, parsing_method, collection.allow_mixed_parse_methods
-            ):
+            if not validate_parser_compatibility(file_ext, parsing_method, False):
                 supported = get_supported_parsers(file_ext)
                 raise ValueError(
                     f"Parser method '{parsing_method}' not compatible with file type '{file_ext}'. "
                     f"Supported methods: {supported}"
                 )
+
+        # Second-layer: collection-level rules (locks, future policies).
+        if collection is None or collection.skip_config_validation:
+            return
+
+        if collection.collection_locked:
+            # Placeholder for any stricter rules on locked collections.
+            return
 
     async def mark_collection_accessed(self, collection_name: str) -> None:
         """Mark collection as accessed by updating last_accessed_at timestamp.
