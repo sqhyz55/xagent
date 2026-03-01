@@ -1,6 +1,15 @@
+from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel
+
+
+class VectorDBType(str, Enum):
+    """Supported vector database backend types."""
+
+    LANCEDB = "lancedb"
+    WEAVIATE = "weaviate"
+    WEAVIATE_SAAS = "weaviate_saas"
 
 
 class ModelConfig(BaseModel):
@@ -36,3 +45,10 @@ class EmbeddingModelConfig(ModelConfig):
 class RerankModelConfig(ModelConfig):
     top_n: Optional[int] = None
     instruct: Optional[str] = None
+
+
+class VectorDBConfig(ModelConfig):
+    """Configuration for vector database backend (e.g. LanceDB, Weaviate)."""
+
+    db_type: VectorDBType = VectorDBType.LANCEDB
+    config: dict = {}

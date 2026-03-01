@@ -8,6 +8,7 @@ from xagent.core.model.model import (
     ImageModelConfig,
     ModelConfig,
     RerankModelConfig,
+    VectorDBConfig,
 )
 
 
@@ -24,6 +25,17 @@ class SQLAlchemyModelHub:
         """
         self.db = db_session
         self.Model = model_class
+
+    @staticmethod
+    def _normalize_vector_db_type(raw_value: Any) -> str:
+        """Normalize vector db type values for backward compatibility."""
+        if raw_value is None:
+            return "lancedb"
+        normalized = str(getattr(raw_value, "value", raw_value)).strip().lower()
+        legacy_aliases = {
+            "weaviate_local": "weaviate",  # backward compatibility
+        }
+        return legacy_aliases.get(normalized, normalized)
 
     def store(self, model: ModelConfig) -> None:
         db_data: dict[str, Any] = {
@@ -67,6 +79,16 @@ class SQLAlchemyModelHub:
                 {
                     "model_provider": "none",
                     "category": "rerank",
+                }
+            )
+        elif isinstance(model, VectorDBConfig):
+            db_data.update(
+                {
+                    "model_provider": model.db_type.value
+                    if hasattr(model.db_type, "value")
+                    else str(model.db_type),
+                    "category": "vector_db",
+                    "abilities": model.config,  # Store extra config in abilities JSON field
                 }
             )
         else:
@@ -128,6 +150,22 @@ class SQLAlchemyModelHub:
             )
         elif db_model.category == "rerank":
             return RerankModelConfig(**common)
+        elif db_model.category == "vector_db":
+            from xagent.core.model.model import VectorDBType
+
+            db_type_val = self._normalize_vector_db_type(db_model.model_provider)
+            try:
+                db_type = (
+                    VectorDBType(db_type_val) if db_type_val else VectorDBType.LANCEDB
+                )
+            except ValueError:
+                db_type = VectorDBType.LANCEDB
+
+            # Load extra config from abilities and remove it from common to avoid Pydantic validation error
+            config = common.pop("abilities", {})
+            if not isinstance(config, dict):
+                config = {}
+            return VectorDBConfig(**common, db_type=db_type, config=config)
         else:
             raise ValueError(f"Unknown model category: {db_model.category}")
 
@@ -171,6 +209,26 @@ class SQLAlchemyModelHub:
                 )
             elif db_model.category == "rerank":
                 config = RerankModelConfig(**common_fields)
+            elif db_model.category == "vector_db":
+                from xagent.core.model.model import VectorDBType
+
+                db_type_val = self._normalize_vector_db_type(db_model.model_provider)
+                try:
+                    db_type = (
+                        VectorDBType(db_type_val)
+                        if db_type_val
+                        else VectorDBType.LANCEDB
+                    )
+                except ValueError:
+                    db_type = VectorDBType.LANCEDB
+
+                # Load extra config from abilities and remove it from common_fields to avoid Pydantic validation error
+                config_data = common_fields.pop("abilities", {})
+                if not isinstance(config_data, dict):
+                    config_data = {}
+                config = VectorDBConfig(
+                    **common_fields, db_type=db_type, config=config_data
+                )
 
             if config:
                 result[db_model.model_id] = config
