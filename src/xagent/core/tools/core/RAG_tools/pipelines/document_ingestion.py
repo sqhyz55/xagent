@@ -452,33 +452,32 @@ def process_document(
         )
 
         # Step 1: Register document
-        with progress_tracker.track_step("register_document"):
-            pass  # Step marked; registration is fast
         current_step = "register_document"
         logger.info(
             "Step register_document started",
             extra={"collection": collection, "source_path": source_path},
         )
         register_start = time.time()
-        register_result = register_document(
-            collection=collection,
-            source_path=source_path,
-            user_id=user_id,
-        )
-        doc_id = register_result.get("doc_id")
-        if not doc_id:
-            raise DocumentValidationError(
-                "register_document did not return doc_id",
-                details={"collection": collection, "source_path": source_path},
+        with progress_tracker.track_step("register_document"):
+            register_result = register_document(
+                collection=collection,
+                source_path=source_path,
+                user_id=user_id,
             )
-        _record_ingestion_status(
-            collection,
-            doc_id,
-            status=DocumentProcessingStatus.RUNNING,
-            message="Document ingestion started.",
-            parse_hash=None,
-            user_id=user_id,
-        )
+            doc_id = register_result.get("doc_id")
+            if not doc_id:
+                raise DocumentValidationError(
+                    "register_document did not return doc_id",
+                    details={"collection": collection, "source_path": source_path},
+                )
+            _record_ingestion_status(
+                collection,
+                doc_id,
+                status=DocumentProcessingStatus.RUNNING,
+                message="Document ingestion started.",
+                parse_hash=None,
+                user_id=user_id,
+            )
         progress_manager.create_task(
             task_type="ingestion",
             task_id=task_id,

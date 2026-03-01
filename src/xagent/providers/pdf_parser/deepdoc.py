@@ -5,11 +5,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from deepdoc import DocxParser as DeepDocDocxParser
 from deepdoc import ExcelParser as DeepDocExcelParser
 from deepdoc import MarkdownParser as DeepDocMarkdownParser
 from deepdoc import PdfParser as DeepDocPdfParser
 from deepdoc import TxtParser as DeepDocTxtParser
+from deepdoc.parser import DoclingParser as DeepDocDoclingParser
 
 from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
 from .base import (
@@ -89,15 +89,11 @@ def _build_element_metadata(
 ) -> Dict[str, Any]:
     """Build metadata dict for an element."""
     layout_type = bbox.get("layout_type", "text")
-    # Exclude progress_callback and other non-serializable objects from metadata
-    filtered_kwargs = {
-        key: value for key, value in kwargs.items() if key not in ("progress_callback",)
-    }
     return {
         "layout_type": layout_type,
         "doc_id": doc_id,
         "page_number": bbox.get("page_number", 1),
-        **filtered_kwargs,
+        **kwargs,
     }
 
 
@@ -198,19 +194,151 @@ def _translate_pdf_bboxes(
     )
 
 
-def _translate_docx_output(raw_output: Tuple[Any, Any], **kwargs: Any) -> ParseResult:
+def _translate_docx_output(
+    doc_id: str, raw_output: Tuple[Any, Any], **kwargs: Any
+) -> ParseResult:
+    """
+    Translate DOCX parser output to ParseResult.
+
+    Supports two formats:
+    1. Old format (from RAGFlowDocxParser):
+       - raw_sections: List[tuple[str, str]] - (text, style_name)
+       - raw_tables: List[List[str]] - table rows
+
+    2. New format (from DoclingParser.parse_docx()):
+       - raw_sections: List[tuple[str, str]] - (text, style_name) tuples
+         - style_name is mapped from Docling label (e.g., "Heading", "Normal", "List Item")
+       - raw_tables: List[tuple[tuple, str]] - ((image, html_or_captions), positions) tuples
+         - For tables: ((None, html), "")
+         - For pictures: ((PIL_Image, [captions]), "")
+    """
     raw_sections, raw_tables = raw_output
-    text_segments = [
-        ParsedTextSegment(text=text, metadata={"style": style, **kwargs})
-        for text, style in raw_sections
-        if text.strip()
-    ]
+    text_segments = []
+    figures = []
     tables = []
-    for table_rows in raw_tables:
-        # Join the list of row strings into a single text block for the table
-        table_html = "\n".join(table_rows)
-        tables.append(ParsedTable(html=table_html, metadata=kwargs))
-    return ParseResult(text_segments=text_segments, tables=tables)
+
+    # Process text sections (same format for both old and new)
+    for section in raw_sections:
+        if isinstance(section, tuple):
+            if len(section) == 2:
+                text, style_or_tag = section
+            elif len(section) == 3:
+                text, typ, tag = section
+                style_or_tag = tag
+            else:
+                text = section[0] if section else ""
+                style_or_tag = ""
+        else:
+            text = str(section)
+            style_or_tag = ""
+
+        if text.strip():
+            segment_metadata = {"doc_id": doc_id, **kwargs}
+            # Preserve style if it's from old parser
+            if style_or_tag and not style_or_tag.startswith("@@"):
+                segment_metadata["style"] = style_or_tag
+            text_segments.append(
+                ParsedTextSegment(text=text.strip(), metadata=segment_metadata)
+            )
+
+    # Process tables and pictures
+    # Check if it's new format (DoclingParser) or old format (RAGFlowDocxParser)
+    # New format: tuple of ((image, html_or_captions), positions)
+    def _is_new_format(table_item: Any) -> bool:
+        return (
+            isinstance(table_item, tuple)
+            and len(table_item) == 2
+            and isinstance(table_item[0], tuple)
+            and len(table_item[0]) == 2
+        )
+
+    is_new_format = raw_tables and _is_new_format(raw_tables[0])
+
+    if is_new_format:
+        # New format: DoclingParser output
+        for table_item in raw_tables:
+            if not isinstance(table_item, tuple) or len(table_item) != 2:
+                continue
+
+            (img_or_none, html_or_captions), positions = table_item
+
+            # Determine if it's a table or a picture
+            if img_or_none is not None:
+                # It's a picture
+                if isinstance(html_or_captions, list):
+                    captions = html_or_captions
+                else:
+                    captions = [html_or_captions] if html_or_captions else []
+
+                caption_text = "\n".join(captions) if captions else ""
+
+                # Save the image
+                image_path = _save_image_to_disk(doc_id, img_or_none)
+
+                figure_metadata = kwargs.copy()
+                figure_metadata.update(
+                    {
+                        "type": "figure",
+                        "image_path": image_path,
+                        "doc_id": doc_id,
+                        "parser": "deepdoc",
+                    }
+                )
+                figures.append(
+                    ParsedFigures(
+                        text=caption_text, image=None, metadata=figure_metadata
+                    )
+                )
+            else:
+                # It's a table
+                table_html = ""
+                table_caption = ""
+
+                if isinstance(html_or_captions, str):
+                    # Simple HTML string (no caption)
+                    table_html = html_or_captions
+                elif isinstance(html_or_captions, dict):
+                    # Dict format with caption and html
+                    table_caption = html_or_captions.get("caption", "")
+                    table_html = html_or_captions.get("html", "")
+                elif isinstance(html_or_captions, list):
+                    # Fallback: if it's a list, join it
+                    table_html = "\n".join(html_or_captions)
+
+                table_metadata = kwargs.copy()
+                table_metadata.update(
+                    {
+                        "type": "table",
+                        "doc_id": doc_id,
+                        "parser": "deepdoc",
+                    }
+                )
+                # Add caption to metadata if present
+                if table_caption:
+                    table_metadata["caption"] = table_caption
+
+                tables.append(
+                    ParsedTable(html=table_html, image=None, metadata=table_metadata)
+                )
+    else:
+        # Old format: RAGFlowDocxParser output (List[List[str]])
+        for table_rows in raw_tables:
+            if isinstance(table_rows, list):
+                # Join the list of row strings into a single text block for the table
+                table_html = "\n".join(table_rows) if table_rows else ""
+                table_metadata = kwargs.copy()
+                table_metadata.update(
+                    {
+                        "type": "table",
+                        "doc_id": doc_id,
+                        "parser": "deepdoc",
+                    }
+                )
+                tables.append(
+                    ParsedTable(html=table_html, image=None, metadata=table_metadata)
+                )
+
+    return ParseResult(text_segments=text_segments, figures=figures, tables=tables)
 
 
 def _translate_excel_output(raw_output: Any, **kwargs: Any) -> ParseResult:
@@ -279,7 +407,8 @@ class DeepDocParser(
             if ext == ".pdf":
                 self._parsers[ext] = DeepDocPdfParser()
             elif ext == ".docx":
-                self._parsers[ext] = DeepDocDocxParser()
+                # Use DoclingParser for DOCX to support images and captions
+                self._parsers[ext] = DeepDocDoclingParser()
             elif ext in [".xlsx", ".xls", ".csv"]:
                 self._parsers[ext] = DeepDocExcelParser()
             elif ext == ".md":
@@ -332,9 +461,7 @@ class DeepDocParser(
                 doc_id = kwargs.get("doc_id", str(Path(file_path).stem))
 
             base_kwargs = {
-                key: value
-                for key, value in kwargs.items()
-                if key not in ("doc_id", "progress_callback")
+                key: value for key, value in kwargs.items() if key != "doc_id"
             }
             metadata = {
                 "source": str(file_path)
@@ -408,16 +535,29 @@ class DeepDocParser(
                         f"Parsed PDF into {len(bboxes)} unified elements with position information"
                     )
                 else:
-                    # DeepDoc ExcelParser expects bytes if not path, not BytesIO
-                    input_arg: str | BytesIO | bytes = file_path
-                    if isinstance(file_path, BytesIO) and ext in [
-                        ".xlsx",
-                        ".xls",
-                        ".csv",
-                    ]:
-                        input_arg = file_path.getvalue()
+                    # Handle DOCX with DoclingParser
+                    if ext == ".docx" and isinstance(parser, DeepDocDoclingParser):
+                        if isinstance(file_path, BytesIO):
+                            # DoclingParser needs a file path, not BytesIO
+                            # For BytesIO, fall back to old parser behavior
+                            file_bytes: bytes = file_path.getvalue()
+                            raw_output = parser(file_bytes, **parser_call_kwargs)
+                        else:
+                            # Use DoclingParser.parse_docx() for DOCX files
+                            raw_output = parser.parse_docx(
+                                file_path, **parser_call_kwargs
+                            )
+                    else:
+                        # DeepDoc ExcelParser expects bytes if not path, not BytesIO
+                        input_arg: str | BytesIO | bytes = file_path
+                        if isinstance(file_path, BytesIO) and ext in [
+                            ".xlsx",
+                            ".xls",
+                            ".csv",
+                        ]:
+                            input_arg = file_path.getvalue()
 
-                    raw_output = parser(input_arg, **parser_call_kwargs)
+                        raw_output = parser(input_arg, **parser_call_kwargs)
 
             except KeyError as e:
                 # 捕获 python-docx 库的 KeyError，通常是格式不匹配导致的
@@ -444,7 +584,8 @@ class DeepDocParser(
 
                 return parse_result
             elif ext == ".docx":
-                return _translate_docx_output(raw_output, **metadata)
+                # raw_output is already set in the try block above
+                return _translate_docx_output(doc_id, raw_output, **metadata)
             elif ext in [".xlsx", ".xls", ".csv"]:
                 return _translate_excel_output(raw_output, **metadata)
             elif ext in [".json", ".html"]:

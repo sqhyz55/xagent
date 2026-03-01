@@ -12,6 +12,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 
+from ...core.tools.core.RAG_tools.core.schemas import ProgressUpdateEvent
 from ...core.tools.core.RAG_tools.progress import (
     get_progress_manager,
     progress_broadcaster,
@@ -90,21 +91,22 @@ async def progress_websocket_endpoint(
         # Send current task status if available
         task_progress = get_progress_manager().get_task_progress(task_id)
         if task_progress:
-            # Send initial status
-            await adapter.send_text(f"""{{
-                "event_type": "progress_update",
-                "task_id": "{task_progress.task_id}",
-                "task_type": "{task_progress.task_type}",
-                "status": "{task_progress.status.value}",
-                "current_step": "{task_progress.current_step or ""}",
-                "overall_progress": {0.0 if task_progress.status == task_progress.status.PENDING else 1.0 if task_progress.status in [task_progress.status.SUCCESS, task_progress.status.FAILED, task_progress.status.CANCELLED] else 0.5},
-                "timestamp": {task_progress.start_time or 0},
-                "data": {{
-                    "start_time": {task_progress.start_time or "null"},
-                    "end_time": {task_progress.end_time or "null"},
-                    "metadata": {task_progress.metadata}
-                }}
-            }}""")
+            # Send initial status using proper JSON serialization
+            event = ProgressUpdateEvent(
+                task_id=task_progress.task_id,
+                task_type=task_progress.task_type,
+                status=task_progress.status,
+                current_step=task_progress.current_step,
+                overall_progress=task_progress.overall_progress or 0.0,
+                timestamp=task_progress.start_time or 0,
+                data={
+                    "start_time": task_progress.start_time,
+                    "end_time": task_progress.end_time,
+                    "metadata": task_progress.metadata,
+                },
+                event_type="progress_update",
+            )
+            await adapter.send_text(event.model_dump_json())
 
         try:
             # Keep connection alive and listen for client messages
@@ -157,16 +159,7 @@ async def get_task_progress(
             "task_type": task_progress.task_type,
             "status": task_progress.status.value,
             "current_step": task_progress.current_step,
-            "overall_progress": 0.0
-            if task_progress.status == task_progress.status.PENDING
-            else 1.0
-            if task_progress.status
-            in [
-                task_progress.status.SUCCESS,
-                task_progress.status.FAILED,
-                task_progress.status.CANCELLED,
-            ]
-            else 0.5,
+            "overall_progress": task_progress.overall_progress or 0.0,
             "start_time": task_progress.start_time,
             "end_time": task_progress.end_time,
             "metadata": task_progress.metadata,
@@ -203,12 +196,7 @@ async def list_active_tasks(
                     "task_type": task.task_type,
                     "status": task.status.value,
                     "current_step": task.current_step,
-                    "overall_progress": 0.0
-                    if task.status == task.status.PENDING
-                    else 1.0
-                    if task.status
-                    in [task.status.SUCCESS, task.status.FAILED, task.status.CANCELLED]
-                    else 0.5,
+                    "overall_progress": task.overall_progress or 0.0,
                     "start_time": task.start_time,
                     "end_time": task.end_time,
                     "metadata": task.metadata,
