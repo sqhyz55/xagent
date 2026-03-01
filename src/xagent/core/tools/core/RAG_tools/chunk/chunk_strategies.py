@@ -527,9 +527,18 @@ _IMAGE_PATTERN = re.compile(r"!\[.*?\]\(.*?\)", re.DOTALL)
 
 def _is_table_chunk(text: str) -> bool:
     """True if text looks like a markdown table (has |...| row)."""
-    return bool(_TABLE_LINE_PATTERN.search(text)) or (
-        "|" in text and text.count("|") >= 4 and "\n" in text
-    )
+    # Primary: pattern match for markdown table rows
+    if _TABLE_LINE_PATTERN.search(text):
+        return True
+    # Fallback: require at least 2 lines with pipe chars and a separator-like line
+    lines = text.splitlines()
+    pipe_lines = [ln for ln in lines if "|" in ln]
+    if len(pipe_lines) >= 2 and text.count("|") >= 4:
+        # Check for separator row pattern (e.g., |---|---|)
+        for ln in lines:
+            if re.search(r"\|[-:]+[-|:]*\|", ln):
+                return True
+    return False
 
 
 def _is_image_chunk(text: str) -> bool:

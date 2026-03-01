@@ -102,8 +102,10 @@ def split_text_by_tokens(
     Returns:
         List of text segments.
     """
-    if not text or max_tokens <= 0:
-        return [text] if text else []
+    if not text:
+        return []
+    if max_tokens <= 0:
+        raise ValueError(f"max_tokens must be positive, got {max_tokens}")
     try:
         import tiktoken
 

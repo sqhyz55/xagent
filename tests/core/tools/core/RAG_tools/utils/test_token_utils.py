@@ -1,5 +1,7 @@
 """Unit tests for token_utils (P0: token counting and split)."""
 
+import pytest
+
 from xagent.core.tools.core.RAG_tools.utils.token_utils import (
     get_token_counter,
     num_tokens_from_string,
@@ -72,11 +74,12 @@ class TestSplitTextByTokens:
         assert len(segments) == 1
         assert segments[0] == text
 
-    def test_max_tokens_zero_returns_single_if_non_empty(self) -> None:
-        """max_tokens <= 0 with non-empty text returns [text] per implementation."""
-        # Implementation: if not text or max_tokens <= 0: return [text] if text else []
-        segments = split_text_by_tokens("x", max_tokens=0)
-        assert segments == ["x"]
+    def test_max_tokens_zero_raises_value_error(self) -> None:
+        """max_tokens <= 0 raises ValueError."""
+        with pytest.raises(ValueError, match="max_tokens must be positive"):
+            split_text_by_tokens("x", max_tokens=0)
+        with pytest.raises(ValueError, match="max_tokens must be positive"):
+            split_text_by_tokens("x", max_tokens=-1)
 
     def test_long_text_split_into_multiple(self) -> None:
         """Long text is split into multiple segments."""
