@@ -54,9 +54,14 @@ from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
+    UPLOADS_DIR,
     get_upload_path,
     is_allowed_file,
     sanitize_path_component,
+)
+from ..kb_physical_sync import (
+    collection_physical_lock,
+    move_collection_dir_to_trash,
 )
 from ..models.database import get_db
 from ..models.uploaded_file import UploadedFile
@@ -771,7 +776,7 @@ async def delete_collection_api(
     Raises:
         HTTPException: If physical deletion fails (prevents database deletion)
     """
-    import shutil
+    from filelock import Timeout
 
     try:
         try:
@@ -781,7 +786,9 @@ async def delete_collection_api(
                 status_code=422, detail=f"Invalid collection name: {str(e)}"
             ) from e
 
-        physical_cleanup_status = "not_found"
+        # Step 1: Move physical directory to trash (under lock) BEFORE database deletion.
+        # Rename is atomic; trash is cleaned by background task (see kb_physical_sync.cleanup_trash).
+        physical_cleanup_status = "not_found"  # not_found, success, failed
         physical_cleanup_error = None
         collection_dir: Path | None = None
 
@@ -792,25 +799,40 @@ async def delete_collection_api(
 
             if collection_dir.exists() and collection_dir.is_dir():
                 try:
-                    shutil.rmtree(collection_dir)
+                    with collection_physical_lock(collection_dir):
+                        move_collection_dir_to_trash(
+                            collection_dir,
+                            UPLOADS_DIR,
+                            int(_user.id),
+                            safe_collection,
+                        )
                     physical_cleanup_status = "success"
                     logger.info(
-                        "Physically deleted collection directory: %s",
+                        "Collection directory moved to trash: %s",
                         collection_dir,
+                    )
+                except Timeout:
+                    physical_cleanup_status = "failed"
+                    physical_cleanup_error = (
+                        "Another operation is in progress; please try again later."
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail=physical_cleanup_error,
                     )
                 except (PermissionError, OSError) as e:
                     physical_cleanup_status = "failed"
                     physical_cleanup_error = str(e)
                     logger.error(
-                        "Failed to physically delete collection directory for %s: %s. "
-                        "Aborting deletion to prevent inconsistent state.",
+                        "Failed to move collection directory to trash for %s: %s. "
+                        "Aborting to prevent inconsistent state.",
                         collection_name,
                         e,
                     )
                     raise HTTPException(
                         status_code=500,
                         detail=(
-                            "Failed to delete collection: cannot remove physical files. "
+                            "Failed to delete collection: cannot move physical files. "
                             f"Error: {str(e)}. "
                             "Please ensure the directory is not in use and you have proper permissions."
                         ),
@@ -819,7 +841,7 @@ async def delete_collection_api(
                     physical_cleanup_status = "failed"
                     physical_cleanup_error = str(e)
                     logger.error(
-                        "Unexpected error during physical deletion for %s: %s",
+                        "Unexpected error during physical cleanup for %s: %s",
                         collection_name,
                         e,
                     )
@@ -882,7 +904,8 @@ async def delete_collection_api(
 
         if physical_cleanup_status == "success":
             cleanup_info = (
-                f"Physical directory cleanup: Successfully removed {collection_dir}"
+                f"Physical directory moved to trash: {collection_dir} "
+                "(background task will clean .trash periodically)"
             )
             cleanup_warnings.append(cleanup_info)
             cleanup_info_message = f" {cleanup_info}."
@@ -1198,8 +1221,10 @@ async def rename_collection_api(
     old_collection_dir: Optional[Path] = None
     new_collection_dir: Optional[Path] = None
 
-    # Step 1: Rename physical directory BEFORE updating database
+    # Step 1: Rename physical directory under lock BEFORE updating database
     try:
+        from filelock import Timeout
+
         from ..config import get_upload_path
 
         old_collection_dir = get_upload_path(
@@ -1224,13 +1249,24 @@ async def rename_collection_api(
                         f"A collection named '{new_name}' already has physical files."
                     ),
                 )
+
             try:
-                old_collection_dir.rename(new_collection_dir)
+                with collection_physical_lock(old_collection_dir):
+                    old_collection_dir.rename(new_collection_dir)
                 physical_rename_status = "success"
                 logger.info(
                     "Physically renamed collection directory: %s -> %s",
                     old_collection_dir,
                     new_collection_dir,
+                )
+            except Timeout:
+                physical_rename_status = "failed"
+                physical_rename_error = (
+                    "Another operation is in progress; please try again later."
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=physical_rename_error,
                 )
             except (PermissionError, OSError) as e:
                 physical_rename_status = "failed"
