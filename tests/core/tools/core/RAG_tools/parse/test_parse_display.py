@@ -213,14 +213,14 @@ class TestReconstructParseResultLatestByCreatedAt:
         second = parse_document(
             collection=test_collection,
             doc_id=test_doc_id,
-            parse_method=ParseMethod.DEEPDOC,  # Same method, same params, different timestamp
+            parse_method=ParseMethod.DEFAULT,  # Different method -> different parse_hash -> new record
             user_id=1,
             is_admin=True,
         )
         hash1 = first["parse_hash"]
         hash2 = second["parse_hash"]
-        # Same method and params yield same hash, but different timestamps
-        assert hash1 == hash2
+        # Different parse methods yield different hashes, so we have two distinct records
+        assert hash1 != hash2
 
         # Without parse_hash we should get the latest by created_at (second write)
         elements, actual_hash = reconstruct_parse_result_from_db(
@@ -233,7 +233,7 @@ class TestReconstructParseResultLatestByCreatedAt:
         assert actual_hash == hash2
         assert isinstance(elements, list)
 
-        # With explicit parse_hash we get any version (they have same hash)
+        # With explicit parse_hash we get the corresponding version
         elements1, h1 = reconstruct_parse_result_from_db(
             test_collection, test_doc_id, parse_hash=hash1, user_id=1, is_admin=True
         )

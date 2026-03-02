@@ -108,14 +108,17 @@ def _build_element_metadata(
         enriched_positions = []
         for pos in positions:
             if isinstance(pos, (list, tuple)) and len(pos) >= 5:
-                # pos format: [page_num, left, right, top, bottom]
-                page_num = int(pos[0]) if len(pos) > 0 else bbox.get("page_number", 1)
-                left = float(pos[1]) if len(pos) > 1 else 0.0
-                right = float(pos[2]) if len(pos) > 2 else 0.0
-                top = float(pos[3]) if len(pos) > 3 else 0.0
-                bottom = float(pos[4]) if len(pos) > 4 else 0.0
-                # Enrich with col_id: [page_num, col_id, left, right, top, bottom]
-                enriched_positions.append([page_num, col_id, left, right, top, bottom])
+                # pos format: [page_num, left, right, top, bottom]; len already >= 5
+                enriched_positions.append(
+                    [
+                        int(pos[0]),
+                        col_id,
+                        float(pos[1]),
+                        float(pos[2]),
+                        float(pos[3]),
+                        float(pos[4]),
+                    ]
+                )
         if enriched_positions:
             metadata["positions"] = enriched_positions
 
