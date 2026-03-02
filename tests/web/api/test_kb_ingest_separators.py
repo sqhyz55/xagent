@@ -179,7 +179,7 @@ def test_ingest_separators_invalid_json_request_succeeds_uses_default(
 
 
 def test_ingest_separators_empty_array_uses_none(app_with_kb, mock_user):
-    """POST with separators='[]' leaves config.separators as None (empty list filtered)."""
+    """POST with separators='[]' results in config.separators being empty list []."""
     captured_config: list[IngestionConfig] = []
 
     def capture_ingestion(collection, source_path, *, ingestion_config, user_id):

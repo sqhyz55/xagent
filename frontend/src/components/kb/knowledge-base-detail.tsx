@@ -14,7 +14,7 @@ import { SelectRadix, SelectContent, SelectItem, SelectTrigger, SelectValue } fr
 import { Badge } from "@/components/ui/badge"
 import { apiRequest } from "@/lib/api-wrapper"
 import { getApiUrl } from "@/lib/utils"
-import { parseSeparatorsInput } from "@/lib/separators"
+import { appendIngestionConfigToFormData } from "@/lib/ingestion-form"
 import { useI18n } from "@/contexts/i18n-context"
 import { toast } from "sonner"
 
@@ -319,20 +319,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
 
         formData.append("file", file)
         formData.append("collection", collectionName)
-        formData.append("parse_method", ingestionConfig.parse_method)
-        formData.append("chunk_strategy", ingestionConfig.chunk_strategy)
-        formData.append("chunk_size", ingestionConfig.chunk_size.toString())
-        formData.append("chunk_overlap", ingestionConfig.chunk_overlap.toString())
-        if (ingestionConfig.chunk_strategy === "recursive" && ingestionConfig.separators?.trim()) {
-          const parsed = parseSeparatorsInput(ingestionConfig.separators)
-          if (parsed.length > 0) {
-            formData.append("separators", JSON.stringify(parsed))
-          }
-        }
-        formData.append("embedding_model_id", ingestionConfig.embedding_model_id)
-        formData.append("embedding_batch_size", ingestionConfig.embedding_batch_size.toString())
-        formData.append("max_retries", ingestionConfig.max_retries.toString())
-        formData.append("retry_delay", ingestionConfig.retry_delay.toString())
+        appendIngestionConfigToFormData(formData, ingestionConfig)
 
         const response = await apiRequest(`${getApiUrl()}/api/kb/ingest`, {
           method: "POST",
@@ -399,21 +386,8 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       formData.append("timeout", webIngestionConfig.timeout.toString())
       formData.append("respect_robots_txt", webIngestionConfig.respect_robots_txt.toString())
 
-      // Add index configuration
-      formData.append("parse_method", ingestionConfig.parse_method)
-      formData.append("chunk_strategy", ingestionConfig.chunk_strategy)
-      formData.append("chunk_size", ingestionConfig.chunk_size.toString())
-      formData.append("chunk_overlap", ingestionConfig.chunk_overlap.toString())
-      if (ingestionConfig.chunk_strategy === "recursive" && ingestionConfig.separators?.trim()) {
-        const parsed = parseSeparatorsInput(ingestionConfig.separators)
-        if (parsed.length > 0) {
-          formData.append("separators", JSON.stringify(parsed))
-        }
-      }
-      formData.append("embedding_model_id", ingestionConfig.embedding_model_id)
-      formData.append("embedding_batch_size", ingestionConfig.embedding_batch_size.toString())
-      formData.append("max_retries", ingestionConfig.max_retries.toString())
-      formData.append("retry_delay", ingestionConfig.retry_delay.toString())
+      // 添加索引配置
+      appendIngestionConfigToFormData(formData, ingestionConfig)
 
       setWebIngestionProgress(10)
 

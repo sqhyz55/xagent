@@ -49,6 +49,25 @@ logger = logging.getLogger(__name__)
 kb_router = APIRouter(prefix="/api/kb", tags=["kb"])
 
 
+def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
+    """Parse optional custom separators (JSON array of strings) from form input.
+
+    Returns None if input is missing/empty or invalid; returns a list of
+    non-empty strings when valid (possibly empty list for input '[]').
+    """
+    if not separators or not separators.strip():
+        return None
+    try:
+        raw = json.loads(separators)
+        if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+            return [s for s in raw if s]
+        logger.warning("separators must be a list of strings; ignoring")
+        return None
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("invalid separators JSON, using default: %s", e)
+        return None
+
+
 @kb_router.post(
     "/ingest",
     response_model=IngestionResult,
@@ -177,27 +196,26 @@ async def ingest(
                 f"to ensure it's less than chunk_size ({final_chunk_size})"
             )
 
-        # Parse optional custom separators (JSON array of strings)
-        parsed_separators: Optional[List[str]] = None
-        if separators and separators.strip():
-            try:
-                raw = json.loads(separators)
-                if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
-                    parsed_separators = [s for s in raw if s]
-                else:
-                    logger.warning(
-                        "ingest: separators must be a list of strings; ignoring"
-                    )
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning("ingest: invalid separators JSON, using default: %s", e)
+        parsed_separators = _parse_separators(separators)
+        final_strategy = (
+            chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
+        )
+        if (
+            separators
+            and separators.strip()
+            and final_strategy != ChunkStrategy.RECURSIVE
+        ):
+            logger.warning(
+                "separators are only used when chunk_strategy is recursive; "
+                "current strategy is %s, ignoring separators",
+                final_strategy.value,
+            )
 
         config = IngestionConfig(
             parse_method=parse_method
             if parse_method is not None
             else ParseMethod.DEFAULT,
-            chunk_strategy=chunk_strategy
-            if chunk_strategy is not None
-            else ChunkStrategy.RECURSIVE,
+            chunk_strategy=final_strategy,
             chunk_size=final_chunk_size,
             chunk_overlap=final_chunk_overlap,
             separators=parsed_separators,
@@ -603,31 +621,26 @@ async def ingest_web(
                 f"to ensure it's less than chunk_size ({final_chunk_size})"
             )
 
-        # Parse optional custom separators (JSON array of strings)
-        web_parsed_separators: Optional[List[str]] = None
-        if separators and separators.strip():
-            try:
-                raw = json.loads(separators)
-                if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
-                    web_parsed_separators = [s for s in raw if s]
-                else:
-                    logger.warning(
-                        "ingest_web: separators must be a list of strings; ignoring"
-                    )
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning(
-                    "ingest_web: invalid separators JSON, using default: %s", e
-                )
+        web_parsed_separators = _parse_separators(separators)
+        web_final_strategy = (
+            chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
+        )
+        if (
+            separators
+            and separators.strip()
+            and web_final_strategy != ChunkStrategy.RECURSIVE
+        ):
+            logger.warning(
+                "separators are only used when chunk_strategy is recursive; "
+                "current strategy is %s, ignoring separators",
+                web_final_strategy.value,
+            )
 
         ingestion_config = IngestionConfig(
             parse_method=(
                 parse_method if parse_method is not None else ParseMethod.DEFAULT
             ),
-            chunk_strategy=(
-                chunk_strategy
-                if chunk_strategy is not None
-                else ChunkStrategy.RECURSIVE
-            ),
+            chunk_strategy=web_final_strategy,
             chunk_size=final_chunk_size,
             chunk_overlap=final_chunk_overlap,
             separators=web_parsed_separators,
