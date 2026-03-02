@@ -52,8 +52,17 @@ from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingesti
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
-from ..config import MAX_FILE_SIZE, get_upload_path, is_allowed_file
+from ..config import (
+    MAX_FILE_SIZE,
+    get_upload_path,
+    is_allowed_file,
+    sanitize_path_component,
+)
+from ..models.database import get_db
+from ..models.uploaded_file import UploadedFile
 from ..models.user import User
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
@@ -163,6 +172,7 @@ async def ingest(
         description="Delay between retries in seconds (default: 1.0)",
     ),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> IngestionResult | JSONResponse:
     """Upload and ingest a document into the knowledge base.
 
@@ -196,6 +206,15 @@ async def ingest(
         collection = Path(safe_filename).stem
         logger.info("Using file name as collection: %s", collection)
 
+    try:
+        # SECURITY: Validate collection name BEFORE reading file content
+        safe_collection = sanitize_path_component(collection, "collection")
+    except ValueError as e:
+        logger.warning("Invalid collection name rejected: %s - %s", collection, e)
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(
@@ -203,35 +222,59 @@ async def ingest(
             detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE // (1024 * 1024)}MB",
         )
 
-    # Get upload path with user isolation using unified path management
-    file_path = get_upload_path(safe_filename, user_id=int(_user.id))
+    try:
+        file_path = get_upload_path(
+            safe_filename, user_id=int(_user.id), collection=safe_collection
+        )
+    except ValueError as e:
+        logger.warning(
+            "Collection name validation failed in get_upload_path: %s - %s",
+            safe_collection,
+            e,
+        )
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
 
-    # Save uploaded file with filename-specific error logging
     try:
         with open(file_path, "wb") as buffer:
             buffer.write(content)
         logger.info(
-            "File uploaded: %s -> %s (user: %s)", safe_filename, file_path, _user.id
+            "File uploaded: %s -> %s (user: %s, collection: %s)",
+            safe_filename,
+            file_path,
+            _user.id,
+            collection,
         )
     except (PermissionError, OSError) as e:
-        # Log with filename for better debugging before re-raising
         logger.error("File system error saving file %s: %s", safe_filename, e)
-        raise
+        raise HTTPException(status_code=403, detail="文件系统错误: {0}".format(str(e))) from e
 
-    # Build configuration from individual parameters
-    # Use defaults that match IngestionConfig defaults exactly
-    # Validate user-provided values to prevent errors
-    final_chunk_size = chunk_size if chunk_size is not None and chunk_size > 0 else 1000
+    # Register file in DB for file_id / downloads
+    import mimetypes
+
+    mime_type = mimetypes.guess_type(safe_filename)[0] or "application/octet-stream"
+    file_record = UploadedFile(
+        user_id=int(_user.id),
+        filename=safe_filename,
+        storage_path=str(file_path),
+        mime_type=mime_type,
+        file_size=len(content),
+    )
+    db.add(file_record)
+    db.commit()
+    db.refresh(file_record)
+
+    final_chunk_size = (
+        chunk_size if chunk_size is not None and chunk_size > 0 else 1000
+    )
     final_chunk_overlap = (
         chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
     )
-
-    # Ensure overlap is always less than size
     if final_chunk_overlap >= final_chunk_size:
         final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
         logger.warning(
-            "Auto-adjusting chunk_overlap from %s to %s to ensure it's less than chunk_size (%s)",
-            chunk_overlap,
+            "Auto-adjusting chunk_overlap to %s to ensure it's less than chunk_size (%s)",
             final_chunk_overlap,
             final_chunk_size,
         )
@@ -240,7 +283,11 @@ async def ingest(
     final_strategy = (
         chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
     )
-    if separators and separators.strip() and final_strategy != ChunkStrategy.RECURSIVE:
+    if (
+        separators
+        and separators.strip()
+        and final_strategy != ChunkStrategy.RECURSIVE
+    ):
         logger.warning(
             "separators are only used when chunk_strategy is recursive; "
             "current strategy is %s, ignoring separators",
@@ -248,7 +295,9 @@ async def ingest(
         )
 
     config = IngestionConfig(
-        parse_method=parse_method if parse_method is not None else ParseMethod.DEFAULT,
+        parse_method=parse_method
+        if parse_method is not None
+        else ParseMethod.DEFAULT,
         chunk_strategy=final_strategy,
         chunk_size=final_chunk_size,
         chunk_overlap=final_chunk_overlap,
@@ -257,7 +306,9 @@ async def ingest(
         embedding_batch_size=embedding_batch_size
         if embedding_batch_size is not None and embedding_batch_size > 0
         else 10,
-        max_retries=max_retries if max_retries is not None and max_retries >= 0 else 3,
+        max_retries=max_retries
+        if max_retries is not None and max_retries >= 0
+        else 3,
         retry_delay=retry_delay
         if retry_delay is not None and retry_delay >= 0
         else 1.0,
@@ -280,15 +331,12 @@ async def ingest(
         result: IngestionResult = future.result()
 
     if result.status == "error":
-        logger.error(
-            "KB ingest failed (collection=%s, filename=%s, file_path=%s, user_id=%s)",
-            collection,
-            safe_filename,
-            file_path,
-            _user.id,
-        )
         return JSONResponse(status_code=500, content=result.model_dump())
-    return result
+
+    return JSONResponse(
+        status_code=200,
+        content={**result.model_dump(), "file_id": file_record.file_id},
+    )
 
 
 @kb_router.get(
@@ -570,110 +618,133 @@ async def ingest_web(
         max_retries: Maximum retry attempts
         retry_delay: Delay between retries
     """
-    # Build WebCrawlConfig
-    url_patterns_list = (
-        [p.strip() for p in url_patterns.split(",")] if url_patterns else None
-    )
-    exclude_patterns_list = (
-        [p.strip() for p in exclude_patterns.split(",")] if exclude_patterns else None
-    )
-    remove_selectors_list = (
-        [s.strip() for s in remove_selectors.split(",")] if remove_selectors else None
-    )
+    try:
+        try:
+            safe_collection = sanitize_path_component(collection, "collection")
+        except ValueError as e:
+            logger.warning("Invalid collection name rejected: %s - %s", collection, e)
+            raise HTTPException(
+                status_code=422, detail=f"Invalid collection name: {str(e)}"
+            ) from e
 
-    crawl_config = WebCrawlConfig(
-        start_url=start_url,
-        max_pages=max_pages or 100,
-        max_depth=max_depth or 3,
-        url_patterns=url_patterns_list,
-        exclude_patterns=exclude_patterns_list,
-        same_domain_only=(same_domain_only if same_domain_only is not None else True),
-        content_selector=content_selector,
-        remove_selectors=remove_selectors_list,
-        concurrent_requests=concurrent_requests or 3,
-        request_delay=request_delay or 1.0,
-        timeout=timeout or 30,
-        respect_robots_txt=(
-            respect_robots_txt if respect_robots_txt is not None else True
-        ),
-    )
-
-    # Build IngestionConfig
-    final_chunk_size = chunk_size if chunk_size is not None and chunk_size > 0 else 1000
-    final_chunk_overlap = (
-        chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
-    )
-
-    # Ensure overlap is always less than size
-    if final_chunk_overlap >= final_chunk_size:
-        final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
-        logger.warning(
-            "Auto-adjusting chunk_overlap from %s to %s to ensure it's less than chunk_size (%s)",
-            chunk_overlap,
-            final_chunk_overlap,
-            final_chunk_size,
+        url_patterns_list = (
+            [p.strip() for p in url_patterns.split(",")] if url_patterns else None
+        )
+        exclude_patterns_list = (
+            [p.strip() for p in exclude_patterns.split(",")]
+            if exclude_patterns
+            else None
+        )
+        remove_selectors_list = (
+            [s.strip() for s in remove_selectors.split(",")]
+            if remove_selectors
+            else None
         )
 
-    web_parsed_separators = _parse_separators(separators)
-    web_final_strategy = (
-        chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
-    )
-    if (
-        separators
-        and separators.strip()
-        and web_final_strategy != ChunkStrategy.RECURSIVE
-    ):
-        logger.warning(
-            "separators are only used when chunk_strategy is recursive; "
-            "current strategy is %s, ignoring separators",
-            web_final_strategy.value,
+        crawl_config = WebCrawlConfig(
+            start_url=start_url,
+            max_pages=max_pages or 100,
+            max_depth=max_depth or 3,
+            url_patterns=url_patterns_list,
+            exclude_patterns=exclude_patterns_list,
+            same_domain_only=(
+                same_domain_only if same_domain_only is not None else True
+            ),
+            content_selector=content_selector,
+            remove_selectors=remove_selectors_list,
+            concurrent_requests=concurrent_requests or 3,
+            request_delay=request_delay or 1.0,
+            timeout=timeout or 30,
+            respect_robots_txt=(
+                respect_robots_txt if respect_robots_txt is not None else True
+            ),
         )
 
-    ingestion_config = IngestionConfig(
-        parse_method=(
-            parse_method if parse_method is not None else ParseMethod.DEFAULT
-        ),
-        chunk_strategy=web_final_strategy,
-        chunk_size=final_chunk_size,
-        chunk_overlap=final_chunk_overlap,
-        separators=web_parsed_separators,
-        embedding_model_id=embedding_model_id,
-        embedding_batch_size=(
-            embedding_batch_size
-            if embedding_batch_size is not None and embedding_batch_size > 0
-            else 10
-        ),
-        max_retries=(
-            max_retries if max_retries is not None and max_retries >= 0 else 3
-        ),
-        retry_delay=(
-            retry_delay if retry_delay is not None and retry_delay >= 0 else 1.0
-        ),
-    )
-
-    # Run web ingestion
-    result = await asyncio.get_event_loop().run_in_executor(
-        None,
-        lambda: asyncio.run(
-            run_web_ingestion(
-                collection=collection,
-                crawl_config=crawl_config,
-                ingestion_config=ingestion_config,
-                user_id=int(_user.id),
-                is_admin=bool(_user.is_admin),
+        final_chunk_size = (
+            chunk_size if chunk_size is not None and chunk_size > 0 else 1000
+        )
+        final_chunk_overlap = (
+            chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
+        )
+        if final_chunk_overlap >= final_chunk_size:
+            final_chunk_overlap = min(
+                int(final_chunk_size * 0.2), final_chunk_size - 1
             )
-        ),
-    )
+            logger.warning(
+                "Auto-adjusting chunk_overlap from %s to %s to ensure it's less than chunk_size (%s)",
+                chunk_overlap,
+                final_chunk_overlap,
+                final_chunk_size,
+            )
 
-    if result.status == "error":
-        logger.error(
-            "KB web ingest failed (collection=%s, start_url=%s, user_id=%s)",
-            collection,
-            start_url,
-            _user.id,
+        web_parsed_separators = _parse_separators(separators)
+        web_final_strategy = (
+            chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
         )
-        return JSONResponse(status_code=500, content=result.model_dump())
-    return result
+        if (
+            separators
+            and separators.strip()
+            and web_final_strategy != ChunkStrategy.RECURSIVE
+        ):
+            logger.warning(
+                "separators are only used when chunk_strategy is recursive; "
+                "current strategy is %s, ignoring separators",
+                web_final_strategy.value,
+            )
+
+        ingestion_config = IngestionConfig(
+            parse_method=(
+                parse_method if parse_method is not None else ParseMethod.DEFAULT
+            ),
+            chunk_strategy=web_final_strategy,
+            chunk_size=final_chunk_size,
+            chunk_overlap=final_chunk_overlap,
+            separators=web_parsed_separators,
+            embedding_model_id=embedding_model_id,
+            embedding_batch_size=(
+                embedding_batch_size
+                if embedding_batch_size is not None and embedding_batch_size > 0
+                else 10
+            ),
+            max_retries=(
+                max_retries if max_retries is not None and max_retries >= 0 else 3
+            ),
+            retry_delay=(
+                retry_delay if retry_delay is not None and retry_delay >= 0 else 1.0
+            ),
+        )
+
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: asyncio.run(
+                run_web_ingestion(
+                    collection=safe_collection,
+                    crawl_config=crawl_config,
+                    ingestion_config=ingestion_config,
+                    user_id=int(_user.id),
+                    is_admin=bool(_user.is_admin),
+                )
+            ),
+        )
+
+        if result.status == "error":
+            return JSONResponse(status_code=500, content=result.model_dump())
+
+        return result
+
+    except HTTPException:
+        raise
+    except (ValueError, KeyError, TypeError) as e:
+        logger.error("Data format error in web ingestion: %s", e)
+        raise HTTPException(
+            status_code=400, detail=f"Data format error: {str(e)}"
+        ) from e
+    except Exception as e:
+        logger.exception("Unexpected error in web ingestion: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Server internal error: {str(e)}",
+        ) from e
 
 
 @kb_router.delete(
@@ -683,17 +754,194 @@ async def ingest_web(
 async def delete_collection_api(
     collection_name: str,
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> CollectionOperationResult:
     """Delete a collection and all its data.
+
+    This function ensures data consistency by attempting physical file deletion
+    before database deletion. If physical deletion fails, the operation is
+    aborted to prevent inconsistent state.
 
     Args:
         collection_name: Name of the collection to delete
 
     Returns:
-        Deletion result with status and affected documents
+        Deletion result with status, affected documents, and cleanup information
+
+    Raises:
+        HTTPException: If physical deletion fails (prevents database deletion)
     """
-    result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
-    return result
+    import shutil
+
+    try:
+        try:
+            safe_collection = sanitize_path_component(collection_name, "collection")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid collection name: {str(e)}"
+            ) from e
+
+        physical_cleanup_status = "not_found"
+        physical_cleanup_error = None
+        collection_dir: Path | None = None
+
+        try:
+            collection_dir = get_upload_path(
+                "", user_id=int(_user.id), collection=safe_collection
+            )
+
+            if collection_dir.exists() and collection_dir.is_dir():
+                try:
+                    shutil.rmtree(collection_dir)
+                    physical_cleanup_status = "success"
+                    logger.info(
+                        "Physically deleted collection directory: %s",
+                        collection_dir,
+                    )
+                except (PermissionError, OSError) as e:
+                    physical_cleanup_status = "failed"
+                    physical_cleanup_error = str(e)
+                    logger.error(
+                        "Failed to physically delete collection directory for %s: %s. "
+                        "Aborting deletion to prevent inconsistent state.",
+                        collection_name,
+                        e,
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            "Failed to delete collection: cannot remove physical files. "
+                            f"Error: {str(e)}. "
+                            "Please ensure the directory is not in use and you have proper permissions."
+                        ),
+                    ) from e
+                except Exception as e:
+                    physical_cleanup_status = "failed"
+                    physical_cleanup_error = str(e)
+                    logger.error(
+                        "Unexpected error during physical deletion for %s: %s",
+                        collection_name,
+                        e,
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            "Failed to delete collection: unexpected error during physical cleanup. "
+                            f"Error: {str(e)}"
+                        ),
+                    ) from e
+            else:
+                physical_cleanup_status = "not_found"
+                logger.debug(
+                    "Collection directory does not exist (or is not a directory): %s. "
+                    "This is normal for collections without physical files.",
+                    collection_dir,
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Error determining collection directory path for %s: %s. "
+                "Proceeding with database deletion.",
+                collection_name,
+                e,
+            )
+            physical_cleanup_status = "error"
+            physical_cleanup_error = f"Path resolution error: {str(e)}"
+
+        result = delete_collection(
+            collection_name, int(_user.id), bool(_user.is_admin)
+        )
+
+        # Remove UploadedFile records for this collection path
+        if collection_dir is not None:
+            prefix = str(collection_dir.resolve()) + os.sep
+            dir_str = str(collection_dir.resolve())
+            deleted = (
+                db.query(UploadedFile)
+                .filter(
+                    or_(
+                        UploadedFile.storage_path.startswith(prefix),
+                        UploadedFile.storage_path == dir_str,
+                    )
+                )
+                .delete(synchronize_session=False)
+            )
+            if deleted:
+                db.commit()
+                logger.info(
+                    "Deleted %s UploadedFile record(s) for collection %s",
+                    deleted,
+                    collection_name,
+                )
+
+        # Step 3: Add physical cleanup status to warnings and message for visibility
+        # This ensures users are always aware of physical cleanup status, not just in logs
+        cleanup_warnings = list(result.warnings) if result.warnings else []
+        cleanup_info_message = ""
+
+        if physical_cleanup_status == "success":
+            cleanup_info = (
+                f"Physical directory cleanup: Successfully removed {collection_dir}"
+            )
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}."
+        elif physical_cleanup_status == "not_found":
+            cleanup_info = "Physical directory cleanup: No physical directory found (collection had no files)"
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}."
+        elif physical_cleanup_status == "error" and physical_cleanup_error:
+            # Path resolution error - database deletion proceeded, but physical cleanup status is unknown
+            cleanup_info = f"Physical directory cleanup: Warning - {physical_cleanup_error}. Database deletion proceeded, but physical file cleanup status is uncertain."
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}"
+        elif physical_cleanup_status == "failed" and physical_cleanup_error:
+            # This should not happen if we aborted above, but include for completeness
+            cleanup_info = (
+                f"Physical directory cleanup: Failed - {physical_cleanup_error}"
+            )
+            cleanup_warnings.append(cleanup_info)
+            cleanup_info_message = f" {cleanup_info}"
+
+        # Step 4: Determine final status based on both database and physical cleanup results
+        # If database deletion succeeded but physical cleanup had issues, mark as partial_success
+        final_status = result.status
+        if result.status == "success" and physical_cleanup_status in (
+            "error",
+            "failed",
+        ):
+            # Database deletion succeeded but physical cleanup had problems
+            final_status = "partial_success"
+            if not cleanup_info_message:
+                cleanup_info_message = " Database deletion succeeded, but physical file cleanup encountered issues."
+
+        # Step 5: Update message to include physical cleanup information
+        updated_message = result.message
+        if cleanup_info_message:
+            updated_message = f"{result.message}{cleanup_info_message}"
+
+        # Create updated result with cleanup information
+        # Note: CollectionOperationResult is frozen, so we create a new instance
+        updated_result = CollectionOperationResult(
+            status=final_status,
+            collection=result.collection,
+            message=updated_message,
+            warnings=cleanup_warnings,
+            affected_documents=result.affected_documents,
+            deleted_counts=result.deleted_counts,
+        )
+
+        return updated_result
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (including physical deletion failures)
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to delete collection '{collection_name}': {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete collection: {str(e)}",
+        )
 
 
 @kb_router.post(
@@ -898,6 +1146,7 @@ async def rename_collection_api(
     collection_name: str,
     new_name: str = Form(..., description="New collection name"),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Rename a collection.
 
@@ -935,6 +1184,107 @@ async def rename_collection_api(
 
     warnings: list[str] = []
 
+    # SECURITY: Validate both old and new collection names to prevent path traversal
+    try:
+        safe_old_collection = sanitize_path_component(collection_name, "collection")
+        safe_new_collection = sanitize_path_component(new_name, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    physical_rename_status = "not_found"
+    physical_rename_error: Optional[str] = None
+    old_collection_dir: Optional[Path] = None
+    new_collection_dir: Optional[Path] = None
+
+    # Step 1: Rename physical directory BEFORE updating database
+    try:
+        from ..config import get_upload_path
+
+        old_collection_dir = get_upload_path(
+            "",
+            user_id=int(_user.id),
+            collection=safe_old_collection,
+            create_if_not_exists=False,
+        )
+        new_collection_dir = get_upload_path(
+            "",
+            user_id=int(_user.id),
+            collection=safe_new_collection,
+            create_if_not_exists=False,
+        )
+
+        if old_collection_dir.exists() and old_collection_dir.is_dir():
+            if new_collection_dir.exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Cannot rename collection: target directory already exists. "
+                        f"A collection named '{new_name}' already has physical files."
+                    ),
+                )
+            try:
+                old_collection_dir.rename(new_collection_dir)
+                physical_rename_status = "success"
+                logger.info(
+                    "Physically renamed collection directory: %s -> %s",
+                    old_collection_dir,
+                    new_collection_dir,
+                )
+            except (PermissionError, OSError) as e:
+                physical_rename_status = "failed"
+                physical_rename_error = str(e)
+                logger.error(
+                    "Failed to physically rename collection directory for %s: %s. "
+                    "Aborting rename to prevent inconsistent state.",
+                    collection_name,
+                    e,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Failed to rename collection: cannot rename physical directory. "
+                        f"Error: {str(e)}. "
+                        "Please ensure the directory is not in use and you have proper permissions."
+                    ),
+                ) from e
+            except Exception as e:
+                physical_rename_status = "failed"
+                physical_rename_error = str(e)
+                logger.error(
+                    "Unexpected error during physical rename for %s: %s",
+                    collection_name,
+                    e,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Failed to rename collection: unexpected error during physical directory rename. "
+                        f"Error: {str(e)}"
+                    ),
+                ) from e
+        else:
+            physical_rename_status = "not_found"
+            logger.debug(
+                "Collection directory does not exist (or is not a directory): %s. "
+                "This is normal for collections without physical files.",
+                old_collection_dir,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Error determining collection directory path for rename %s -> %s: %s. "
+            "Proceeding with database rename.",
+            collection_name,
+            new_name,
+            e,
+        )
+        physical_rename_status = "error"
+        physical_rename_error = f"Path resolution error: {str(e)}"
+
+    # Step 2: Update collection name in all tables
     table_names = _list_table_names(conn, warnings)
 
     for table_name in ["documents", "parses", "chunks"]:
@@ -962,6 +1312,27 @@ async def rename_collection_api(
             logger.warning("Failed to update embeddings table '%s': %s", table_name, e)
             warnings.append(f"Failed to update '{table_name}': {e}")
 
+    # Update UploadedFile.storage_path for files under the renamed collection
+    if old_collection_dir is not None and new_collection_dir is not None:
+        old_prefix = str(old_collection_dir.resolve()) + os.sep
+        new_prefix = str(new_collection_dir.resolve()) + os.sep
+        records = (
+            db.query(UploadedFile)
+            .filter(UploadedFile.storage_path.startswith(old_prefix))
+            .all()
+        )
+        for rec in records:
+            rec.storage_path = new_prefix + rec.storage_path[len(old_prefix) :]
+        if records:
+            db.commit()
+            logger.info(
+                "Updated %s UploadedFile storage_path(s) for collection rename %s -> %s",
+                len(records),
+                collection_name,
+                new_name,
+            )
+
+    # Migrate ingestion status from old collection name to new
     try:
         status_entries = load_ingestion_status(collection=collection_name)
         for entry in status_entries:
@@ -979,10 +1350,56 @@ async def rename_collection_api(
         logger.warning("Failed to update ingestion status: %s", e)
         warnings.append(f"Failed to update ingestion status: {e}")
 
+    # Step 3: Add physical rename status to warnings and message for visibility
+    rename_info_message = ""
+    if (
+        physical_rename_status == "success"
+        and old_collection_dir is not None
+        and new_collection_dir is not None
+    ):
+        rename_info = (
+            f"Physical directory renamed: {old_collection_dir.name} -> {new_collection_dir.name}"
+        )
+        warnings.append(rename_info)
+        rename_info_message = f" {rename_info}."
+    elif physical_rename_status == "not_found":
+        rename_info = "Physical directory rename: No physical directory found (collection had no files)"
+        warnings.append(rename_info)
+        rename_info_message = f" {rename_info}."
+    elif physical_rename_status == "error" and physical_rename_error:
+        rename_info = (
+            f"Physical directory rename: Warning - {physical_rename_error}. "
+            "Database rename proceeded, but physical directory rename status is uncertain."
+        )
+        warnings.append(rename_info)
+        rename_info_message = f" {rename_info}"
+    elif physical_rename_status == "failed" and physical_rename_error:
+        rename_info = f"Physical directory rename: Failed - {physical_rename_error}"
+        warnings.append(rename_info)
+        rename_info_message = f" {rename_info}"
+
+    # Step 4: Determine final status
+    final_status = "success" if not warnings else "partial_success"
+    if physical_rename_status in ("error", "failed"):
+        final_status = "partial_success"
+        if not rename_info_message:
+            rename_info_message = " Database rename succeeded, but physical directory rename encountered issues."
+
+    # Step 5: Build final message
+    base_message = f"Collection renamed from '{collection_name}' to '{new_name}'"
+    if warnings and len(warnings) > (
+        1 if physical_rename_status != "not_found" else 0
+    ):
+        final_message = f"{base_message} with some warnings"
+    else:
+        final_message = base_message
+    if rename_info_message:
+        final_message = f"{final_message}{rename_info_message}"
+
     if warnings:
         return {
-            "status": "partial_success",
-            "message": f"Collection renamed from '{collection_name}' to '{new_name}' with some warnings",
+            "status": final_status,
+            "message": final_message,
             "warnings": warnings,
         }
 
