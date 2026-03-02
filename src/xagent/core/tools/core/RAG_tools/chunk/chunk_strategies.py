@@ -435,6 +435,7 @@ def _split_by_headers(
     sorted_headers = sorted(headers_to_split_on, key=lambda x: len(x[0]), reverse=True)
     sections_with_headers = []
     section_lines: List[str] = []
+    section_header = ""
     for line in lines:
         matched = False
         for prefix, _ in sorted_headers:
