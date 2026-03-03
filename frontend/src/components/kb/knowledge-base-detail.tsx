@@ -386,7 +386,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       formData.append("timeout", webIngestionConfig.timeout.toString())
       formData.append("respect_robots_txt", webIngestionConfig.respect_robots_txt.toString())
 
-      // 添加索引配置
+      // Add ingestion configuration
       appendIngestionConfigToFormData(formData, ingestionConfig)
 
       setWebIngestionProgress(10)
