@@ -161,6 +161,33 @@ def generate_doc_id_from_filename(
     return doc_id
 
 
+def generate_deterministic_doc_id(collection: str, source_path: str) -> str:
+    """Generate a deterministic document ID from collection and source path.
+
+    Same (collection, source_path) always yields the same doc_id, so re-uploading
+    or double-submitting the same file results in one record (idempotent registration).
+
+    Args:
+        collection: LanceDB collection name.
+        source_path: Absolute path to the file.
+
+    Returns:
+        A deterministic doc_id: {sanitized_stem}_{hash_8chars}.
+
+    Examples:
+        >>> generate_deterministic_doc_id("kb1", "/uploads/user_1/report.docx")
+        'report_a1b2c3d4'
+    """
+    path = Path(source_path)
+    filename = path.stem
+    sanitized = sanitize_for_doc_id(filename, max_length=50)
+    if not sanitized:
+        sanitized = "doc"
+    key = f"{collection}|{source_path}"
+    h = hashlib.sha256(key.encode()).hexdigest()[:8]
+    return f"{sanitized}_{h}"
+
+
 # Security validation patterns
 _COLLECTION_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_-]+$")
 _DOC_ID_PATTERN: re.Pattern[str] = re.compile(r"^[a-zA-Z0-9_.-]+$")

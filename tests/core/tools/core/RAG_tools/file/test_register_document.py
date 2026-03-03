@@ -89,6 +89,29 @@ class TestRegisterDocument:
         assert response2["doc_id"] == doc_id
         assert response2["created"] is False  # Should be update, not create
 
+    def test_register_document_deterministic_doc_id_idempotency(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Without doc_id, same (collection, source_path) yields same doc_id and second is update."""
+        db_dir = tmp_path / "lancedb"
+        monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+
+        test_file = tmp_path / "report.docx"
+        test_file.write_text("content")
+
+        response1 = register_document(
+            collection="my_kb",
+            source_path=str(test_file),
+        )
+        response2 = register_document(
+            collection="my_kb",
+            source_path=str(test_file),
+        )
+
+        assert response1["doc_id"] == response2["doc_id"]
+        assert response1["created"] is True
+        assert response2["created"] is False
+
     def test_register_document_custom_uploaded_at(
         self, tmp_path: Path, monkeypatch
     ) -> None:

@@ -28,7 +28,7 @@ from ..LanceDB.schema_manager import ensure_documents_table
 from ..utils import check_file_type, compute_file_hash
 from ..utils.string_utils import (
     build_lancedb_filter_expression,
-    generate_doc_id_from_filename,
+    generate_deterministic_doc_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,14 +126,15 @@ def _register_document(request: RegisterDocumentRequest) -> RegisterDocumentResp
             raise DocumentValidationError(f"File type detection failed: {e}") from e
 
     # Generate document ID if not provided
-    # Use filename-based ID for better user experience, with UUID fallback
+    # Use deterministic ID from (collection, source_path) for idempotent registration:
+    # same file re-upload or double-submit updates one record instead of creating two
     if not doc_id:
         try:
-            doc_id = generate_doc_id_from_filename(source_path, include_extension=False)
+            doc_id = generate_deterministic_doc_id(collection, source_path)
         except Exception as e:
-            # Fallback to UUID if filename-based generation fails
+            # Fallback to UUID if deterministic generation fails
             logger.debug(
-                "Filename-based ID generation failed (%s), falling back to UUID", e
+                "Deterministic doc_id generation failed (%s), falling back to UUID", e
             )
             doc_id = str(uuid.uuid4())
 

@@ -1315,6 +1315,10 @@ Build when you need.`
         uploadFailed: "上传失败",
         progressTitle: "上传进度",
         processing: "处理中...",
+        reuploadConfirmTitle: "文件已存在",
+        reuploadConfirmMessage: "以下文件在当前知识库中已存在，是否重新上传并覆盖？",
+        reuploadConfirmCancel: "取消",
+        reuploadConfirmSubmit: "仍然上传",
         processSuccess: "处理成功",
         processResult: {
           createDocuments: "创建文档",

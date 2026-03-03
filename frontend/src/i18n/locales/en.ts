@@ -1315,6 +1315,10 @@ Build when you need.`
         uploadFailed: "Upload Failed",
         progressTitle: "Upload Progress",
         processing: "Processing...",
+        reuploadConfirmTitle: "File already exists",
+        reuploadConfirmMessage: "The following file(s) already exist in this knowledge base. Re-upload to overwrite?",
+        reuploadConfirmCancel: "Cancel",
+        reuploadConfirmSubmit: "Re-upload anyway",
         processSuccess: "Processing Success",
         processResult: {
           createDocuments: "Create Documents",
