@@ -43,7 +43,15 @@ def test_ingest_separators_valid_json_passed_to_config(app_with_kb, mock_user):
     """POST /api/kb/ingest with valid separators JSON passes list to IngestionConfig."""
     captured_config: list[IngestionConfig] = []
 
-    def capture_ingestion(collection, source_path, *, ingestion_config, user_id):
+    def capture_ingestion(
+        collection,
+        source_path,
+        *,
+        ingestion_config,
+        user_id,
+        progress_manager=None,
+        is_admin=False,
+    ):
         captured_config.append(ingestion_config)
         return IngestionResult(
             status="success",
@@ -95,7 +103,15 @@ def test_ingest_separators_missing_uses_none(app_with_kb, mock_user):
     """POST without separators field leaves config.separators as None."""
     captured_config: list[IngestionConfig] = []
 
-    def capture_ingestion(collection, source_path, *, ingestion_config, user_id):
+    def capture_ingestion(
+        collection,
+        source_path,
+        *,
+        ingestion_config,
+        user_id,
+        progress_manager=None,
+        is_admin=False,
+    ):
         captured_config.append(ingestion_config)
         return IngestionResult(
             status="success",
@@ -139,7 +155,15 @@ def test_ingest_separators_invalid_json_request_succeeds_uses_default(
     """POST with invalid separators JSON still returns 200; config uses default (None)."""
     captured_config: list[IngestionConfig] = []
 
-    def capture_ingestion(collection, source_path, *, ingestion_config, user_id):
+    def capture_ingestion(
+        collection,
+        source_path,
+        *,
+        ingestion_config,
+        user_id,
+        progress_manager=None,
+        is_admin=False,
+    ):
         captured_config.append(ingestion_config)
         return IngestionResult(
             status="success",
@@ -182,7 +206,15 @@ def test_ingest_separators_empty_array_uses_none(app_with_kb, mock_user):
     """POST with separators='[]' results in config.separators being empty list []."""
     captured_config: list[IngestionConfig] = []
 
-    def capture_ingestion(collection, source_path, *, ingestion_config, user_id):
+    def capture_ingestion(
+        collection,
+        source_path,
+        *,
+        ingestion_config,
+        user_id,
+        progress_manager=None,
+        is_admin=False,
+    ):
         captured_config.append(ingestion_config)
         return IngestionResult(
             status="success",
