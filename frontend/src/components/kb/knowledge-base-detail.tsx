@@ -159,7 +159,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
 
   // Ingestion configuration
   const [ingestionConfig, setIngestionConfig] = useState<IngestionConfig>({
-    parse_method: "pypdf",
+    parse_method: "default",
     chunk_strategy: "recursive",
     chunk_size: 1000,
     chunk_overlap: 200,
