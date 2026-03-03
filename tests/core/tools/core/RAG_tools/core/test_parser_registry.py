@@ -10,10 +10,10 @@ from xagent.core.tools.core.RAG_tools.core.parser_registry import (
 
 
 def test_get_supported_parsers_uses_dynamic_mapping_for_pdf() -> None:
-    """PDF 扩展名应返回基于 parser 注册表动态推导出的解析器集合."""
+    """PDF extension should return parser set derived from parser registry."""
     parsers = get_supported_parsers(".pdf")
 
-    # 来自 document_parser_registry 的核心解析器
+    # Core parsers from document_parser_registry
     assert "pypdf" in parsers
     assert "pdfplumber" in parsers
     assert "pymupdf" in parsers
@@ -22,10 +22,10 @@ def test_get_supported_parsers_uses_dynamic_mapping_for_pdf() -> None:
 
 
 def test_get_supported_parsers_uses_dynamic_mapping_for_docx() -> None:
-    """DOCX 扩展名应优先使用动态兼容表，反映 Unstructured / DeepDoc 的声明."""
+    """DOCX extension should use dynamic compatibility (Unstructured/DeepDoc)."""
     parsers = get_supported_parsers(".docx")
 
-    # Unstructured 与 DeepDoc 都声明支持 .docx
+    # Unstructured and DeepDoc both declare support for .docx
     assert "unstructured" in parsers
     assert "deepdoc" in parsers
 
