@@ -211,7 +211,7 @@ def get_document(db_dir: str, collection: str, doc_id: str) -> Optional[Any]:
 
     Args:
         db_dir: LanceDB directory path
-        collection: Collection name (currently unused, for future multi-collection support)
+        collection: Collection name to filter by (only returns documents from this collection)
         doc_id: Document ID to retrieve
 
     Returns:
