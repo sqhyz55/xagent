@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class VectorDBType(str, Enum):
@@ -10,6 +10,17 @@ class VectorDBType(str, Enum):
     LANCEDB = "lancedb"
     WEAVIATE = "weaviate"
     WEAVIATE_SAAS = "weaviate_saas"
+    CHROMADB = "chromadb"
+    MILVUS = "milvus"
+    QDRANT = "qdrant"
+    PINECONE = "pinecone"
+    PGVECTOR = "pgvector"
+    ELASTICSEARCH = "elasticsearch"
+    OPEN_SEARCH = "open_search"
+    REDIS = "redis"
+    FAISS = "faiss"
+    TYPESENSE = "typesense"
+    ZILLIZ = "zilliz"
 
 
 class ModelConfig(BaseModel):
@@ -48,7 +59,12 @@ class RerankModelConfig(ModelConfig):
 
 
 class VectorDBConfig(ModelConfig):
-    """Configuration for vector database backend (e.g. LanceDB, Weaviate)."""
+    """Configuration for vector database backend (e.g. LanceDB, Weaviate).
+
+    Note: When persisted via SQLAlchemyModelHub, the optional extra config dict
+    is stored in the base model's ``abilities`` JSON column (semantic repurpose;
+    for other categories ``abilities`` is Optional[List[str]]).
+    """
 
     db_type: VectorDBType = VectorDBType.LANCEDB
-    config: dict = {}
+    config: dict = Field(default_factory=dict)

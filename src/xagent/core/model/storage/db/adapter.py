@@ -9,6 +9,7 @@ from xagent.core.model.model import (
     ModelConfig,
     RerankModelConfig,
     VectorDBConfig,
+    VectorDBType,
 )
 
 
@@ -32,10 +33,27 @@ class SQLAlchemyModelHub:
         if raw_value is None:
             return "lancedb"
         normalized = str(getattr(raw_value, "value", raw_value)).strip().lower()
+        if not normalized:
+            return "lancedb"
         legacy_aliases = {
             "weaviate_local": "weaviate",  # backward compatibility
         }
         return legacy_aliases.get(normalized, normalized)
+
+    def _load_vector_db_config(
+        self, db_model: Any, common_fields: dict[str, Any]
+    ) -> VectorDBConfig:
+        """Build VectorDBConfig from DB row; mutates common_fields (pops abilities)."""
+        db_type_val = self._normalize_vector_db_type(db_model.model_provider)
+        try:
+            db_type = VectorDBType(db_type_val) if db_type_val else VectorDBType.LANCEDB
+        except ValueError:
+            db_type = VectorDBType.LANCEDB
+        # VectorDBConfig repurposes abilities column for config dict (ModelConfig.abilities is List[str] elsewhere).
+        config_data = common_fields.pop("abilities", {})
+        if not isinstance(config_data, dict):
+            config_data = {}
+        return VectorDBConfig(**common_fields, db_type=db_type, config=config_data)
 
     def store(self, model: ModelConfig) -> None:
         db_data: dict[str, Any] = {
@@ -82,13 +100,12 @@ class SQLAlchemyModelHub:
                 }
             )
         elif isinstance(model, VectorDBConfig):
+            # VectorDBConfig repurposes abilities column for config dict (ModelConfig.abilities is List[str] elsewhere).
             db_data.update(
                 {
-                    "model_provider": model.db_type.value
-                    if hasattr(model.db_type, "value")
-                    else str(model.db_type),
+                    "model_provider": model.db_type.value,
                     "category": "vector_db",
-                    "abilities": model.config,  # Store extra config in abilities JSON field
+                    "abilities": model.config,
                 }
             )
         else:
@@ -151,21 +168,7 @@ class SQLAlchemyModelHub:
         elif db_model.category == "rerank":
             return RerankModelConfig(**common)
         elif db_model.category == "vector_db":
-            from xagent.core.model.model import VectorDBType
-
-            db_type_val = self._normalize_vector_db_type(db_model.model_provider)
-            try:
-                db_type = (
-                    VectorDBType(db_type_val) if db_type_val else VectorDBType.LANCEDB
-                )
-            except ValueError:
-                db_type = VectorDBType.LANCEDB
-
-            # Load extra config from abilities and remove it from common to avoid Pydantic validation error
-            config = common.pop("abilities", {})
-            if not isinstance(config, dict):
-                config = {}
-            return VectorDBConfig(**common, db_type=db_type, config=config)
+            return self._load_vector_db_config(db_model, common)
         else:
             raise ValueError(f"Unknown model category: {db_model.category}")
 
@@ -210,25 +213,7 @@ class SQLAlchemyModelHub:
             elif db_model.category == "rerank":
                 config = RerankModelConfig(**common_fields)
             elif db_model.category == "vector_db":
-                from xagent.core.model.model import VectorDBType
-
-                db_type_val = self._normalize_vector_db_type(db_model.model_provider)
-                try:
-                    db_type = (
-                        VectorDBType(db_type_val)
-                        if db_type_val
-                        else VectorDBType.LANCEDB
-                    )
-                except ValueError:
-                    db_type = VectorDBType.LANCEDB
-
-                # Load extra config from abilities and remove it from common_fields to avoid Pydantic validation error
-                config_data = common_fields.pop("abilities", {})
-                if not isinstance(config_data, dict):
-                    config_data = {}
-                config = VectorDBConfig(
-                    **common_fields, db_type=db_type, config=config_data
-                )
+                config = self._load_vector_db_config(db_model, common_fields)
 
             if config:
                 result[db_model.model_id] = config
