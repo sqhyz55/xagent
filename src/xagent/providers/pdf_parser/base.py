@@ -380,29 +380,29 @@ def validate_file_exists(file_path: str) -> None:
         raise FileNotFoundError(f"File not found: {file_path}")
 
 
-# Office 文档格式映射：Open XML 格式 -> (新格式名, 旧格式名, 文档类型名)
+# Office document format mapping: Open XML extension -> (new format, legacy format, document type)
 OFFICE_FORMAT_MAP: Dict[str, tuple[str, str, str]] = {
     ".docx": ("docx", "doc", "Word"),
     ".xlsx": ("xlsx", "xls", "Excel"),
     ".pptx": ("pptx", "ppt", "PowerPoint"),
 }
 
-# Office 文档错误消息模板
+# Office document error message templates (for legacy vs Open XML mismatch)
 OFFICE_ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     "docx": {
-        "old_format": "旧的 .doc (OLE2) 格式",
-        "new_format": "Open XML 格式的 .docx 文件（Office 2007+）",
-        "conversion_hint": "可以在 Microsoft Word 中打开文件并另存为 .docx 格式",
+        "old_format": "legacy .doc (OLE2) format",
+        "new_format": "Open XML .docx file (Office 2007+)",
+        "conversion_hint": "Open the file in Microsoft Word and save it as a .docx file",
     },
     "xlsx": {
-        "old_format": "旧的 .xls (OLE2) 格式",
-        "new_format": "Open XML 格式的 .xlsx 文件（Office 2007+）",
-        "conversion_hint": "可以在 Microsoft Excel 中打开文件并另存为 .xlsx 格式",
+        "old_format": "legacy .xls (OLE2) format",
+        "new_format": "Open XML .xlsx file (Office 2007+)",
+        "conversion_hint": "Open the file in Microsoft Excel and save it as an .xlsx file",
     },
     "pptx": {
-        "old_format": "旧的 .ppt (OLE2) 格式",
-        "new_format": "Open XML 格式的 .pptx 文件（Office 2007+）",
-        "conversion_hint": "可以在 Microsoft PowerPoint 中打开文件并另存为 .pptx 格式",
+        "old_format": "legacy .ppt (OLE2) format",
+        "new_format": "Open XML .pptx file (Office 2007+)",
+        "conversion_hint": "Open the file in Microsoft PowerPoint and save it as a .pptx file",
     },
 }
 
@@ -423,14 +423,14 @@ def detect_file_format(file_path: str) -> str:
     with open(file_path, "rb") as f:
         header = f.read(8)
 
-    # Open XML 格式（.docx, .xlsx, .pptx）是 ZIP 文件
-    # ZIP 文件头: PK\x03\x04 或 PK\x05\x06 或 PK\x07\x08
+    # Open XML formats (.docx, .xlsx, .pptx) are ZIP containers.
+    # ZIP signatures: PK\x03\x04, PK\x05\x06 or PK\x07\x08
     if header[:2] == b"PK":
         try:
-            # 尝试作为 ZIP 打开，检查内部结构
+            # Try opening as ZIP and inspect internal structure
             with zipfile.ZipFile(file_path, "r") as zip_file:
                 file_list = zip_file.namelist()
-                # Open XML Word 文档包含 [Content_Types].xml 和 word/document.xml
+                # Open XML Word document contains [Content_Types].xml and word/document.xml
                 if "[Content_Types].xml" in file_list:
                     if "word/document.xml" in file_list:
                         return "docx"
@@ -441,25 +441,25 @@ def detect_file_format(file_path: str) -> str:
         except zipfile.BadZipFile:
             pass
 
-    # 旧的 Microsoft Office 格式（OLE2）
-    # OLE2 文件头: D0 CF 11 E0 A1 B1 1A E1
+    # Legacy Microsoft Office formats (OLE2)
+    # OLE2 magic bytes: D0 CF 11 E0 A1 B1 1A E1
     if header[:8] == bytes([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]):
-        # 需要进一步检查来确定是 .doc, .xls, 还是 .ppt
-        # 这里简化处理，根据扩展名判断
+        # Need further inspection to distinguish .doc, .xls or .ppt.
+        # We simplify by using the extension as a hint.
         ext = Path(file_path).suffix.lower()
         if ext == ".docx":
-            return "doc"  # 实际是旧的 .doc 格式，但扩展名是 .docx
+            return "doc"  # Actually legacy .doc format, but extension is .docx
         elif ext in [".xlsx", ".xls"]:
             return "xls"
         elif ext in [".pptx", ".ppt"]:
             return "ppt"
-        return "doc"  # 默认假设是 Word 文档
+        return "doc"  # Default to Word document
 
-    # PDF 文件头: %PDF
+    # PDF magic bytes: %PDF
     if header[:4] == b"%PDF":
         return "pdf"
 
-    # 如果无法检测，返回扩展名对应的格式
+    # If detection fails, fall back to extension-based format
     ext = Path(file_path).suffix.lower()
     return ext.lstrip(".") if ext else "unknown"
 
@@ -493,23 +493,23 @@ def validate_office_file_format(
     """
     expected_ext = expected_ext.lower()
 
-    # 只验证 Office 文档
+    # Only validate Office documents
     if expected_ext not in OFFICE_FORMAT_MAP:
-        return  # 非 Office 文档，跳过验证
+        return  # Not an Office document, skip validation
 
     new_format, old_format, doc_type = OFFICE_FORMAT_MAP[expected_ext]
     actual_format = detect_file_format(file_path)
 
-    # 如果检测到是旧的 OLE2 格式
+    # If we detect a legacy OLE2 format while the extension claims Open XML
     if actual_format == old_format:
         error_info = OFFICE_ERROR_MESSAGES[new_format]
         message = (
-            f"文件 '{file_path}' 的扩展名是 {expected_ext}，"
-            f"但实际格式是{error_info['old_format']}。\n"
-            f"{parser_name} 的解析器只支持{error_info['new_format']}。\n"
-            f"请将文件转换为真正的 {expected_ext} 格式，"
-            f"或使用其他解析器处理旧的 {old_format} 格式文件。\n"
-            f"提示：{error_info['conversion_hint']}。"
+            f"File '{file_path}' has extension {expected_ext}, "
+            f"but the actual format is {error_info['old_format']}.\n"
+            f"The {parser_name} parser only supports {error_info['new_format']}.\n"
+            f"Please convert the file to a real {expected_ext} file, "
+            f"or use a different parser for legacy {old_format} files.\n"
+            f"Hint: {error_info['conversion_hint']}."
         )
 
         if strict:

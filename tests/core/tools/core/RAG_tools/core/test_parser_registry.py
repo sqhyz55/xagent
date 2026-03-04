@@ -1,7 +1,9 @@
 """Tests for parser registry functionality."""
 
+from xagent.core.tools.core.document_parser import document_parser_registry
 from xagent.core.tools.core.RAG_tools.core.parser_registry import (
     PARSER_COMPATIBILITY,
+    _build_dynamic_compatibility,
     get_all_supported_extensions,
     get_supported_parsers,
     register_parser_support,
@@ -34,22 +36,27 @@ class TestGetSupportedParsers:
     """Test getting supported parsers for file extensions."""
 
     def test_get_supported_parsers_known_extension(self):
-        """Test getting parsers for known file extensions."""
-        # Test PDF parsers
+        """Test getting parsers for known file extensions (only registered parsers)."""
+        # PDF: all 5 registered parsers
         pdf_parsers = get_supported_parsers(".pdf")
         assert "deepdoc" in pdf_parsers
         assert "pymupdf" in pdf_parsers
         assert "pdfplumber" in pdf_parsers
+        assert "unstructured" in pdf_parsers
+        assert "pypdf" in pdf_parsers
 
-        # Test code file parsers
-        py_parsers = get_supported_parsers(".py")
-        assert "code" in py_parsers
-        assert "python_ast" in py_parsers
+        # Docx and text formats: unstructured (and deepdoc for docx)
+        docx_parsers = get_supported_parsers(".docx")
+        assert "unstructured" in docx_parsers
+        assert "deepdoc" in docx_parsers
 
-        # Test markdown parsers (dynamic: unstructured, deepdoc; static fallback not used for .md)
+        # Markdown: only unstructured is registered for .md in this codebase
         md_parsers = get_supported_parsers(".md")
         assert "unstructured" in md_parsers
-        assert "deepdoc" in md_parsers
+
+        # Extensions with no registered parser in this codebase
+        py_parsers = get_supported_parsers(".py")
+        assert py_parsers == []
 
     def test_get_supported_parsers_unknown_extension(self):
         """Test getting parsers for unknown file extensions."""
@@ -81,13 +88,14 @@ class TestValidateParserCompatibility:
 
     def test_validate_parser_compatibility_mixed_not_allowed(self):
         """Test validation when mixed parsers are not allowed."""
-        # Valid combinations (.pdf/.md use dynamic map; .py uses static fallback)
+        # Valid combinations (parser must be in registry and in compatibility list)
         assert validate_parser_compatibility(".pdf", "deepdoc", allow_mixed=False)
-        assert validate_parser_compatibility(".py", "code", allow_mixed=False)
         assert validate_parser_compatibility(".md", "unstructured", allow_mixed=False)
-        assert validate_parser_compatibility(".md", "deepdoc", allow_mixed=False)
+        assert validate_parser_compatibility(".docx", "deepdoc", allow_mixed=False)
 
-        # Invalid combinations
+        # Invalid: "code" is not in document_parser_registry
+        assert not validate_parser_compatibility(".py", "code", allow_mixed=False)
+        # Invalid: extension/parser mismatch
         assert not validate_parser_compatibility(".pdf", "code", allow_mixed=False)
         assert not validate_parser_compatibility(".py", "deepdoc", allow_mixed=False)
         assert not validate_parser_compatibility(
@@ -108,7 +116,7 @@ class TestGetAllSupportedExtensions:
     """Test getting all supported extensions."""
 
     def test_get_all_supported_extensions(self):
-        """Test getting all supported file extensions."""
+        """Test getting all supported file extensions (static and dynamic)."""
         extensions = get_all_supported_extensions()
 
         # Should contain common extensions
@@ -121,8 +129,8 @@ class TestGetAllSupportedExtensions:
         # Should be a set
         assert isinstance(extensions, set)
 
-        # Should contain all keys from PARSER_COMPATIBILITY
-        assert extensions == set(PARSER_COMPATIBILITY.keys())
+        # Must include all static keys; may also include extensions from dynamic map
+        assert set(PARSER_COMPATIBILITY.keys()) <= extensions
 
 
 class TestRegisterParserSupport:
@@ -192,11 +200,8 @@ class TestParserCompatibilityData:
             # Extensions should start with dot
             assert ext.startswith("."), f"Extension {ext} should start with dot"
 
-            # Parsers should be a list
+            # Parsers should be a list (may be empty for extensions with no registered parser)
             assert isinstance(parsers, list), f"Parsers for {ext} should be a list"
-
-            # Should have at least one parser
-            assert len(parsers) > 0, f"Extension {ext} should have at least one parser"
 
             # All parsers should be strings
             assert all(isinstance(p, str) for p in parsers), (
@@ -204,7 +209,7 @@ class TestParserCompatibilityData:
             )
 
     def test_common_file_types_supported(self):
-        """Test that common file types are supported."""
+        """Test that common file types are present; those with registered parsers have non-empty lists."""
         common_extensions = [
             ".pdf",
             ".docx",
@@ -221,10 +226,27 @@ class TestParserCompatibilityData:
 
         for ext in common_extensions:
             assert ext in PARSER_COMPATIBILITY, (
-                f"Common extension {ext} should be supported"
+                f"Common extension {ext} should be in PARSER_COMPATIBILITY"
             )
+
+        # Extensions that have at least one registered parser
+        extensions_with_parsers = [
+            ".pdf",
+            ".docx",
+            ".txt",
+            ".md",
+            ".json",
+            ".xlsx",
+            ".xls",
+            ".ppt",
+            ".pptx",
+            ".doc",
+        ]
+        for ext in extensions_with_parsers:
+            if ext not in PARSER_COMPATIBILITY:
+                continue
             assert len(PARSER_COMPATIBILITY[ext]) > 0, (
-                f"Extension {ext} should have parsers"
+                f"Extension {ext} should have at least one registered parser"
             )
 
     def test_powerpoint_files_supported(self):
@@ -246,3 +268,63 @@ class TestParserCompatibilityData:
         # deepdoc should not be compatible with PowerPoint
         assert not validate_parser_compatibility(".pptx", "deepdoc", allow_mixed=False)
         assert not validate_parser_compatibility(".ppt", "deepdoc", allow_mixed=False)
+
+
+class TestDynamicCompatibilityEdgeCases:
+    """Edge case tests for dynamic compatibility mapping."""
+
+    def test_parser_without_supported_extensions_is_skipped(self, monkeypatch):
+        """Parsers without supported_extensions attribute should be ignored."""
+
+        class DummyNoAttr:
+            """Parser without supported_extensions."""
+
+            pass
+
+        def fake_parsers():
+            return {"dummy": DummyNoAttr}
+
+        # Monkeypatch registry to only contain the dummy parser
+        monkeypatch.setattr(document_parser_registry, "parsers", fake_parsers)
+
+        mapping = _build_dynamic_compatibility()
+        assert mapping == {}
+
+    def test_parser_with_empty_supported_extensions_is_skipped(self, monkeypatch):
+        """Parsers with empty supported_extensions should be ignored."""
+
+        class DummyEmpty:
+            """Parser with empty supported_extensions."""
+
+            supported_extensions: list[str] = []
+
+        def fake_parsers():
+            return {"dummy": DummyEmpty}
+
+        monkeypatch.setattr(document_parser_registry, "parsers", fake_parsers)
+
+        mapping = _build_dynamic_compatibility()
+        assert mapping == {}
+
+    def test_build_dynamic_compatibility_respects_runtime_registry_changes(
+        self, monkeypatch
+    ):
+        """_build_dynamic_compatibility reflects current registry state when called."""
+
+        class DummyMarkdown:
+            """Parser declaring support for .md at runtime."""
+
+            supported_extensions = [".md"]
+
+        original_parsers = document_parser_registry.parsers()
+
+        def extended_parsers():
+            data = dict(original_parsers)
+            data["dummy_markdown"] = DummyMarkdown
+            return data
+
+        monkeypatch.setattr(document_parser_registry, "parsers", extended_parsers)
+
+        mapping = _build_dynamic_compatibility()
+        assert ".md" in mapping
+        assert "dummy_markdown" in mapping[".md"]

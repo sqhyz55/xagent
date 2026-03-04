@@ -33,9 +33,14 @@ class PdfPlumberParser(DocumentParser, TextParsing, SegmentedTextResult, LocalPa
 class UnstructuredParser(
     DocumentParser, TextParsing, SegmentedTextResult, LocalParsing
 ):
-    """Use UnstructuredPDFLoader to extract text from PDF with AI-powered element detection."""
+    """Use Unstructured to extract text from modern Office/text formats.
 
-    # Unstructured supports multiple modern office/text formats
+    Note:
+        - Modern Open XML formats such as .docx, .pptx, .xlsx are supported directly.
+        - Legacy formats .doc and .ppt are only supported when LibreOffice is installed.
+    """
+
+    # Unstructured supports multiple modern office/text formats; .doc/.ppt support is conditional on LibreOffice.
     supported_extensions = [
         ".pdf",
         ".docx",
@@ -112,7 +117,9 @@ async def extract_text_with_pdfplumber(file_path: str, **kwargs: Any) -> ParseRe
 async def extract_text_with_unstructured(file_path: str, **kwargs: Any) -> ParseResult:
     """Extract text using Unstructured (supports PDF, DOCX, PPTX, XLSX, etc.).
 
-    Note: .doc (legacy Word format) requires LibreOffice to be installed.
+    Note:
+        - Legacy .doc and .ppt formats require LibreOffice to be installed.
+        - For best compatibility, prefer converting legacy Office files to Open XML (.docx/.pptx/.xlsx).
     """
 
     try:

@@ -233,7 +233,7 @@ def test_validate_office_file_format_invalid_docx_ole2(tmp_path: Path) -> None:
     doc_file.write_bytes(
         bytes([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) + b"rest"
     )
-    with pytest.raises(ValueError, match="旧的 .doc \\(OLE2\\) 格式"):
+    with pytest.raises(ValueError, match="legacy .doc \\(OLE2\\) format"):
         validate_office_file_format(
             str(doc_file), ".docx", strict=True, parser_name="test_parser"
         )
@@ -246,7 +246,7 @@ def test_validate_office_file_format_invalid_xlsx_ole2(tmp_path: Path) -> None:
     xls_file.write_bytes(
         bytes([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) + b"rest"
     )
-    with pytest.raises(ValueError, match="旧的 .xls \\(OLE2\\) 格式"):
+    with pytest.raises(ValueError, match="legacy .xls \\(OLE2\\) format"):
         validate_office_file_format(
             str(xls_file), ".xlsx", strict=True, parser_name="test_parser"
         )
@@ -267,7 +267,7 @@ def test_validate_office_file_format_warning_mode(
         validate_office_file_format(
             str(doc_file), ".docx", strict=False, parser_name="test_parser"
         )
-    assert "旧的 .doc (OLE2) 格式" in caplog.text
+    assert "legacy .doc (OLE2) format" in caplog.text
 
 
 def test_validate_office_file_format_non_office_file(tmp_path: Path) -> None:

@@ -428,6 +428,8 @@ class CollectionManager:
             bool(collection.allow_mixed_parse_methods) if collection else False
         )
 
+        # Always use strict parser/file-type compatibility here (allow_mixed=False).
+        # The allow_mixed flag only controls whether we skip this compatibility check entirely.
         if parsing_method != "default" and not allow_mixed:
             file_ext = os.path.splitext(file_path)[1]
 
