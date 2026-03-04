@@ -1319,6 +1319,7 @@ Build when you need.`
         reuploadConfirmMessage: "以下文件在当前知识库中已存在，是否重新上传并覆盖？",
         reuploadConfirmCancel: "取消",
         reuploadConfirmSubmit: "仍然上传",
+        checkFailedProceeding: "无法检查是否重复，已直接上传",
         processSuccess: "处理成功",
         processResult: {
           createDocuments: "创建文档",

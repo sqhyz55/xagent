@@ -682,8 +682,8 @@ async def check_documents_exist_api(
     Used by the frontend to show "file already exists, re-upload?" before ingest.
     Duplicate is determined by: same collection + document with same source_path basename.
 
-    Returns:
-        {"existing_filenames": ["a.docx", ...]} — subset of requested filenames that exist.
+    For duplicate check we always filter by current user's documents only (including
+    for admins), so "already exists" matches what will be overwritten on re-upload.
     """
     try:
         from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
@@ -702,9 +702,12 @@ async def check_documents_exist_api(
                 status_code=422,
                 detail="Request body must contain 'filenames' as a list of strings",
             )
-        requested = {
-            str(f).strip() for f in filenames if f is not None and str(f).strip()
-        }
+        if not all(isinstance(f, str) for f in filenames):
+            raise HTTPException(
+                status_code=422,
+                detail="All 'filenames' elements must be strings",
+            )
+        requested = {f.strip() for f in filenames if f and f.strip()}
         if not requested:
             return {"existing_filenames": []}
 
@@ -713,9 +716,8 @@ async def check_documents_exist_api(
         table = conn.open_table("documents")
 
         base_filter = build_lancedb_filter_expression({"collection": collection_name})
-        user_filter = UserPermissions.get_user_filter(
-            int(_user.id), bool(_user.is_admin)
-        )
+        # Use own-files-only filter even for admins so duplicate check matches re-upload behavior
+        user_filter = UserPermissions.get_user_filter(int(_user.id), is_admin=False)
         combined_filter = (
             f"({base_filter}) and ({user_filter})"
             if user_filter and base_filter

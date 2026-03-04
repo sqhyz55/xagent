@@ -347,7 +347,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       setSelectedFiles([])
       setUploadProgress(0)
       setIsAddSourceOpen(false)
-      setReuploadDialogOpen(false)
+      closeReuploadDialog()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("kb.detail.errors.uploadFailedGeneric"))
     } finally {
@@ -361,6 +361,9 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       return
     }
 
+    // Race between check and upload (TOCTOU): another user could upload the same file
+    // after we check. This is acceptable because the backend uses deterministic doc_id
+    // and merge_insert, so re-upload overwrites the same record and remains idempotent.
     try {
       const checkRes = await apiRequest(
         `${getApiUrl()}/api/kb/collections/${encodeURIComponent(collectionName)}/documents/check`,
@@ -373,6 +376,8 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
         }
       )
       if (!checkRes.ok) {
+        console.warn("Check API failed, proceeding with upload:", checkRes.status)
+        toast.warning(t("kb.dialog.fileUpload.checkFailedProceeding") || "Could not check for duplicates, uploading directly.")
         await doUpload()
         return
       }
@@ -384,14 +389,20 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
         return
       }
       await doUpload()
-    } catch {
+    } catch (error) {
+      console.warn("Check API failed, proceeding with upload:", error)
+      toast.warning(t("kb.dialog.fileUpload.checkFailedProceeding") || "Could not check for duplicates, uploading directly.")
       await doUpload()
     }
   }
 
-  const handleConfirmReupload = () => {
+  const closeReuploadDialog = () => {
     setReuploadDialogOpen(false)
     setExistingFilenamesForReupload([])
+  }
+
+  const handleConfirmReupload = () => {
+    closeReuploadDialog()
     doUpload()
   }
 
@@ -923,10 +934,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
 
         {/* Re-upload confirm: file(s) already exist */}
         <Dialog open={reuploadDialogOpen} onOpenChange={(open) => {
-          if (!open) {
-            setReuploadDialogOpen(false)
-            setExistingFilenamesForReupload([])
-          }
+          if (!open) closeReuploadDialog()
         }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
@@ -945,10 +953,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
             <div className="flex justify-end gap-2">
               <Button
                 variant="outline"
-                onClick={() => {
-                  setReuploadDialogOpen(false)
-                  setExistingFilenamesForReupload([])
-                }}
+                onClick={closeReuploadDialog}
               >
                 {t("kb.dialog.fileUpload.reuploadConfirmCancel")}
               </Button>

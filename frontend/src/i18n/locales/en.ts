@@ -1319,6 +1319,7 @@ Build when you need.`
         reuploadConfirmMessage: "The following file(s) already exist in this knowledge base. Re-upload to overwrite?",
         reuploadConfirmCancel: "Cancel",
         reuploadConfirmSubmit: "Re-upload anyway",
+        checkFailedProceeding: "Could not check for duplicates, uploading directly.",
         processSuccess: "Processing Success",
         processResult: {
           createDocuments: "Create Documents",
