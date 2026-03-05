@@ -21,7 +21,7 @@ class DeepDocProgressAdapter:
         self.callback = callback
         self.last_status: Optional[str] = None
 
-    def get_callback(self) -> Callable[..., None]:
+    def get_callback(self) -> Callable[[float, Optional[str]], None]:
         """Get a callback function compatible with DeepDoc's format.
 
         Returns:
