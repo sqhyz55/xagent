@@ -51,6 +51,14 @@ const modelTypeConfig = {
   },
 }
 
+const configTypeCategoryMap: Record<keyof typeof modelTypeConfig, Model["model_provider"]> = {
+  general: "llm",
+  small_fast: "llm",
+  visual: "llm",
+  compact: "llm",
+  embedding: "embedding",
+}
+
 export function DefaultModelsSettings() {
   const { token } = useAuth()
   const [models, setModels] = useState<Model[]>([])
@@ -126,8 +134,9 @@ export function DefaultModelsSettings() {
     }
   }
 
-  const getModelById = (modelId: number) => {
-    return models.find(model => model.id === modelId)
+  const getOptionsForConfigType = (configType: keyof typeof modelTypeConfig) => {
+    const category = configTypeCategoryMap[configType]
+    return models.filter((model) => model.model_provider === category)
   }
 
   if (loading) {
@@ -171,6 +180,7 @@ export function DefaultModelsSettings() {
             const currentDefault = defaultModels[configType as keyof typeof modelTypeConfig]
             const Icon = config.icon
             const isSaving = saving === configType
+            const availableModels = getOptionsForConfigType(configType as keyof typeof modelTypeConfig)
 
             return (
               <Card key={configType} className="relative">
@@ -229,13 +239,13 @@ export function DefaultModelsSettings() {
                         onValueChange={(value) =>
                           handleSetDefault(configType as keyof typeof modelTypeConfig, parseInt(value))
                         }
-                        options={models.map((model) => ({
+                        options={availableModels.map((model) => ({
                           value: model.id.toString(),
                           label: `${model.name} (${model.provider})`,
                         }))}
                         placeholder={t('settings.defaultModels.labels.selectModel')}
                       />
-                      {models.length === 0 && (
+                      {availableModels.length === 0 && (
                         <p className="text-xs text-muted-foreground">
                           {t('settings.defaultModels.empty.noModels')}
                         </p>

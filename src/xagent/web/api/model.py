@@ -1417,6 +1417,7 @@ async def fetch_provider_models(
     provider: str,
     api_key: str = Body(...),
     base_url: Optional[str] = Body(None),
+    category: Optional[str] = Body(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
@@ -1446,7 +1447,9 @@ async def fetch_provider_models(
         )
 
     try:
-        models = await fetch_models_from_provider(provider, api_key, base_url)
+        models = await fetch_models_from_provider(
+            provider, api_key, base_url, category=category
+        )
 
         return {
             "provider": provider,

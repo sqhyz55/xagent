@@ -182,7 +182,7 @@ export async function getSupportedProviders(): Promise<Provider[]> {
  */
 export async function getProviderModels(
   provider: string,
-  config?: { api_key?: string; base_url?: string }
+  config?: { api_key?: string; base_url?: string; category?: 'llm' | 'embedding' | 'image' }
 ): Promise<ProviderModel[]> {
   const apiUrl = getApiUrl()
 
@@ -194,6 +194,7 @@ export async function getProviderModels(
     body: JSON.stringify({
       api_key: config?.api_key ?? '',
       base_url: config?.base_url,
+      category: config?.category,
     }),
   });
 

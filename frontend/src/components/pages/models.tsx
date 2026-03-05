@@ -50,7 +50,6 @@ import {
   X
 } from "lucide-react"
 import { useI18n } from "@/contexts/i18n-context"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { toast } from "sonner"
 
 function doubleEncodeModelId(modelId: string): string {
@@ -444,9 +443,8 @@ export function ModelsPage() {
   const handleConfirmDefault = async () => {
     setShowDefaultConfirm(false)
     if (viewMode === 'connect') {
-      const selected = fetchedModels.filter(m => selectedFetchedModels.includes(m.id))
       // If user selected a specific model to be default
-      await submitSelectedModels(selected, pendingDefaultType || undefined, selectedDefaultModel)
+      await submitSelectedModelNames(selectedFetchedModels, pendingDefaultType || undefined, selectedDefaultModel)
     } else {
       if (pendingDefaultType) {
         // Handle batch create with selected default
@@ -472,8 +470,7 @@ export function ModelsPage() {
   const handleCancelDefault = async () => {
     setShowDefaultConfirm(false)
     if (viewMode === 'connect') {
-      const selected = fetchedModels.filter(m => selectedFetchedModels.includes(m.id))
-      await submitSelectedModels(selected)
+      await submitSelectedModelNames(selectedFetchedModels)
     } else {
       await submitModelData(formData)
     }
@@ -626,7 +623,8 @@ export function ModelsPage() {
       setIsFetchingModels(true)
       const models = await getProviderModels(formData.model_provider, {
         api_key: formData.api_key,
-        base_url: formData.base_url
+        base_url: formData.base_url,
+        category: formData.category as 'llm' | 'embedding' | 'image',
       })
       setFetchedModels(models)
     } catch (err) {
@@ -640,7 +638,7 @@ export function ModelsPage() {
 
   const handleSaveSelectedModels = async () => {
     try {
-      const selected = fetchedModels.filter(m => selectedFetchedModels.includes(m.id))
+      const selected = selectedFetchedModels
 
       // Check for default model for the first selected model
       // Only check if we are creating LLM models
@@ -650,31 +648,31 @@ export function ModelsPage() {
 
         if (!hasDefault && selected.length > 0) {
           setPendingDefaultType(targetType)
-          setPendingModels(selected.map(m => m.id))
-          setSelectedDefaultModel(selected[0].id)
+          setPendingModels(selected)
+          setSelectedDefaultModel(selected[0])
           setShowDefaultConfirm(true)
           return
         }
       }
 
-      await submitSelectedModels(selected)
+      await submitSelectedModelNames(selected)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('models.errors.saveFailed'))
     }
   }
 
-  const submitSelectedModels = async (selectedModels: ProviderModel[], defaultTypeToSet?: string, defaultModelId?: string) => {
+  const submitSelectedModelNames = async (selectedModelNames: string[], defaultTypeToSet?: string, defaultModelId?: string) => {
     try {
       setLoading(true)
 
-      for (let i = 0; i < selectedModels.length; i++) {
-         const model = selectedModels[i]
+      for (let i = 0; i < selectedModelNames.length; i++) {
+         const modelName = selectedModelNames[i]
 
          const payload: ModelCreate = {
             ...formData,
-            model_id: `${model.id}-${formData.model_provider}-${user?.id}`,
-            model_name: model.id,
-            default_config_types: (defaultTypeToSet && defaultModelId && model.id === defaultModelId) ? [defaultTypeToSet] : []
+            model_id: `${modelName}-${formData.model_provider}-${user?.id}`,
+            model_name: modelName,
+            default_config_types: (defaultTypeToSet && defaultModelId && modelName === defaultModelId) ? [defaultTypeToSet] : []
          }
 
          const url = `${getApiUrl()}/api/models/`
@@ -687,7 +685,7 @@ export function ModelsPage() {
          if (!response.ok) {
           const errorData = await response.json()
           throw new Error(errorData.detail || t('models.errors.createFailed'))
-        } else if (defaultTypeToSet && defaultModelId && model.id === defaultModelId) {
+        } else if (defaultTypeToSet && defaultModelId && modelName === defaultModelId) {
              const modelResponse = await response.json()
              // Set default
              await apiRequest(`${getApiUrl()}/api/models/user-default`, {
@@ -1039,6 +1037,43 @@ export function ModelsPage() {
             </DialogHeader>
 
             <div className="flex flex-col gap-4 mt-4">
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                 <div>
+                   <Label htmlFor="connect_category">{t('models.form.category')}</Label>
+                   <Select
+                     value={formData.category}
+                     onValueChange={(value) => setFormData({ ...formData, category: value })}
+                     options={[
+                       { value: "llm", label: t('models.tabs.llm') },
+                       { value: "embedding", label: t('models.tabs.embedding') },
+                       { value: "image", label: t('models.tabs.image') }
+                     ]}
+                   />
+                 </div>
+                 <div>
+                   <Label htmlFor="connect_model_provider">{t('models.form.provider')}</Label>
+                   <Select
+                     value={formData.model_provider}
+                     onValueChange={(value) => {
+                       const providerConfig = providers.find(p => p.id === value)
+                       setFormData({
+                         ...formData,
+                         model_provider: value,
+                         base_url: providerConfig?.defaultBaseUrl || "",
+                         abilities: formData.category === 'llm' ? ["chat"] : formData.category === 'embedding' ? ["embedding"] : ["generate"],
+                       })
+                       setFetchedModels([])
+                       setSelectedFetchedModels([])
+                     }}
+                     options={providers
+                       .filter(p => p.category.includes(formData.category as any))
+                       .map((provider) => ({
+                         value: provider.id,
+                         label: provider.name
+                       }))}
+                   />
+                 </div>
+               </div>
                <div className="grid grid-cols-1 gap-4">
                  <div>
                    <Label htmlFor="api_key">{t('models.form.apiKey')}</Label>
@@ -1075,46 +1110,30 @@ export function ModelsPage() {
                      <RefreshCw className={`h-3 w-3 ${isFetchingModels ? 'animate-spin' : ''}`} />
                    </Button>
                  </div>
-                 {isFetchingModels ? (
-                   <div className="flex items-center justify-center p-8 border rounded-md text-muted-foreground">
-                     <Loader2 className="w-6 h-6 animate-spin mr-2" />
-                     {t('models.dialog.fetchingModels')}
-                   </div>
-                 ) : fetchedModels.length > 0 ? (
-                   <>
-                     <ScrollArea className="max-h-[200px] overflow-y-scroll border p-4">
-                       <div className="space-y-2">
-                         {fetchedModels.map(model => (
-                           <div key={model.id} className="flex items-center space-x-2">
-                             <input
-                               type="checkbox"
-                               id={`model-${model.id}`}
-                               className="h-4 w-4 rounded border-gray-300"
-                               checked={selectedFetchedModels.includes(model.id)}
-                               onChange={(e) => {
-                                 if (e.target.checked) {
-                                   setSelectedFetchedModels([...selectedFetchedModels, model.id])
-                                 } else {
-                                   setSelectedFetchedModels(selectedFetchedModels.filter(id => id !== model.id))
-                                 }
-                               }}
-                             />
-                             <Label htmlFor={`model-${model.id}`} className="font-normal cursor-pointer flex-1">
-                               {model.id}
-                             </Label>
-                           </div>
-                         ))}
-                       </div>
-                     </ScrollArea>
-                     <div className="text-sm text-muted-foreground mt-2">
-                       {selectedFetchedModels.length} models selected
-                     </div>
-                   </>
-                 ) : (
-                   <div className="flex items-center justify-center p-8 border rounded-md text-muted-foreground italic bg-muted/30">
-                     {t('models.dialog.modelsFetchedAfterConnect')}
-                   </div>
-                 )}
+                {isFetchingModels ? (
+                  <div className="flex items-center justify-center p-8 border rounded-md text-muted-foreground">
+                    <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                    {t('models.dialog.fetchingModels')}
+                  </div>
+                ) : (
+                  <>
+                    <MultiSelect
+                      creatable
+                      values={selectedFetchedModels}
+                      onValuesChange={setSelectedFetchedModels}
+                      options={fetchedModels.map(m => ({ value: m.id, label: m.id }))}
+                      placeholder={t('models.form.selectModel')}
+                    />
+                    <div className="text-sm text-muted-foreground mt-2">
+                      {selectedFetchedModels.length} models selected
+                    </div>
+                    {fetchedModels.length === 0 && (
+                      <div className="flex items-center justify-center p-4 border rounded-md text-muted-foreground italic bg-muted/30">
+                        {t('models.dialog.modelsFetchedAfterConnect')}
+                      </div>
+                    )}
+                  </>
+                )}
                </div>
             </div>
 

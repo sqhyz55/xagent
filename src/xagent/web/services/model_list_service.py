@@ -112,6 +112,7 @@ async def fetch_models_from_provider(
     provider: str,
     api_key: str,
     base_url: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch available models from a specific provider.
 
@@ -119,6 +120,7 @@ async def fetch_models_from_provider(
         provider: Provider name (openai, zhipu, claude, etc.)
         api_key: API key for the provider
         base_url: Custom base URL (optional)
+        category: Requested category (llm, embedding, image)
 
     Returns:
         List of available models
@@ -131,6 +133,8 @@ async def fetch_models_from_provider(
 
     try:
         result: List[Dict[str, Any]] = await fetcher(api_key, base_url)
+        if category:
+            result = _filter_models_by_category(result, category)
         return result
     except Exception as e:
         logger.error(
@@ -139,6 +143,53 @@ async def fetch_models_from_provider(
             redact_sensitive_text(str(e)),
         )
         raise
+
+
+def _model_name(model: Dict[str, Any]) -> str:
+    """Get a normalized model name for category filtering."""
+    return str(model.get("id") or model.get("model") or model.get("name") or "").lower()
+
+
+def _is_embedding_model(model: Dict[str, Any]) -> bool:
+    """Heuristic detection of embedding models from provider list output."""
+    name = _model_name(model)
+    return "embedding" in name
+
+
+def _is_image_model(model: Dict[str, Any]) -> bool:
+    """Heuristic detection of image generation/edit models."""
+    name = _model_name(model)
+    image_keywords = (
+        "image",
+        "dall-e",
+        "sdxl",
+        "stable-diffusion",
+        "flux",
+        "vision-image",
+    )
+    return any(keyword in name for keyword in image_keywords)
+
+
+def _filter_models_by_category(
+    models: List[Dict[str, Any]], category: str
+) -> List[Dict[str, Any]]:
+    """Filter provider model list by requested category."""
+    normalized = category.lower().strip()
+
+    if normalized == "embedding":
+        return [model for model in models if _is_embedding_model(model)]
+
+    if normalized == "image":
+        return [model for model in models if _is_image_model(model)]
+
+    if normalized == "llm":
+        return [
+            model
+            for model in models
+            if not _is_embedding_model(model) and not _is_image_model(model)
+        ]
+
+    return models
 
 
 def get_supported_providers() -> List[Dict[str, Any]]:
