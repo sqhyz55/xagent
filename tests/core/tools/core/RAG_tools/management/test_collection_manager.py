@@ -1,5 +1,6 @@
 """Tests for collection manager functionality."""
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -222,10 +223,16 @@ class TestSyncFunctions:
         """Test synchronous collection stats update."""
         # Create a mock CollectionInfo to return
         mock_collection = CollectionInfo(name="test", documents=1)
-        # Mock _run_in_separate_loop to directly return the result
-        mock_run_loop.return_value = mock_collection
+        # Execute the passed coroutine to avoid "coroutine was never awaited" warnings.
+        mock_run_loop.side_effect = lambda coro: asyncio.run(coro)
 
-        result = update_collection_stats_sync("test", documents_delta=1)
+        with patch(
+            "xagent.core.tools.core.RAG_tools.management.collection_manager.collection_manager"
+        ) as mock_manager:
+            mock_manager.update_collection_stats = AsyncMock(
+                return_value=mock_collection
+            )
+            result = update_collection_stats_sync("test", documents_delta=1)
 
         assert result == mock_collection
         mock_run_loop.assert_called_once()

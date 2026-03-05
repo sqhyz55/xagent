@@ -224,11 +224,12 @@ examples/*.html
 # UV.lock
 uv.lock
 
-# Root directory markdown files (except README.md and AGENTS.md)
+# Root directory markdown files (except README.md, AGENTS.md, CLAUDE.md, CHANGELOG.md)
 *.md
 !README.md
 !AGENTS.md
 !CLAUDE.md
+!CHANGELOG.md
 # But keep skills markdown files and test markdown files
 !src/xagent/skills/**/*.md
 !tests/resources/test_files/*.md
