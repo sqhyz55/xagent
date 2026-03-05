@@ -21,7 +21,11 @@ class DeepDocProgressAdapter:
         self.callback = callback
         self.last_status: Optional[str] = None
 
+<<<<<<< HEAD
     def get_callback(self) -> Callable[[float, Optional[str]], None]:
+=======
+    def get_callback(self) -> Callable[..., None]:
+>>>>>>> d0cc4f2 (fix(kb): make DeepDoc progress callback compatible with OCR path)
         """Get a callback function compatible with DeepDoc's format.
 
         Returns:
