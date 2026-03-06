@@ -463,8 +463,23 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
       })
 
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || t("kb.detail.errors.searchFailed"))
+        let message = t("kb.detail.errors.searchFailed")
+        try {
+          const errorData = await response.json()
+          const detail = errorData?.detail
+          if (typeof detail === "string") {
+            message = detail
+          } else if (Array.isArray(detail)) {
+            message = detail.map((e: { msg?: string }) => e?.msg ?? "").filter(Boolean).join("; ") || message
+          }
+          // Use friendly message when backend indicates embedding not configured (503 or message contains embedding)
+          if (response.status === 503 || /embedding|not configured|not available/i.test(message)) {
+            message = t("kb.detail.errors.embeddingNotConfigured")
+          }
+        } catch {
+          message = `${t("kb.detail.errors.searchFailed")} (HTTP ${response.status})`
+        }
+        throw new Error(message)
       }
 
       const result = await response.json()

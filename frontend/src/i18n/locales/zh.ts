@@ -1485,6 +1485,7 @@ Build when you need.`
         enterStartUrl: "请输入起始 URL",
         webImportFailed: "网站导入失败",
         searchFailed: "搜索失败",
+        embeddingNotConfigured: "未配置或不可用的嵌入模型。请在「设置 > 模型」中配置默认嵌入模型，或确保所选嵌入模型存在且已启用。",
         partialSuccess: "部分成功: {message}",
         deleteFailedWithMessage: "删除失败: {message}",
       },

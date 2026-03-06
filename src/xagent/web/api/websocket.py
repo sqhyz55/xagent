@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
+from starlette.websockets import WebSocketState
 
 from ..auth_dependencies import get_user_from_websocket_token
 from ..models.user import User
@@ -20,6 +21,11 @@ from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import safe_timestamp_to_unix
 
 logger = logging.getLogger(__name__)
+
+
+def _is_ws_connected(ws: WebSocket) -> bool:
+    """Return True if WebSocket is still in CONNECTED state and can receive send()."""
+    return getattr(ws, "application_state", None) == WebSocketState.CONNECTED
 
 
 def normalize_filename(filename: str) -> str:
@@ -65,6 +71,21 @@ def normalize_filename(filename: str) -> str:
         normalized_name = "_" + normalized_name
 
     return normalized_name
+
+
+def _make_json_serializable(obj: Any) -> Any:
+    """Recursively convert objects (e.g. Pydantic models) to JSON-serializable form."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return _make_json_serializable(obj.model_dump())
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_serializable(item) for item in obj]
+    if isinstance(obj, datetime):
+        return obj.timestamp() if obj.tzinfo else obj.replace(tzinfo=timezone.utc).timestamp()
+    return obj
 
 
 def create_stream_event(
@@ -1821,6 +1842,8 @@ async def handle_build_preview_execution(
 
         async def handle_event(self, event: TraceEvent) -> None:
             """Convert and send trace event to WebSocket."""
+            if not _is_ws_connected(self.ws):
+                return
             try:
                 from .ws_trace_handlers import get_event_type_mapping
 
@@ -1840,8 +1863,13 @@ async def handle_build_preview_execution(
                     stream_event["parent_id"] = event.parent_id
                 stream_event["is_preview"] = True
 
-                await self.ws.send_text(json.dumps(stream_event))
+                payload = _make_json_serializable(stream_event)
+                await self.ws.send_text(json.dumps(payload))
 
+            except RuntimeError as e:
+                if "close message" in str(e).lower():
+                    return
+                logger.warning(f"Failed to send preview trace event: {e}")
             except Exception as e:
                 logger.warning(f"Failed to send preview trace event: {e}")
 
@@ -2172,6 +2200,7 @@ async def handle_build_preview_execution(
                 task_id=preview_task_id,
             )
 
+<<<<<<< HEAD
         # Send preview completion event
         await websocket.send_text(
             json.dumps(
@@ -2184,23 +2213,45 @@ async def handle_build_preview_execution(
                 }
             )
         )
+=======
+        # Send preview completion event (skip if client already disconnected)
+        if _is_ws_connected(websocket):
+            try:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "task_completed",
+                            "result": result.get("output", ""),
+                            "success": result.get("success", False),
+                            "timestamp": datetime.now(timezone.utc).timestamp(),
+                        }
+                    )
+                )
+            except RuntimeError as e:
+                if "close message" not in str(e).lower():
+                    raise
+                logger.debug("Build preview task_completed not sent: client disconnected")
+        else:
+            logger.info("Build preview completed but client already disconnected, skipping task_completed")
+>>>>>>> 8f743bd (fix: build preview WS, KB search errors, and preview trace over closed socket)
 
         logger.info(f"Build preview {preview_task_id} completed")
 
     except Exception as e:
         logger.error(f"Error in build preview execution: {e}", exc_info=True)
-        try:
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "task_error",
-                        "error": str(e),
-                        "timestamp": datetime.now(timezone.utc).timestamp(),
-                    }
+        if _is_ws_connected(websocket):
+            try:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "task_error",
+                            "error": str(e),
+                            "timestamp": datetime.now(timezone.utc).timestamp(),
+                        }
+                    )
                 )
-            )
-        except Exception:
-            pass
+            except (RuntimeError, Exception):
+                pass
     finally:
         db.close()
 

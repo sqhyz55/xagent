@@ -32,6 +32,7 @@ from ...core.tools.core.RAG_tools.parse.parse_display import (
     paginate_parse_results,
     reconstruct_parse_result_from_db,
 )
+from ...core.tools.core.RAG_tools.core.exceptions import EmbeddingAdapterError
 from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
     run_document_ingestion,
 )
@@ -434,6 +435,16 @@ async def search(
 
     except HTTPException:
         raise
+    except EmbeddingAdapterError as e:
+        logger.warning(f"Document search failed (embedding not configured): {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Embedding model is not configured or not available. "
+                "Please configure a default embedding model in Settings > Models, "
+                "or ensure the selected embedding model exists and is active."
+            ),
+        )
     except Exception as e:
         logger.exception(f"Document search failed: {e}")
         raise HTTPException(

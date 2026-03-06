@@ -24,13 +24,25 @@ export function getWsUrl(): string {
     return process.env.NEXT_PUBLIC_WS_URL
   }
 
-  // 2. Auto-construct from current location (development/same-domain)
+  // 2. Derive from API URL when frontend and backend are on different origins (e.g. dev: 3000 vs 8000)
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || ''
+  if (apiUrl) {
+    try {
+      const u = new URL(apiUrl)
+      const wsProtocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
+      return `${wsProtocol}//${u.host}`
+    } catch {
+      // invalid URL, fall through
+    }
+  }
+
+  // 3. Same-origin: use current location (e.g. behind nginx, one host)
   if (typeof window !== 'undefined') {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${protocol}//${window.location.host}`
   }
 
-  // 3. Fallback for SSR (shouldn't happen for WS, but safe)
+  // 4. Fallback for SSR (shouldn't happen for WS, but safe)
   return ''
 }
 

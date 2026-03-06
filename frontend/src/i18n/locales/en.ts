@@ -1485,6 +1485,7 @@ Build when you need.`
         enterStartUrl: "Please enter a start URL",
         webImportFailed: "Website import failed",
         searchFailed: "Search failed",
+        embeddingNotConfigured: "Embedding model is not configured or not available. Please configure a default embedding model in Settings > Models, or ensure the selected embedding model exists and is active.",
         partialSuccess: "Partial success: {message}",
         deleteFailedWithMessage: "Delete failed: {message}",
       },
