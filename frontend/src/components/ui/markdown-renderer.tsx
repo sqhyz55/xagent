@@ -154,16 +154,9 @@ export function JsonRenderer({ data, className = '', onFileClick }: JsonRenderer
       const parsed = JSON.parse(data)
       return <JsonRenderer data={parsed} className={className} onFileClick={onFileClick} />
     } catch {
-      // If not JSON, try to identify Markdown more comprehensively
-      if (isLikelyMarkdown(data)) {
-        return <MarkdownRenderer content={data} className={className} onFileClick={onFileClick} />
-      }
-      // Otherwise display as plain text
-      return (
-        <pre className={`py-3 rounded text-sm font-mono overflow-x-auto whitespace-pre-wrap ${className}`}>
-          {data}
-        </pre>
-      )
+      // Render non-JSON string as markdown by default, so headings/lists/code blocks
+      // from agent output are displayed as formatted content instead of raw source.
+      return <MarkdownRenderer content={data} className={className} onFileClick={onFileClick} />
     }
   }
 

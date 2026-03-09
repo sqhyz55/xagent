@@ -126,18 +126,26 @@ class AgentService:
         if not self.tools and not self.tool_config:
             self.tool_config = self._create_default_tool_config()
 
+        # Get allowed skills from tool_config once and reuse in all modes.
+        allowed_skills: Optional[List[str]] = None
+        if tool_config and hasattr(tool_config, "get_allowed_skills"):
+            allowed_skills = tool_config.get_allowed_skills()
+            if allowed_skills:
+                logger.info(f"Allowed skills configured: {allowed_skills}")
+
+        # ReAct mode previously ignored selected skills. Inject skill content into
+        # system prompt so selected SKILL.md constraints still apply.
+        effective_system_prompt = system_prompt
+        if not self.use_dag_pattern and allowed_skills:
+            effective_system_prompt = self._inject_allowed_skills_into_prompt(
+                system_prompt, allowed_skills
+            )
+
         # Set up patterns
         if patterns:
             self.patterns = patterns
         elif llm:
             if self.use_dag_pattern:
-                # Get allowed_skills from tool_config if available
-                allowed_skills = None
-                if tool_config and hasattr(tool_config, "get_allowed_skills"):
-                    allowed_skills = tool_config.get_allowed_skills()
-                    if allowed_skills:
-                        logger.info(f"Allowed skills configured: {allowed_skills}")
-
                 # Create DAG pattern - automatically handles single/dual LLM configuration
                 dag_pattern = DAGPlanExecutePattern(
                     llm=llm,
@@ -209,7 +217,7 @@ class AgentService:
             "tracer": self.tracer,
             "task_id": task_id,
             "patterns": self.patterns,  # Include patterns for standard agents
-            "system_prompt": system_prompt,  # Pass system prompt from agent builder
+            "system_prompt": effective_system_prompt,  # Pass effective prompt
             **agent_kwargs,  # Pass through any additional agent-specific arguments
         }
 
@@ -636,6 +644,32 @@ class AgentService:
         # Apply context if provided
         if context:
             for key, value in context.items():
+                # Preserve skill-augmented system prompt. Runtime context may pass a
+                # plain system_prompt (e.g. "you are a helpful assistant") that would
+                # otherwise overwrite the enriched prompt built during initialization.
+                if key == "system_prompt":
+                    existing_prompt = runner.context.state.get("system_prompt")
+                    if (
+                        isinstance(existing_prompt, str)
+                        and existing_prompt.strip()
+                        and isinstance(value, str)
+                        and value.strip()
+                    ):
+                        existing_clean = existing_prompt.strip()
+                        incoming_clean = value.strip()
+                        if incoming_clean in existing_clean:
+                            # Keep enriched prompt as-is.
+                            runner.context.state[key] = existing_clean
+                        elif existing_clean in incoming_clean:
+                            # Incoming prompt already contains existing prompt.
+                            runner.context.state[key] = incoming_clean
+                        else:
+                            # Merge both prompts while avoiding destructive overwrite.
+                            runner.context.state[key] = (
+                                f"{existing_clean}\n\n{incoming_clean}"
+                            )
+                        continue
+
                 runner.context.state[key] = value
 
         # Store task_id for potential continuation
@@ -918,6 +952,52 @@ class AgentService:
             data["execution_status"] = dag_pattern.get_execution_status()
 
         return data
+
+    def _inject_allowed_skills_into_prompt(
+        self, base_prompt: Optional[str], allowed_skills: List[str]
+    ) -> Optional[str]:
+        """Append selected SKILL.md content for ReAct-mode executions."""
+        skill_sections = self._load_selected_skill_sections(allowed_skills)
+        if not skill_sections:
+            return base_prompt
+
+        skill_block = "\n\n".join(skill_sections)
+        prefix = (
+            "You must follow the selected skill constraints and templates below when responding.\n"
+            "If there is any conflict, prioritize the selected skill instructions."
+        )
+
+        if base_prompt and base_prompt.strip():
+            return f"{base_prompt.strip()}\n\n{prefix}\n\n{skill_block}"
+        return f"{prefix}\n\n{skill_block}"
+
+    def _load_selected_skill_sections(self, allowed_skills: List[str]) -> List[str]:
+        """Load selected skills from builtin and user skill directories."""
+        roots = [
+            Path(__file__).resolve().parents[2] / "skills" / "builtin",
+            Path(".xagent/skills"),
+        ]
+
+        sections: List[str] = []
+        for skill_name in allowed_skills:
+            content = ""
+            for root in roots:
+                skill_file = root / skill_name / "SKILL.md"
+                if skill_file.exists():
+                    try:
+                        content = skill_file.read_text(encoding="utf-8").strip()
+                    except Exception as exc:
+                        logger.warning(f"Failed to read skill file {skill_file}: {exc}")
+                    break
+
+            if content:
+                sections.append(f"## Available Skill: {skill_name}\n\n{content}")
+            else:
+                logger.warning(
+                    f"Selected skill '{skill_name}' not found in configured skill roots"
+                )
+
+        return sections
 
     def _create_default_tool_config(self) -> Any:
         """Create default tool configuration for standalone usage."""

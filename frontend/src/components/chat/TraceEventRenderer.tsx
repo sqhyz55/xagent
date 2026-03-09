@@ -519,8 +519,17 @@ function StepActionItem({ action, onViewDetail, onOpenTerminal, onFileClick }: S
                              </div>
                          )}
                          {action.data.output && (
-                             <div className="pt-2 border-t border-border/30 text-muted-foreground/80 whitespace-pre-wrap">
-                                 {t('traceEventRenderer.output')}: {typeof action.data.output === 'string' ? action.data.output : JSON.stringify(action.data.output, null, 2)}
+                             <div className="pt-2 border-t border-border/30 text-muted-foreground/80">
+                                 <div className="mb-2">{t('traceEventRenderer.output')}:</div>
+                                 {typeof action.data.output === 'string' ? (
+                                   <MarkdownRenderer
+                                     content={action.data.output}
+                                     onFileClick={onFileClick}
+                                     className="text-xs leading-relaxed prose-neutral dark:prose-invert max-w-none"
+                                   />
+                                 ) : (
+                                   <pre className="whitespace-pre-wrap">{JSON.stringify(action.data.output, null, 2)}</pre>
+                                 )}
                              </div>
                          )}
                          {!action.data.output && isRunning && (

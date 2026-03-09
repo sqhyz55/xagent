@@ -2200,7 +2200,6 @@ async def handle_build_preview_execution(
                 task_id=preview_task_id,
             )
 
-<<<<<<< HEAD
         # Send preview completion event
         await websocket.send_text(
             json.dumps(
@@ -2213,27 +2212,6 @@ async def handle_build_preview_execution(
                 }
             )
         )
-=======
-        # Send preview completion event (skip if client already disconnected)
-        if _is_ws_connected(websocket):
-            try:
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "type": "task_completed",
-                            "result": result.get("output", ""),
-                            "success": result.get("success", False),
-                            "timestamp": datetime.now(timezone.utc).timestamp(),
-                        }
-                    )
-                )
-            except RuntimeError as e:
-                if "close message" not in str(e).lower():
-                    raise
-                logger.debug("Build preview task_completed not sent: client disconnected")
-        else:
-            logger.info("Build preview completed but client already disconnected, skipping task_completed")
->>>>>>> 8f743bd (fix: build preview WS, KB search errors, and preview trace over closed socket)
 
         logger.info(f"Build preview {preview_task_id} completed")
 
