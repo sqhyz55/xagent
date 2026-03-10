@@ -8,7 +8,7 @@ import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Union
+from typing import Callable, Optional
 
 from ..core.schemas import (
     CrawlResult,
@@ -18,27 +18,12 @@ from ..core.schemas import (
     WebIngestionResult,
 )
 from ..progress import get_progress_manager
+from ..utils.config_utils import coerce_ingestion_config
+from ..utils.string_utils import sanitize_for_doc_id
 from ..web_crawler import WebCrawler
 from .document_ingestion import run_document_ingestion
 
 logger = logging.getLogger(__name__)
-
-IngestionConfigInput = Union[IngestionConfig, Mapping[str, Any]]
-
-
-def _coerce_ingestion_config(
-    config: Optional[IngestionConfigInput],
-) -> IngestionConfig:
-    """Normalize user-provided ingestion configuration into IngestionConfig."""
-    if config is None:
-        return IngestionConfig()
-    if isinstance(config, IngestionConfig):
-        return config
-    if not isinstance(config, Mapping):
-        raise TypeError(
-            "ingestion_config must be an IngestionConfig instance or a mapping."
-        )
-    return IngestionConfig.model_validate(config)
 
 
 async def run_web_ingestion(
@@ -78,7 +63,7 @@ async def run_web_ingestion(
     failed_urls: dict[str, str] = {}
 
     # Normalize ingestion config
-    ing_cfg = _coerce_ingestion_config(ingestion_config)
+    ing_cfg = coerce_ingestion_config(ingestion_config)
 
     logger.info(
         f"Starting web ingestion: collection={collection}, "
@@ -146,7 +131,7 @@ async def run_web_ingestion(
 
             try:
                 # Save crawled content to temporary markdown file
-                filename = _sanitize_filename(crawl_result.title or f"page_{i + 1}")
+                filename = sanitize_for_doc_id(crawl_result.title or f"page_{i + 1}")
                 temp_file = Path(temp_dir) / f"{filename}.md"
 
                 with open(temp_file, "w", encoding="utf-8") as f:
@@ -259,27 +244,3 @@ async def run_web_ingestion(
     )
 
     return result
-
-
-def _sanitize_filename(name: str) -> str:
-    """Sanitize a string for use as a filename.
-
-    Args:
-        name: Input string
-
-    Returns:
-        Sanitized filename-safe string
-    """
-    # Remove or replace invalid characters
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        name = name.replace(char, "_")
-
-    # Remove leading/trailing spaces and dots
-    name = name.strip(". ")
-
-    # Limit length
-    if len(name) > 200:
-        name = name[:200]
-
-    return name or "untitled"

@@ -344,7 +344,14 @@ def ensure_collection_config_table(conn: DBConnection) -> None:
 
 
 def ensure_collection_metadata_table(conn: DBConnection) -> None:
-    """Ensure the collection_metadata table exists with proper schema."""
+    """Ensure the collection_metadata table exists with proper schema.
+
+    This table stores collection metadata including embedding configuration,
+    statistics, and configuration settings.
+
+    Args:
+        conn: LanceDB connection
+    """
     schema = pa.schema(
         [
             pa.field("name", pa.string()),

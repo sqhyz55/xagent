@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
@@ -45,6 +45,7 @@ from ..management.collection_manager import (
 from ..management.status import write_ingestion_status
 from ..parse.parse_document import parse_document
 from ..progress import ProgressManager, ProgressTracker
+from ..utils.config_utils import IngestionConfigInput, coerce_ingestion_config
 from ..utils.embedding_utils import (
     normalize_raw_embedding_to_vectors,
     normalize_single_embedding,
@@ -56,22 +57,6 @@ from ..vector_storage.vector_manager import (
 )
 
 logger = logging.getLogger(__name__)
-
-IngestionConfigInput = Union[IngestionConfig, Mapping[str, Any]]
-
-
-def _coerce_ingestion_config(config: Optional[IngestionConfigInput]) -> IngestionConfig:
-    """Normalize user-provided ingestion configuration into ``IngestionConfig``."""
-
-    if config is None:
-        return IngestionConfig()
-    if isinstance(config, IngestionConfig):
-        return config
-    if not isinstance(config, Mapping):
-        raise TypeError(
-            "ingestion_config must be an IngestionConfig instance or a mapping."
-        )
-    return IngestionConfig.model_validate(config)
 
 
 def run_document_ingestion(
@@ -101,7 +86,7 @@ def run_document_ingestion(
     Returns:
         IngestionResult: Same contract as :func:`process_document`.
     """
-    cfg = _coerce_ingestion_config(ingestion_config)
+    cfg = coerce_ingestion_config(ingestion_config)
     return process_document(
         collection,
         source_path,
@@ -383,7 +368,7 @@ def process_document(
         - Downstream API layers should surface `result.failed_step` and
           `result.warnings` to callers for better observability.
     """
-    cfg = _coerce_ingestion_config(config)
+    cfg = coerce_ingestion_config(config)
 
     # Initialize progress tracking
     if progress_manager is None:

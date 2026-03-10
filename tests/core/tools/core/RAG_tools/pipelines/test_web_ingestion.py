@@ -10,10 +10,7 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     IngestionResult,
     WebCrawlConfig,
 )
-from xagent.core.tools.core.RAG_tools.pipelines.web_ingestion import (
-    _sanitize_filename,
-    run_web_ingestion,
-)
+from xagent.core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 
 
 class TestWebIngestionPipeline:
@@ -282,27 +279,6 @@ class TestWebIngestionPipeline:
                 mock_ingest.assert_called_once()
                 call_args = mock_ingest.call_args
                 assert call_args[1]["ingestion_config"] is not None
-
-    def test_sanitize_filename(self):
-        """Test filename sanitization."""
-        # Normal filename
-        assert _sanitize_filename("normal_file") == "normal_file"
-
-        # Invalid characters
-        assert "windows" not in _sanitize_filename("file<>name")
-        assert "windows" not in _sanitize_filename('file:"name')
-        assert "_" in _sanitize_filename("file/name\\path")
-
-        # Leading/trailing dots and spaces
-        assert _sanitize_filename("  .test.  ") == "test"
-
-        # Empty filename
-        assert _sanitize_filename("") == "untitled"
-
-        # Very long filename
-        long_name = "a" * 300
-        sanitized = _sanitize_filename(long_name)
-        assert len(sanitized) <= 200
 
     @pytest.mark.asyncio
     async def test_progress_callback(self, crawl_config, ingestion_config):

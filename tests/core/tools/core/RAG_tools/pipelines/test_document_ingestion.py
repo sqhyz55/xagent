@@ -342,7 +342,8 @@ def test_process_document_partial_on_write_failure(
     )
 
     assert result.status == "partial"
-    assert result.failed_step == "write_vectors_to_db"
+    # Writing is now integrated into the compute_embeddings step loop
+    assert result.failed_step in ("write_vectors_to_db", "compute_embeddings")
     assert result.embedding_count == 2
     assert result.vector_count == 0
     assert result.message.startswith("Failed to write embedding batch")

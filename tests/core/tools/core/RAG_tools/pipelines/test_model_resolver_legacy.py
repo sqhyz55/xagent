@@ -6,10 +6,8 @@ import pytest
 
 from xagent.core.model.model import EmbeddingModelConfig, RerankModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import SearchType
-from xagent.core.tools.core.RAG_tools.pipelines.document_search import (
-    _coerce_search_config,
-)
 from xagent.core.tools.core.RAG_tools.utils import model_resolver
+from xagent.core.tools.core.RAG_tools.utils.config_utils import coerce_search_config
 
 
 class _StubHub:
@@ -76,12 +74,12 @@ def test_resolve_embedding_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None
 def test_coerce_search_config_prepares_for_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Test that _coerce_search_config sets placeholder for resolver."""
+    """Test that coerce_search_config sets placeholder for resolver."""
     monkeypatch.setenv("DASHSCOPE_EMBEDDING_MODEL", "env-model")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "env-key")
     monkeypatch.setenv("DASHSCOPE_EMBEDDING_DIMENSION", "1536")
 
-    cfg = _coerce_search_config({"top_k": 5})
+    cfg = coerce_search_config({"top_k": 5})
     # coerce sets it to "none" (or "default") for resolver to handle later
     # It does NOT resolve env vars immediately
     assert cfg.embedding_model_id == "none"

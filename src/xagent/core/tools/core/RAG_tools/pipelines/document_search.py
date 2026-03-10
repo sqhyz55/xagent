@@ -30,6 +30,7 @@ from ..progress import ProgressManager, ProgressTracker
 from ..retrieval.search_dense import search_dense
 from ..retrieval.search_hybrid import _rrf_fusion, search_hybrid
 from ..retrieval.search_sparse import search_sparse
+from ..utils.config_utils import coerce_search_config
 from ..utils.model_resolver import resolve_embedding_adapter, resolve_rerank_adapter
 
 logger = logging.getLogger(__name__)
@@ -452,43 +453,6 @@ def _execute_sparse_search(
 SearchConfigInput = Union[SearchConfig, Mapping[str, Any]]
 
 
-def _coerce_search_config(
-    search_config: Optional[SearchConfigInput],
-) -> SearchConfig:
-    """Normalize arbitrary search configuration input into ``SearchConfig``."""
-
-    if search_config is None:
-        search_config = {}
-    if isinstance(search_config, SearchConfig):
-        return search_config
-    if not isinstance(search_config, Mapping):
-        raise TypeError(
-            "search_config must be a SearchConfig instance or a mapping of fields."
-        )
-    payload = dict(search_config)
-    # Handle embedding_model_id: preserve "default" and "none" for resolver to handle
-    # Resolver logic:
-    # - "default" -> try hub.load("default"), fallback to env
-    # - "none" or empty -> try hub.load("default"), fallback to env
-    embedding_model_id = payload.get("embedding_model_id")
-
-    if embedding_model_id:
-        # Normalize case for comparison, but preserve original value
-        normalized = embedding_model_id.strip().lower()
-        if normalized == "none" or normalized == "":
-            # Convert "none" or empty to "none" (standardized) for resolver
-            payload["embedding_model_id"] = "none"
-        elif normalized == "default":
-            # Preserve "default" as-is for resolver
-            payload["embedding_model_id"] = "default"
-        # Otherwise, keep original value
-    else:
-        # If missing, set to "none" to trigger resolver's default lookup logic
-        payload["embedding_model_id"] = "none"
-
-    return SearchConfig.model_validate(payload)
-
-
 def _handle_search_error(
     exc: Exception,
     current_step: str,
@@ -546,7 +510,11 @@ def search_documents(
         VectorValidationError: Query embedding fails and fallback is disabled.
     """
 
-    cfg = config if isinstance(config, SearchConfig) else _coerce_search_config(config)
+    cfg = (
+        config
+        if isinstance(config, SearchConfig)
+        else coerce_search_config(config or {})
+    )
 
     if not collection or not isinstance(collection, str):
         raise DocumentValidationError("collection must be a non-empty string")
@@ -563,40 +531,18 @@ def search_documents(
     warnings: List[str] = []
 
     # Get collection's bound embedding model
-    from ..management.collection_manager import (
-        get_collection_sync,
-        mark_collection_accessed_sync,
-    )
+    from ..management.collection_manager import resolve_effective_embedding_model_sync
 
     try:
-        mark_collection_accessed_sync(collection)
-        collection_info = get_collection_sync(collection)
-        if collection_info.is_initialized:
-            # Override config with collection's bound model
-            if (
-                cfg.embedding_model_id
-                and cfg.embedding_model_id != collection_info.embedding_model_id
-            ):
-                logger.warning(
-                    f"Config embedding_model_id '{cfg.embedding_model_id}' overridden by "
-                    f"collection '{collection}' bound model '{collection_info.embedding_model_id}'"
-                )
-            # Create new config with overridden embedding_model_id
-            cfg = cfg.model_copy(
-                update={"embedding_model_id": collection_info.embedding_model_id}
-            )
-            logger.info(
-                f"Using collection '{collection}' bound embedding model '{cfg.embedding_model_id}'"
-            )
-        else:
-            if cfg.embedding_model_id is None:
-                raise DocumentValidationError(
-                    f"Collection '{collection}' is not initialized with an embedding model. "
-                    f"Please ingest documents first or specify embedding_model_id in config."
-                )
-            logger.info(
-                f"Collection '{collection}' not initialized, using config embedding_model_id '{cfg.embedding_model_id}'"
-            )
+        model_id = resolve_effective_embedding_model_sync(
+            collection, cfg.embedding_model_id
+        )
+        cfg = cfg.model_copy(update={"embedding_model_id": model_id})
+        logger.info(
+            "Using resolved embedding model '%s' for collection '%s'",
+            model_id,
+            collection,
+        )
     except ValueError as e:
         if "not found" in str(e):
             raise DocumentValidationError(f"Collection '{collection}' not found")
@@ -779,7 +725,7 @@ def run_document_search(
         SearchPipelineResult: Same contract as :func:`search_documents`.
     """
 
-    cfg = _coerce_search_config(config)
+    cfg = coerce_search_config(config if config is not None else {})
     return search_documents(
         collection,
         query_text,

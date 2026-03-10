@@ -160,6 +160,9 @@ class CollectionManager:
         """
         conn = await self._get_connection()
 
+        # Ensure table exists before accessing
+        ensure_collection_metadata_table(conn)
+
         try:
             # Try to read from collection_metadata table
             table = conn.open_table("collection_metadata")
@@ -204,11 +207,11 @@ class CollectionManager:
         """
         conn = await self._get_connection()
 
+        # Ensure table exists before accessing
+        ensure_collection_metadata_table(conn)
+
         for attempt in range(max_retries):
             try:
-                # Ensure collection_metadata table exists and is up to date
-                ensure_collection_metadata_table(conn)
-
                 # Prepare data for storage
                 data = collection.to_storage()
                 data["updated_at"] = datetime.now(timezone.utc).replace(
@@ -530,6 +533,67 @@ def mark_collection_accessed_sync(collection_name: str) -> None:
         collection_name: Name of the collection to mark as accessed
     """
     _sync_wrapper(collection_manager.mark_collection_accessed)(collection_name)
+
+
+def resolve_effective_embedding_model_sync(
+    collection_name: str, config_model_id: Optional[str] = None
+) -> str:
+    """Resolve the effective embedding model ID for a collection.
+
+    Logic:
+    1. If collection is initialized, use its bound model ID (and warn if config differs).
+    2. If collection is not initialized, use config model ID.
+    3. If neither is available, raise ValueError.
+
+    Args:
+        collection_name: Name of the collection
+        config_model_id: Model ID from configuration (optional)
+
+    Returns:
+        The resolved model ID string.
+
+    Raises:
+        ValueError: If model cannot be resolved or collection not found.
+    """
+    try:
+        mark_collection_accessed_sync(collection_name)
+        collection_info = get_collection_sync(collection_name)
+
+        if collection_info.is_initialized:
+            if (
+                config_model_id
+                and config_model_id != collection_info.embedding_model_id
+            ):
+                logger.warning(
+                    "Config embedding_model_id '%s' overridden by "
+                    "collection '%s' bound model '%s'",
+                    config_model_id,
+                    collection_name,
+                    collection_info.embedding_model_id,
+                )
+            return collection_info.embedding_model_id or ""
+
+        if config_model_id:
+            logger.info(
+                "Collection '%s' not initialized, using config embedding_model_id '%s'",
+                collection_name,
+                config_model_id,
+            )
+            return config_model_id
+
+        raise ValueError(
+            f"Collection '{collection_name}' is not initialized with an embedding model. "
+            "Please ingest documents first or specify embedding_model_id in config."
+        )
+
+    except ValueError as e:
+        if "not found" in str(e):
+            if config_model_id:
+                return config_model_id
+            raise ValueError(
+                f"Collection '{collection_name}' not found and no model ID provided."
+            )
+        raise
 
 
 def rebuild_collection_metadata() -> None:
