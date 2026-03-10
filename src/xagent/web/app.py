@@ -196,6 +196,74 @@ async def startup_event() -> None:
         f"Memory store similarity threshold: {store_info['similarity_threshold']}"
     )
 
+    # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
+    try:
+        from ..core.tools.core.RAG_tools.LanceDB.schema_manager import (
+            check_table_needs_migration,
+        )
+        from ..migrations.lancedb.backfill_user_id import backfill_all
+        from ..providers.vector_store.lancedb import get_connection_from_env
+
+        conn = get_connection_from_env()
+
+        # Check if any tables need migration
+        needs_migration = False
+        tables_to_check = ["chunks", "documents", "parses"]
+
+        for table_name in tables_to_check:
+            if check_table_needs_migration(conn, table_name):
+                logger.info(
+                    "Table '%s' needs migration (missing user_id field)",
+                    table_name,
+                )
+                needs_migration = True
+                break
+
+        # Check embeddings tables
+        if not needs_migration:
+            try:
+                table_names_fn = getattr(conn, "table_names", None)
+                if table_names_fn:
+                    all_tables = list(table_names_fn())
+                    embeddings_tables = [
+                        t for t in all_tables if t.startswith("embeddings_")
+                    ]
+                    for table_name in embeddings_tables:
+                        if check_table_needs_migration(conn, table_name):
+                            logger.info(
+                                "Table '%s' needs migration (missing user_id field)",
+                                table_name,
+                            )
+                            needs_migration = True
+                            break
+            except Exception as e:
+                logger.warning("Could not check embeddings tables: %s", e)
+
+        # Run migration if needed
+        if needs_migration:
+            logger.info("Running LanceDB user_id migration...")
+            try:
+                result = backfill_all(dry_run=False)
+                logger.info(
+                    "Migration completed: chunks=%s, embeddings=%s",
+                    result.get("chunks", {}).get("backfilled", 0),
+                    result.get("embeddings", {}).get("backfilled", 0),
+                )
+            except Exception as e:
+                logger.error("LanceDB migration failed: %s", e, exc_info=True)
+                logger.warning(
+                    "Application will continue, but some features may not work correctly. "
+                    "Please run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                )
+        else:
+            logger.info("LanceDB tables are up to date, no migration needed")
+    except Exception as e:
+        logger.warning(
+            "Could not check/run LanceDB migration: %s. "
+            "Application will continue, but migration may be needed.",
+            e,
+        )
+
     # Warmup sandbox manager
     from .sandbox_manager import get_sandbox_manager
 

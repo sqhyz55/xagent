@@ -31,6 +31,7 @@ __all__ = [
     "ensure_ingestion_runs_table",
     "ensure_collection_config_table",
     "ensure_collection_metadata_table",
+    "check_table_needs_migration",
 ]
 
 
@@ -376,3 +377,36 @@ def ensure_collection_metadata_table(conn: DBConnection) -> None:
         ]
     )
     _create_table(conn, "collection_metadata", schema=schema)
+
+
+def check_table_needs_migration(conn: DBConnection, table_name: str) -> bool:
+    """Check if a table exists and needs migration (missing user_id field).
+
+    This function checks if a table exists and is missing the 'user_id' field,
+    which indicates it needs migration for multi-tenancy support.
+
+    Args:
+        conn: LanceDB connection
+        table_name: Name of the table to check
+
+    Returns:
+        True if the table exists and is missing 'user_id' field, False otherwise
+    """
+    if not _table_exists(conn, table_name):
+        return False
+
+    try:
+        table = conn.open_table(table_name)
+        existing_schema = table.schema
+        existing_field_names = {field.name for field in existing_schema}
+
+        # Check if user_id field is missing
+        return "user_id" not in existing_field_names
+    except Exception as e:
+        # If we can't check the schema, assume no migration needed
+        logger.warning(
+            "Could not check schema for table '%s': %s. Assuming no migration needed.",
+            table_name,
+            e,
+        )
+        return False
