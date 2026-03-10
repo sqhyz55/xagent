@@ -394,6 +394,108 @@ def _limit_results(
     return results[:final_limit]
 
 
+def _check_collection_exists_in_data_tables(
+    collection: str, user_id: Optional[int] = None, is_admin: bool = False
+) -> bool:
+    """Check whether a collection exists in source-of-truth data tables.
+
+    This is a fallback mechanism for cases where `collection_metadata` is missing
+    or out of sync, but the underlying data tables (documents/chunks/embeddings)
+    still contain records.
+
+    Args:
+        collection: Collection name to check.
+        user_id: Optional user ID for multi-tenancy filtering.
+        is_admin: Whether the user has admin privileges.
+
+    Returns:
+        True if the collection exists in any data table, False otherwise.
+    """
+    try:
+        from ......providers.vector_store.lancedb import get_connection_from_env
+        from ..LanceDB.schema_manager import (
+            ensure_chunks_table,
+            ensure_documents_table,
+            ensure_parses_table,
+        )
+        from ..utils.string_utils import escape_lancedb_string, validate_collection_name
+        from ..utils.user_permissions import UserPermissions
+
+        conn = get_connection_from_env()
+
+        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
+        validated_collection = validate_collection_name(collection)
+        collection_clause = (
+            f"collection = '{escape_lancedb_string(validated_collection)}'"
+        )
+        combined_filter = (
+            f"({collection_clause}) AND ({user_filter})"
+            if user_filter
+            else collection_clause
+        )
+
+        # documents
+        try:
+            ensure_documents_table(conn)
+            table = conn.open_table("documents")
+            if not table.search().where(combined_filter).limit(1).to_pandas().empty:
+                return True
+        except Exception as e:
+            logger.debug("Failed to check documents table for '%s': %s", collection, e)
+
+        # parses
+        try:
+            ensure_parses_table(conn)
+            table = conn.open_table("parses")
+            if not table.search().where(combined_filter).limit(1).to_pandas().empty:
+                return True
+        except Exception as e:
+            logger.debug("Failed to check parses table for '%s': %s", collection, e)
+
+        # chunks
+        try:
+            ensure_chunks_table(conn)
+            table = conn.open_table("chunks")
+            if not table.search().where(combined_filter).limit(1).to_pandas().empty:
+                return True
+        except Exception as e:
+            logger.debug("Failed to check chunks table for '%s': %s", collection, e)
+
+        # embeddings_* tables
+        try:
+            table_names_fn = getattr(conn, "table_names", None)
+            if table_names_fn:
+                for table_name in table_names_fn():
+                    if not str(table_name).startswith("embeddings_"):
+                        continue
+                    try:
+                        table = conn.open_table(str(table_name))
+                        if (
+                            not table.search()
+                            .where(combined_filter)
+                            .limit(1)
+                            .to_pandas()
+                            .empty
+                        ):
+                            return True
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to check embeddings table '%s' for '%s': %s",
+                            table_name,
+                            collection,
+                            e,
+                        )
+        except Exception as e:
+            logger.debug(
+                "Failed to list embeddings tables when checking '%s': %s", collection, e
+            )
+
+        return False
+    except Exception as e:
+        logger.warning("Error checking collection existence in data tables: %s", e)
+        return False
+
+
 def _build_pipeline_result(
     *,
     status: str,
@@ -578,7 +680,21 @@ def search_documents(
             )
     except ValueError as e:
         if "not found" in str(e):
-            raise DocumentValidationError(f"Collection '{collection}' not found")
+            # Collection not found in metadata table: allow fallback to data tables.
+            if _check_collection_exists_in_data_tables(collection, user_id, is_admin):
+                logger.warning(
+                    "Collection '%s' found in data tables but not in metadata. "
+                    "Proceeding with search using config embedding_model_id '%s'",
+                    collection,
+                    cfg.embedding_model_id,
+                )
+                if cfg.embedding_model_id is None:
+                    raise DocumentValidationError(
+                        f"Collection '{collection}' exists but has no metadata. "
+                        f"Please specify embedding_model_id in config."
+                    )
+            else:
+                raise DocumentValidationError(f"Collection '{collection}' not found")
         raise
 
     current_step = "initialize"

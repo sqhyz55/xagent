@@ -10,7 +10,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Any, Awaitable, Callable, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar
 
 import pyarrow as pa  # type: ignore
 
@@ -18,7 +18,7 @@ from ......providers.vector_store.lancedb import DBConnection, get_connection_fr
 from ..core.parser_registry import get_supported_parsers, validate_parser_compatibility
 from ..core.schemas import CollectionInfo
 from ..utils.model_resolver import resolve_embedding_adapter
-from ..utils.string_utils import escape_lancedb_string
+from ..utils.string_utils import escape_lancedb_string, validate_collection_name
 
 T = TypeVar("T")
 
@@ -129,14 +129,130 @@ class CollectionManager:
         self._conn: Optional[DBConnection] = None
 
     async def _get_connection(self) -> DBConnection:
-        """Lazy initialization of LanceDB connection.
+        """Get a LanceDB connection.
+
+        IMPORTANT: Do not cache the connection.
+        - Tests frequently swap `LANCEDB_DIR` between cases.
+        - Caching would cause stale reads/writes across different DB directories.
+        - Fresh connections also reduce surprises around metadata consistency.
+        """
+        return get_connection_from_env()
+
+    async def _calculate_stats_from_data_tables(
+        self, collection_name: str
+    ) -> Dict[str, Any]:
+        """Calculate collection statistics from actual data tables.
+
+        This is the source of truth when `collection_metadata` is missing or stale.
+
+        Args:
+            collection_name: Collection name.
 
         Returns:
-            The LanceDB connection instance
+            Dict containing: documents, parses, chunks, embeddings, document_names, processed_documents.
         """
-        if self._conn is None:
-            self._conn = get_connection_from_env()
-        return self._conn
+        from ..LanceDB.schema_manager import (
+            ensure_chunks_table,
+            ensure_documents_table,
+            ensure_parses_table,
+        )
+
+        conn = await self._get_connection()
+        stats: Dict[str, Any] = {
+            "documents": 0,
+            "parses": 0,
+            "chunks": 0,
+            "embeddings": 0,
+            "document_names": [],
+            "processed_documents": 0,
+        }
+
+        validated_collection = validate_collection_name(collection_name)
+        # NOTE: LanceDB `count_rows()` is more consistent with SQL-style "=" than "==" in some versions.
+        collection_filter = (
+            f"collection = '{escape_lancedb_string(validated_collection)}'"
+        )
+
+        # Documents + document names
+        try:
+            ensure_documents_table(conn)
+            table = conn.open_table("documents")
+            stats["documents"] = int(table.count_rows(collection_filter))
+            if stats["documents"] > 0:
+                try:
+                    result = (
+                        table.search()
+                        .where(collection_filter)
+                        .select(["source_path"])
+                        .to_pandas()
+                    )
+                    document_names: set[str] = set()
+                    for source_path in result.get("source_path", []):
+                        if source_path:
+                            document_names.add(os.path.basename(str(source_path)))
+                    stats["document_names"] = sorted(document_names)
+                except Exception as e:
+                    logger.debug(
+                        "Failed to collect document names for '%s': %s",
+                        collection_name,
+                        e,
+                    )
+        except Exception as e:
+            logger.debug("Failed to count documents for '%s': %s", collection_name, e)
+
+        # Parses
+        try:
+            ensure_parses_table(conn)
+            table = conn.open_table("parses")
+            stats["parses"] = int(table.count_rows(collection_filter))
+        except Exception as e:
+            logger.debug("Failed to count parses for '%s': %s", collection_name, e)
+
+        # Chunks
+        try:
+            ensure_chunks_table(conn)
+            table = conn.open_table("chunks")
+            stats["chunks"] = int(table.count_rows(collection_filter))
+        except Exception as e:
+            logger.debug("Failed to count chunks for '%s': %s", collection_name, e)
+
+        # Embeddings across all embeddings tables
+        try:
+            table_names_fn = getattr(conn, "table_names", None)
+            if table_names_fn:
+                total_embeddings = 0
+                for table_name in table_names_fn():
+                    if not str(table_name).startswith("embeddings_"):
+                        continue
+                    try:
+                        table = conn.open_table(str(table_name))
+                        total_embeddings += int(table.count_rows(collection_filter))
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to count embeddings in '%s' for '%s': %s",
+                            table_name,
+                            collection_name,
+                            e,
+                        )
+                stats["embeddings"] = total_embeddings
+        except Exception as e:
+            logger.debug(
+                "Failed to enumerate embeddings tables for '%s': %s", collection_name, e
+            )
+
+        # Use parses as processed_documents (best available signal)
+        stats["processed_documents"] = stats["parses"]
+        return stats
+
+    async def _collection_exists_in_data_tables(self, collection_name: str) -> bool:
+        """Check whether the collection exists in any of the source-of-truth data tables."""
+        stats = await self._calculate_stats_from_data_tables(collection_name)
+        return bool(
+            stats["documents"]
+            or stats["parses"]
+            or stats["chunks"]
+            or stats["embeddings"]
+        )
 
     async def get_collection(self, collection_name: str) -> CollectionInfo:
         """Get collection metadata from storage.
@@ -152,24 +268,74 @@ class CollectionManager:
         """
         conn = await self._get_connection()
 
+        # Step 1: Try to read from metadata table (fast path)
         try:
-            # Try to read from collection_metadata table
             table = conn.open_table("collection_metadata")
-            # Use safe parameterized query to prevent SQL injection
             safe_name = escape_lancedb_string(collection_name)
             result = table.search().where(f"name = '{safe_name}'").to_pandas()
-
-            if result.empty:
-                raise ValueError(f"Collection '{collection_name}' not found")
-
-            # Convert to dict and deserialize
-            data = result.iloc[0].to_dict()
-            return CollectionInfo.from_storage(data)
-
+            if not result.empty:
+                data = result.iloc[0].to_dict()
+                return CollectionInfo.from_storage(data)
         except Exception as e:
-            # Table might not exist yet, or other LanceDB errors
-            logger.debug(f"Error reading collection {collection_name}: {e}")
+            logger.debug(
+                "Error reading collection '%s' from metadata table: %s",
+                collection_name,
+                e,
+            )
+
+        # Step 2: Fallback - if collection exists in data tables, rebuild minimal metadata and cache it.
+        if not await self._collection_exists_in_data_tables(collection_name):
             raise ValueError(f"Collection '{collection_name}' not found")
+
+        logger.info(
+            "Collection '%s' found in data tables but missing in metadata. Rebuilding metadata from data tables.",
+            collection_name,
+        )
+        # IMPORTANT: Do NOT acquire the collection lock here.
+        # `get_collection()` is called from within lock-protected flows (e.g. update_collection_stats).
+        # Re-acquiring the same asyncio.Lock in the same task would deadlock.
+
+        # Best-effort re-check (another worker may have created metadata between Step 1 and now).
+        try:
+            table = conn.open_table("collection_metadata")
+            safe_name = escape_lancedb_string(collection_name)
+            result = table.search().where(f"name = '{safe_name}'").to_pandas()
+            if not result.empty:
+                data = result.iloc[0].to_dict()
+                return CollectionInfo.from_storage(data)
+        except Exception as e:
+            logger.debug(
+                "Metadata re-check failed for '%s' (will rebuild): %s",
+                collection_name,
+                e,
+            )
+
+        stats = await self._calculate_stats_from_data_tables(collection_name)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        rebuilt = CollectionInfo(
+            name=collection_name,
+            documents=int(stats["documents"]),
+            processed_documents=int(stats["processed_documents"]),
+            parses=int(stats["parses"]),
+            chunks=int(stats["chunks"]),
+            embeddings=int(stats["embeddings"]),
+            document_names=list(stats["document_names"]),
+            created_at=now,
+            updated_at=now,
+            last_accessed_at=now,
+        )
+
+        # Cache best-effort (no lock to avoid deadlocks).
+        try:
+            await self._save_collection_with_retry(rebuilt)
+        except Exception as e:
+            logger.warning(
+                "Failed to cache rebuilt metadata for '%s': %s (will proceed without cache)",
+                collection_name,
+                e,
+            )
+
+        return rebuilt
 
     async def save_collection(self, collection: CollectionInfo) -> None:
         """Save collection metadata to storage with retry mechanism.

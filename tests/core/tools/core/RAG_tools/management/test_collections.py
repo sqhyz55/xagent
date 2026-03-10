@@ -208,6 +208,63 @@ def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
     assert result.warnings == []
 
 
+def test_get_collection_fallback_rebuilds_metadata_from_data_tables(
+    temp_lancedb_dir: str,
+) -> None:
+    """When collection_metadata is missing, get_collection should fall back to data tables.
+
+    This covers the case where legacy data exists in documents/parses/chunks/embeddings
+    but collection_metadata was never created or got out of sync.
+    """
+    from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+        get_collection_sync,
+    )
+
+    conn = get_connection_from_env()
+    ensure_documents_table(conn)
+
+    collection = "legacy_collection"
+    now = datetime.utcnow()
+
+    # Insert legacy data without syncing collection_metadata.
+    conn.open_table("documents").add(
+        [
+            {
+                "collection": collection,
+                "doc_id": "doc-legacy-1",
+                "source_path": "/path/legacy.pdf",
+                "file_type": "pdf",
+                "content_hash": "hash-legacy",
+                "uploaded_at": now,
+                "title": "Legacy",
+                "language": "zh",
+                "user_id": None,
+            }
+        ]
+    )
+
+    # Ensure collection_metadata does not contain the record (or table is absent).
+    table_names_fn = getattr(conn, "table_names", None)
+    if table_names_fn and "collection_metadata" in table_names_fn():
+        try:
+            conn.open_table("collection_metadata").delete(f"name == '{collection}'")
+        except Exception:
+            pass
+
+    info = get_collection_sync(collection)
+    assert info.name == collection
+    assert info.documents == 1
+    assert info.document_names == ["legacy.pdf"]
+    # Rebuilt metadata does not know embedding binding.
+    assert info.embedding_model_id is None
+    assert info.embedding_dimension is None
+
+    # It should also cache the rebuilt record into collection_metadata for future fast access.
+    table = conn.open_table("collection_metadata")
+    result = table.search().where(f"name == '{collection}'").to_pandas()
+    assert not result.empty
+
+
 def test_get_document_stats_missing_document(temp_lancedb_dir: str) -> None:
     """Missing documents should yield zero counts but succeed."""
 
