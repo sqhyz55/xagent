@@ -84,7 +84,11 @@ def _make_json_serializable(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [_make_json_serializable(item) for item in obj]
     if isinstance(obj, datetime):
-        return obj.timestamp() if obj.tzinfo else obj.replace(tzinfo=timezone.utc).timestamp()
+        return (
+            obj.timestamp()
+            if obj.tzinfo
+            else obj.replace(tzinfo=timezone.utc).timestamp()
+        )
     return obj
 
 
@@ -1946,17 +1950,18 @@ async def handle_build_preview_execution(
             )
             return
 
+        # Minimal request object used for tool configuration context.
+        class MinimalRequest:
+            def __init__(self, user_id: int) -> None:
+                self.user: Any = type("obj", (), {"id": user_id})()
+                self.credentials: Any = None
+
         # Filter tools by category - use tool metadata
         # Note: tool names are stable, defined in code, no database storage needed
         allowed_tools = None
         if tool_categories:
             # Get all tools and filter by category using metadata
             from ...core.tools.adapters.vibe.factory import ToolFactory
-
-            class MinimalRequest:
-                def __init__(self, user_id: int) -> None:
-                    self.user: Any = type("obj", (), {"id": user_id})()
-                    self.credentials: Any = None
 
             temp_config = WebToolConfig(
                 db=db,
