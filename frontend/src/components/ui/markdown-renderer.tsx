@@ -1,5 +1,6 @@
 import React from 'react'
 import { marked } from 'marked'
+import katex from 'katex'
 import { getApiUrl } from '@/lib/utils'
 
 // Enhanced Markdown detection function: covers broader Markdown features not limited to starting with #
@@ -16,6 +17,47 @@ const isLikelyMarkdown = (s: string): boolean => {
     /(\n|^)\s*>\s/.test(s) || // Blockquote
     /(\n|^)\s*---\s*(\n|$)/.test(s) // Horizontal rule
   )
+}
+
+const renderMathInMarkdown = (markdown: string): string => {
+  // Split by fenced code blocks to avoid parsing math inside ``` ... ``` sections
+  const segments = markdown.split(/(```[\s\S]*?```)/g)
+
+  return segments
+    .map((segment) => {
+      if (segment.startsWith('```')) {
+        return segment
+      }
+
+      let processed = segment
+
+      // Render block-level formulas delimited by $$...$$
+      processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr: string) => {
+        try {
+          return katex.renderToString(expr, {
+            displayMode: true,
+            throwOnError: false
+          })
+        } catch {
+          return `$$${expr}$$`
+        }
+      })
+
+      // Render inline formulas delimited by $...$ (avoid $$ and line breaks)
+      processed = processed.replace(/(?<!\$)\$([^\n\$]+?)\$(?!\$)/g, (_, expr: string) => {
+        try {
+          return katex.renderToString(expr, {
+            displayMode: false,
+            throwOnError: false
+          })
+        } catch {
+          return `$${expr}$`
+        }
+      })
+
+      return processed
+    })
+    .join('')
 }
 
 interface MarkdownRendererProps {
@@ -75,7 +117,10 @@ export function MarkdownRenderer({ content, className = '', onFileClick }: Markd
 
         // Use marked.use() to configure renderer (marked 5.x API)
         marked.use({ renderer })
-        const parsed = await marked.parse(content)
+
+        // Pre-render LaTeX formulas with KaTeX before markdown parsing
+        const contentWithMath = renderMathInMarkdown(content)
+        const parsed = await marked.parse(contentWithMath)
         setHtml(parsed)
       } catch (error) {
         console.error('Error parsing markdown:', error)
