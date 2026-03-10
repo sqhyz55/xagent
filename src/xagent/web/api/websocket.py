@@ -2402,11 +2402,7 @@ async def handle_build_preview_execution(
             )
             return
 
-<<<<<<< HEAD
         # Define MinimalRequest for tool config
-=======
-        # Minimal request object used for tool configuration context.
->>>>>>> 2de4773 (fix(web): define MinimalRequest before use in build_preview_execution)
         class MinimalRequest:
             def __init__(self, user_id: int) -> None:
                 self.user: Any = type("obj", (), {"id": user_id})()
