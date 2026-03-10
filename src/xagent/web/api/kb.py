@@ -445,6 +445,14 @@ async def ingest(
 
     if result.status == "error":
         return JSONResponse(status_code=500, content=result.model_dump())
+    if result.status == "partial":
+        logger.warning(
+            "KB ingest partially completed (collection=%s, filename=%s, user_id=%s): %s",
+            collection,
+            safe_filename,
+            _user.id,
+            result.message,
+        )
 
     return JSONResponse(
         status_code=200,
@@ -967,6 +975,14 @@ async def ingest_web(
 
         if result.status == "error":
             return JSONResponse(status_code=500, content=result.model_dump())
+        if result.status == "partial":
+            logger.warning(
+                "KB web ingest partially completed (collection=%s, start_url=%s, user_id=%s): %s",
+                collection,
+                start_url,
+                _user.id,
+                result.message,
+            )
 
         return result
 
