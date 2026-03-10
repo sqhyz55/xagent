@@ -296,6 +296,48 @@ def _resolve_embedding_adapter(
     )
 
 
+def _handle_ingestion_error(
+    exc: Exception,
+    collection: str,
+    doc_id: Optional[str],
+    parse_hash: Optional[str],
+    current_step: str,
+    completed_steps: List[IngestionStepResult],
+    chunk_count: int,
+    embedding_count: int,
+    vector_count: int,
+    warnings: List[str],
+    user_id: Optional[int] = None,
+) -> IngestionResult:
+    """Unify error handling for the ingestion pipeline."""
+    logger.exception(
+        "Document ingestion pipeline failed at step '%s': %s", current_step, exc
+    )
+
+    status = "partial" if completed_steps else "error"
+    _record_ingestion_status(
+        collection,
+        doc_id,
+        status=DocumentProcessingStatus.FAILED,
+        message=str(exc),
+        parse_hash=parse_hash,
+        user_id=user_id,
+    )
+
+    return IngestionResult(
+        status=status,
+        doc_id=doc_id,
+        parse_hash=parse_hash,
+        chunk_count=chunk_count if status == "partial" else 0,
+        embedding_count=embedding_count if status == "partial" else 0,
+        vector_count=vector_count if status == "partial" else 0,
+        completed_steps=completed_steps,
+        failed_step=current_step,
+        message=str(exc),
+        warnings=warnings,
+    )
+
+
 def process_document(
     collection: str,
     source_path: str,
@@ -1013,51 +1055,18 @@ def process_document(
             warnings=warnings,
         )
 
-    except RagCoreException as exc:
-        logger.exception("Document ingestion pipeline failed: %s", exc)
-        status = "partial" if completed_steps else "error"
+    except (RagCoreException, Exception) as exc:
         progress_manager.complete_task(task_id, success=False)
-        _record_ingestion_status(
-            collection,
-            doc_id,
-            status=DocumentProcessingStatus.FAILED,
-            message=str(exc),
-            parse_hash=parse_hash,
-            user_id=user_id,
-        )
-        return IngestionResult(
-            status=status,
+        return _handle_ingestion_error(
+            exc=exc,
+            collection=collection,
             doc_id=doc_id,
             parse_hash=parse_hash,
-            chunk_count=chunk_count if status == "partial" else 0,
-            embedding_count=embedding_count if status == "partial" else 0,
-            vector_count=vector_count if status == "partial" else 0,
+            current_step=current_step,
             completed_steps=completed_steps,
-            failed_step=current_step,
-            message=str(exc),
+            chunk_count=chunk_count,
+            embedding_count=embedding_count,
+            vector_count=vector_count,
             warnings=warnings,
-        )
-    except Exception as exc:
-        logger.exception("Document ingestion pipeline failed: %s", exc)
-        status = "partial" if completed_steps else "error"
-        progress_manager.complete_task(task_id, success=False)
-        _record_ingestion_status(
-            collection,
-            doc_id,
-            status=DocumentProcessingStatus.FAILED,
-            message=str(exc),
-            parse_hash=parse_hash,
             user_id=user_id,
-        )
-        return IngestionResult(
-            status=status,
-            doc_id=doc_id,
-            parse_hash=parse_hash,
-            chunk_count=chunk_count if status == "partial" else 0,
-            embedding_count=embedding_count if status == "partial" else 0,
-            vector_count=vector_count if status == "partial" else 0,
-            completed_steps=completed_steps,
-            failed_step=current_step,
-            message=str(exc),
-            warnings=warnings,
         )

@@ -1,11 +1,13 @@
 """Knowledge base API route handlers"""
 
 import asyncio
+import concurrent.futures
+import functools
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 
 from fastapi import (
     APIRouter,
@@ -53,7 +55,34 @@ from ..auth_dependencies import get_current_user
 from ..config import MAX_FILE_SIZE, get_upload_path, is_allowed_file
 from ..models.user import User
 
+T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
+
+
+def handle_kb_exceptions(func: T) -> T:
+    """Decorator to handle common exceptions in KB API routes."""
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await func(*args, **kwargs)
+        except HTTPException:
+            raise
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error("Data format error in %s: %s", func.__name__, e)
+            raise HTTPException(status_code=400, detail=f"数据格式错误: {str(e)}")
+        except (PermissionError, OSError) as e:
+            logger.error("File system error in %s: %s", func.__name__, e)
+            raise HTTPException(status_code=403, detail=f"文件系统错误: {str(e)}")
+        except Exception as e:
+            logger.exception("Unexpected error in %s: %s", func.__name__, e)
+            raise HTTPException(
+                status_code=500,
+                detail=f"服务器内部错误: {str(e)}",
+            )
+
+    return cast(T, wrapper)
+
 
 # Create router
 kb_router = APIRouter(prefix="/api/kb", tags=["kb"])
@@ -82,6 +111,7 @@ def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
     "/ingest",
     response_model=IngestionResult,
 )
+@handle_kb_exceptions
 async def ingest(
     collection: str = Form(None),
     file: UploadFile = File(...),
@@ -149,146 +179,109 @@ async def ingest(
         max_retries: Maximum retry attempts for failures.
         retry_delay: Delay between retry attempts in seconds.
     """
-    try:
-        if not file.filename or not file.filename.strip():
-            raise HTTPException(status_code=422, detail="No filename provided")
+    if not file.filename or not file.filename.strip():
+        raise HTTPException(status_code=422, detail="No filename provided")
 
-        # SECURITY: Extract only basename to prevent path traversal attacks
-        # e.g., "../../../etc/passwd.pdf" becomes "passwd.pdf"
-        safe_filename = Path(file.filename).name
+    # SECURITY: Extract only basename to prevent path traversal attacks
+    # e.g., "../../../etc/passwd.pdf" becomes "passwd.pdf"
+    safe_filename = Path(file.filename).name
 
-        if not is_allowed_file(safe_filename, "general"):
-            raise HTTPException(
-                status_code=422,
-                detail=f"File type {Path(safe_filename).suffix.lower()} not supported",
-            )
-
-        if not collection or not collection.strip():
-            collection = Path(safe_filename).stem
-            logger.info(f"Using file name as collection: {collection}")
-
-        content = await file.read()
-        if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=422,
-                detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE // (1024 * 1024)}MB",
-            )
-
-        # Get upload path with user isolation using unified path management
-        file_path = get_upload_path(safe_filename, user_id=int(_user.id))
-
-        # Save uploaded file with error handling
-        try:
-            with open(file_path, "wb") as buffer:
-                buffer.write(content)
-            logger.info(
-                f"File uploaded: {safe_filename} -> {file_path} (user: {_user.id})"
-            )
-        except (PermissionError, OSError) as e:
-            logger.error(f"File system error saving file {safe_filename}: {e}")
-            raise HTTPException(status_code=403, detail=f"文件系统错误: {str(e)}")
-
-        # Build configuration from individual parameters
-        # Use defaults that match IngestionConfig defaults exactly
-        # Validate user-provided values to prevent errors
-        final_chunk_size = (
-            chunk_size if chunk_size is not None and chunk_size > 0 else 1000
-        )
-        final_chunk_overlap = (
-            chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
-        )
-
-        # Ensure overlap is always less than size
-        if final_chunk_overlap >= final_chunk_size:
-            final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
-            logger.warning(
-                f"Auto-adjusting chunk_overlap from {chunk_overlap} to {final_chunk_overlap} "
-                f"to ensure it's less than chunk_size ({final_chunk_size})"
-            )
-
-        parsed_separators = _parse_separators(separators)
-        final_strategy = (
-            chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
-        )
-        if (
-            separators
-            and separators.strip()
-            and final_strategy != ChunkStrategy.RECURSIVE
-        ):
-            logger.warning(
-                "separators are only used when chunk_strategy is recursive; "
-                "current strategy is %s, ignoring separators",
-                final_strategy.value,
-            )
-
-        config = IngestionConfig(
-            parse_method=parse_method
-            if parse_method is not None
-            else ParseMethod.DEFAULT,
-            chunk_strategy=final_strategy,
-            chunk_size=final_chunk_size,
-            chunk_overlap=final_chunk_overlap,
-            separators=parsed_separators,
-            embedding_model_id=embedding_model_id,
-            embedding_batch_size=embedding_batch_size
-            if embedding_batch_size is not None and embedding_batch_size > 0
-            else 10,
-            max_retries=max_retries
-            if max_retries is not None and max_retries >= 0
-            else 3,
-            retry_delay=retry_delay
-            if retry_delay is not None and retry_delay >= 0
-            else 1.0,
-        )
-
-        # Run document ingestion in a separate thread to avoid event loop conflict
-        import concurrent.futures
-
-        progress_manager = get_progress_manager()
-
-        def _run_ingestion() -> IngestionResult:
-            return run_document_ingestion(
-                collection=collection,
-                source_path=str(file_path),
-                ingestion_config=config,
-                progress_manager=progress_manager,
-                user_id=int(_user.id),
-                is_admin=bool(_user.is_admin),
-            )
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(_run_ingestion)
-            result: IngestionResult = future.result()
-
-        if result.status == "error":
-            return JSONResponse(status_code=500, content=result.model_dump())
-
-        return result
-
-    except HTTPException:
-        # Re-raise HTTP exceptions (like 422 validation errors)
-        raise
-    except (ValueError, KeyError, TypeError) as e:
-        # 数据格式错误
-        logger.error(f"Data format error in document ingestion: {e}")
-        raise HTTPException(status_code=400, detail=f"数据格式错误: {str(e)}")
-    except (PermissionError, OSError) as e:
-        # 文件系统权限错误
-        logger.error(f"File system error in document ingestion: {e}")
-        raise HTTPException(status_code=403, detail=f"文件系统错误: {str(e)}")
-    except Exception as e:
-        # 其他错误
-        logger.exception(f"Unexpected error in document ingestion: {e}")
+    if not is_allowed_file(safe_filename, "general"):
         raise HTTPException(
-            status_code=500,
-            detail=f"服务器内部错误: {str(e)}",
+            status_code=422,
+            detail=f"File type {Path(safe_filename).suffix.lower()} not supported",
         )
+
+    if not collection or not collection.strip():
+        collection = Path(safe_filename).stem
+        logger.info("Using file name as collection: %s", collection)
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE // (1024 * 1024)}MB",
+        )
+
+    # Get upload path with user isolation using unified path management
+    file_path = get_upload_path(safe_filename, user_id=int(_user.id))
+
+    # Save uploaded file
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
+    logger.info(
+        "File uploaded: %s -> %s (user: %s)", safe_filename, file_path, _user.id
+    )
+
+    # Build configuration from individual parameters
+    # Use defaults that match IngestionConfig defaults exactly
+    # Validate user-provided values to prevent errors
+    final_chunk_size = chunk_size if chunk_size is not None and chunk_size > 0 else 1000
+    final_chunk_overlap = (
+        chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
+    )
+
+    # Ensure overlap is always less than size
+    if final_chunk_overlap >= final_chunk_size:
+        final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
+        logger.warning(
+            "Auto-adjusting chunk_overlap from %s to %s to ensure it's less than chunk_size (%s)",
+            chunk_overlap,
+            final_chunk_overlap,
+            final_chunk_size,
+        )
+
+    parsed_separators = _parse_separators(separators)
+    final_strategy = (
+        chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
+    )
+    if separators and separators.strip() and final_strategy != ChunkStrategy.RECURSIVE:
+        logger.warning(
+            "separators are only used when chunk_strategy is recursive; "
+            "current strategy is %s, ignoring separators",
+            final_strategy.value,
+        )
+
+    config = IngestionConfig(
+        parse_method=parse_method if parse_method is not None else ParseMethod.DEFAULT,
+        chunk_strategy=final_strategy,
+        chunk_size=final_chunk_size,
+        chunk_overlap=final_chunk_overlap,
+        separators=parsed_separators,
+        embedding_model_id=embedding_model_id,
+        embedding_batch_size=embedding_batch_size
+        if embedding_batch_size is not None and embedding_batch_size > 0
+        else 10,
+        max_retries=max_retries if max_retries is not None and max_retries >= 0 else 3,
+        retry_delay=retry_delay
+        if retry_delay is not None and retry_delay >= 0
+        else 1.0,
+    )
+
+    progress_manager = get_progress_manager()
+
+    def _run_ingestion() -> IngestionResult:
+        return run_document_ingestion(
+            collection=collection,
+            source_path=str(file_path),
+            ingestion_config=config,
+            progress_manager=progress_manager,
+            user_id=int(_user.id),
+            is_admin=bool(_user.is_admin),
+        )
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(_run_ingestion)
+        result: IngestionResult = future.result()
+
+    return result
 
 
 @kb_router.get(
     "/collections",
     response_model=ListCollectionsResult,
 )
+@handle_kb_exceptions
 async def list_collections_api(
     _user: User = Depends(get_current_user),
 ) -> ListCollectionsResult:
@@ -301,7 +294,6 @@ async def list_collections_api(
             timeout=kb_collections_timeout_seconds,
         )
         return result
-
     except asyncio.TimeoutError:
         logger.error(
             "Listing KB collections timed out after %s seconds",
@@ -312,18 +304,12 @@ async def list_collections_api(
             detail="Knowledge base is temporarily unavailable. Please retry.",
         )
 
-    except Exception as e:
-        logger.exception(f"Failed to list collections: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list collections: {str(e)}",
-        )
-
 
 @kb_router.post(
     "/search",
     response_model=SearchPipelineResult,
 )
+@handle_kb_exceptions
 async def search(
     collection: str = Form(..., description="Target collection to search within"),
     query_text: str = Form(..., description="Query text to search for"),
@@ -394,68 +380,58 @@ async def search(
         refine_factor: Refine factor for ANN search re-ranking.
         fallback_to_sparse: Allow hybrid search to fallback to sparse.
     """
-    try:
-        # CRITICAL: Handle empty strings from Swagger UI - convert to None BEFORE any processing
-        # This must be done at the very beginning to pass Pydantic validation for Dict fields
-        if filters == "":
-            filters = None
-        if fusion_config == "":
-            fusion_config = None
+    # CRITICAL: Handle empty strings from Swagger UI - convert to None BEFORE any processing
+    if filters == "":
+        filters = None
+    if fusion_config == "":
+        fusion_config = None
 
-        if not collection or not query_text:
-            raise HTTPException(status_code=422, detail="Missing required parameters")
+    if not collection or not query_text:
+        raise HTTPException(status_code=422, detail="Missing required parameters")
 
-        if not embedding_model_id:
-            raise HTTPException(
-                status_code=422,
-                detail="embedding_model_id is required",
-            )
-
-        # Build configuration from individual parameters
-        config = SearchConfig(
-            search_type=search_type or SearchType.HYBRID,
-            top_k=top_k or 5,
-            filters=filters,
-            fusion_config=FusionConfig.model_validate(fusion_config)
-            if fusion_config
-            else None,
-            embedding_model_id=embedding_model_id,
-            rerank_model_id=rerank_model_id,
-            rerank_top_k=rerank_top_k,
-            readonly=readonly or False,
-            nprobes=nprobes,
-            refine_factor=refine_factor,
-            fallback_to_sparse=fallback_to_sparse
-            if fallback_to_sparse is not None
-            else True,
-        )
-
-        progress_manager = get_progress_manager()
-        result = run_document_search(
-            collection=collection,
-            query_text=query_text,
-            config=config,
-            progress_manager=progress_manager,
-            user_id=int(_user.id),
-            is_admin=bool(_user.is_admin),
-        )
-
-        return result
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Document search failed: {e}")
+    if not embedding_model_id:
         raise HTTPException(
-            status_code=500,
-            detail=f"Document search failed: {str(e)}",
+            status_code=422,
+            detail="embedding_model_id is required",
         )
+
+    # Build configuration from individual parameters
+    config = SearchConfig(
+        search_type=search_type or SearchType.HYBRID,
+        top_k=top_k or 5,
+        filters=filters,
+        fusion_config=FusionConfig.model_validate(fusion_config)
+        if fusion_config
+        else None,
+        embedding_model_id=embedding_model_id,
+        rerank_model_id=rerank_model_id,
+        rerank_top_k=rerank_top_k,
+        readonly=readonly or False,
+        nprobes=nprobes,
+        refine_factor=refine_factor,
+        fallback_to_sparse=fallback_to_sparse
+        if fallback_to_sparse is not None
+        else True,
+    )
+
+    progress_manager = get_progress_manager()
+    result = run_document_search(
+        collection=collection,
+        query_text=query_text,
+        config=config,
+        progress_manager=progress_manager,
+        user_id=int(_user.id),
+        is_admin=bool(_user.is_admin),
+    )
+
+    return result
 
 
 @kb_router.post(
     "/ingest-web",
     response_model=WebIngestionResult,
 )
+@handle_kb_exceptions
 async def ingest_web(
     collection: str = Form(..., description="Target collection name"),
     start_url: str = Form(..., description="Starting URL for crawling"),
@@ -580,131 +556,108 @@ async def ingest_web(
         max_retries: Maximum retry attempts
         retry_delay: Delay between retries
     """
-    try:
-        # Build WebCrawlConfig
-        url_patterns_list = (
-            [p.strip() for p in url_patterns.split(",")] if url_patterns else None
-        )
-        exclude_patterns_list = (
-            [p.strip() for p in exclude_patterns.split(",")]
-            if exclude_patterns
-            else None
-        )
-        remove_selectors_list = (
-            [s.strip() for s in remove_selectors.split(",")]
-            if remove_selectors
-            else None
+    # Build WebCrawlConfig
+    url_patterns_list = (
+        [p.strip() for p in url_patterns.split(",")] if url_patterns else None
+    )
+    exclude_patterns_list = (
+        [p.strip() for p in exclude_patterns.split(",")] if exclude_patterns else None
+    )
+    remove_selectors_list = (
+        [s.strip() for s in remove_selectors.split(",")] if remove_selectors else None
+    )
+
+    crawl_config = WebCrawlConfig(
+        start_url=start_url,
+        max_pages=max_pages or 100,
+        max_depth=max_depth or 3,
+        url_patterns=url_patterns_list,
+        exclude_patterns=exclude_patterns_list,
+        same_domain_only=(same_domain_only if same_domain_only is not None else True),
+        content_selector=content_selector,
+        remove_selectors=remove_selectors_list,
+        concurrent_requests=concurrent_requests or 3,
+        request_delay=request_delay or 1.0,
+        timeout=timeout or 30,
+        respect_robots_txt=(
+            respect_robots_txt if respect_robots_txt is not None else True
+        ),
+    )
+
+    # Build IngestionConfig
+    final_chunk_size = chunk_size if chunk_size is not None and chunk_size > 0 else 1000
+    final_chunk_overlap = (
+        chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
+    )
+
+    # Ensure overlap is always less than size
+    if final_chunk_overlap >= final_chunk_size:
+        final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
+        logger.warning(
+            "Auto-adjusting chunk_overlap from %s to %s to ensure it's less than chunk_size (%s)",
+            chunk_overlap,
+            final_chunk_overlap,
+            final_chunk_size,
         )
 
-        crawl_config = WebCrawlConfig(
-            start_url=start_url,
-            max_pages=max_pages or 100,
-            max_depth=max_depth or 3,
-            url_patterns=url_patterns_list,
-            exclude_patterns=exclude_patterns_list,
-            same_domain_only=(
-                same_domain_only if same_domain_only is not None else True
-            ),
-            content_selector=content_selector,
-            remove_selectors=remove_selectors_list,
-            concurrent_requests=concurrent_requests or 3,
-            request_delay=request_delay or 1.0,
-            timeout=timeout or 30,
-            respect_robots_txt=(
-                respect_robots_txt if respect_robots_txt is not None else True
-            ),
+    web_parsed_separators = _parse_separators(separators)
+    web_final_strategy = (
+        chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
+    )
+    if (
+        separators
+        and separators.strip()
+        and web_final_strategy != ChunkStrategy.RECURSIVE
+    ):
+        logger.warning(
+            "separators are only used when chunk_strategy is recursive; "
+            "current strategy is %s, ignoring separators",
+            web_final_strategy.value,
         )
 
-        # Build IngestionConfig
-        final_chunk_size = (
-            chunk_size if chunk_size is not None and chunk_size > 0 else 1000
-        )
-        final_chunk_overlap = (
-            chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
-        )
+    ingestion_config = IngestionConfig(
+        parse_method=(
+            parse_method if parse_method is not None else ParseMethod.DEFAULT
+        ),
+        chunk_strategy=web_final_strategy,
+        chunk_size=final_chunk_size,
+        chunk_overlap=final_chunk_overlap,
+        separators=web_parsed_separators,
+        embedding_model_id=embedding_model_id,
+        embedding_batch_size=(
+            embedding_batch_size
+            if embedding_batch_size is not None and embedding_batch_size > 0
+            else 10
+        ),
+        max_retries=(
+            max_retries if max_retries is not None and max_retries >= 0 else 3
+        ),
+        retry_delay=(
+            retry_delay if retry_delay is not None and retry_delay >= 0 else 1.0
+        ),
+    )
 
-        # Ensure overlap is always less than size
-        if final_chunk_overlap >= final_chunk_size:
-            final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
-            logger.warning(
-                f"Auto-adjusting chunk_overlap from {chunk_overlap} to {final_chunk_overlap} "
-                f"to ensure it's less than chunk_size ({final_chunk_size})"
+    # Run web ingestion
+    result = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: asyncio.run(
+            run_web_ingestion(
+                collection=collection,
+                crawl_config=crawl_config,
+                ingestion_config=ingestion_config,
+                user_id=int(_user.id),
+                is_admin=bool(_user.is_admin),
             )
+        ),
+    )
 
-        web_parsed_separators = _parse_separators(separators)
-        web_final_strategy = (
-            chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
-        )
-        if (
-            separators
-            and separators.strip()
-            and web_final_strategy != ChunkStrategy.RECURSIVE
-        ):
-            logger.warning(
-                "separators are only used when chunk_strategy is recursive; "
-                "current strategy is %s, ignoring separators",
-                web_final_strategy.value,
-            )
-
-        ingestion_config = IngestionConfig(
-            parse_method=(
-                parse_method if parse_method is not None else ParseMethod.DEFAULT
-            ),
-            chunk_strategy=web_final_strategy,
-            chunk_size=final_chunk_size,
-            chunk_overlap=final_chunk_overlap,
-            separators=web_parsed_separators,
-            embedding_model_id=embedding_model_id,
-            embedding_batch_size=(
-                embedding_batch_size
-                if embedding_batch_size is not None and embedding_batch_size > 0
-                else 10
-            ),
-            max_retries=(
-                max_retries if max_retries is not None and max_retries >= 0 else 3
-            ),
-            retry_delay=(
-                retry_delay if retry_delay is not None and retry_delay >= 0 else 1.0
-            ),
-        )
-
-        # Run web ingestion
-        import asyncio
-
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: asyncio.run(
-                run_web_ingestion(
-                    collection=collection,
-                    crawl_config=crawl_config,
-                    ingestion_config=ingestion_config,
-                    user_id=int(_user.id),
-                    is_admin=bool(_user.is_admin),
-                )
-            ),
-        )
-
-        if result.status == "error":
-            return JSONResponse(status_code=500, content=result.model_dump())
-
-        return result
-
-    except HTTPException:
-        raise
-    except (ValueError, KeyError, TypeError) as e:
-        logger.error(f"Data format error in web ingestion: {e}")
-        raise HTTPException(status_code=400, detail=f"Data format error: {str(e)}")
-    except Exception as e:
-        logger.exception(f"Unexpected error in web ingestion: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Server internal error: {str(e)}",
-        )
+    return result
 
 
 @kb_router.delete(
     "/collections/{collection_name}",
 )
+@handle_kb_exceptions
 async def delete_collection_api(
     collection_name: str,
     _user: User = Depends(get_current_user),
@@ -717,16 +670,8 @@ async def delete_collection_api(
     Returns:
         Deletion result with status and affected documents
     """
-    try:
-        result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
-        return result
-
-    except Exception as e:
-        logger.exception(f"Failed to delete collection '{collection_name}': {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete collection: {str(e)}",
-        )
+    result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
+    return result
 
 
 @kb_router.post(
@@ -812,6 +757,7 @@ async def check_documents_exist_api(
 @kb_router.delete(
     "/collections/{collection_name}/documents/{filename}",
 )
+@handle_kb_exceptions
 async def delete_document_api(
     collection_name: str,
     filename: str,
@@ -831,119 +777,101 @@ async def delete_document_api(
         the same filename is uploaded multiple times concurrently. For production
         use, consider using doc_id directly or adding a filename index column.
     """
-    try:
-        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-            ensure_documents_table,
-        )
-        from ...core.tools.core.RAG_tools.management.collections import delete_document
-        from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
-        from ...core.tools.core.RAG_tools.utils.string_utils import (
-            build_lancedb_filter_expression,
-        )
-        from ...providers.vector_store.lancedb import get_connection_from_env
+    # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
+    from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
+        ensure_documents_table,
+    )
+    from ...core.tools.core.RAG_tools.management.collections import delete_document
+    from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
+    from ...core.tools.core.RAG_tools.utils.string_utils import (
+        build_lancedb_filter_expression,
+    )
+    from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
+    from ...providers.vector_store.lancedb import get_connection_from_env
 
-        # Look up doc_id(s) by filename
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        table = conn.open_table("documents")
+    # Look up doc_id(s) by filename
+    conn = get_connection_from_env()
+    ensure_documents_table(conn)
+    table = conn.open_table("documents")
 
-        # Filter by collection first to reduce search space
-        base_filter = build_lancedb_filter_expression({"collection": collection_name})
+    # Filter by collection first to reduce search space
+    base_filter = build_lancedb_filter_expression({"collection": collection_name})
 
-        # Add user permission filter for multi-tenancy
-        from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
+    user_filter = UserPermissions.get_user_filter(int(_user.id), bool(_user.is_admin))
 
-        user_filter = UserPermissions.get_user_filter(
-            int(_user.id), bool(_user.is_admin)
-        )
+    if user_filter and base_filter:
+        combined_filter = f"({base_filter}) and ({user_filter})"
+    elif user_filter:
+        combined_filter = user_filter
+    else:
+        combined_filter = base_filter
 
-        # Combine filters
-        if user_filter and base_filter:
-            combined_filter = f"({base_filter}) and ({user_filter})"
-        elif user_filter:
-            combined_filter = user_filter
-        else:
-            combined_filter = base_filter
+    MAX_SEARCH_RESULTS = 10000
+    records = query_to_list(
+        table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
+    )
 
-        # Use limit() to avoid loading all records into memory
-        # Assume reasonable max documents per collection for single file lookup
-        MAX_SEARCH_RESULTS = 10000
-        records = query_to_list(
-            table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
-        )
-
-        # Find all matching documents (handle duplicates)
-        matching_docs = []
-        for record in records:
-            source_path = record.get("source_path", "")
-            # Use basename for exact matching
-            if source_path and os.path.basename(str(source_path)) == filename:
-                matching_docs.append(
-                    {
-                        "doc_id": record.get("doc_id"),
-                        "source_path": source_path,
-                    }
-                )
-
-        if not matching_docs:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Document not found: {filename}",
+    matching_docs = []
+    for record in records:
+        source_path = record.get("source_path", "")
+        if source_path and os.path.basename(str(source_path)) == filename:
+            matching_docs.append(
+                {
+                    "doc_id": record.get("doc_id"),
+                    "source_path": source_path,
+                }
             )
 
-        # Delete all matching documents
-        deleted_doc_ids = []
-        deletion_errors = []
+    if not matching_docs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document not found: {filename}",
+        )
 
-        for doc_info in matching_docs:
-            doc_id = doc_info["doc_id"]
-            try:
-                delete_document(
-                    collection_name, doc_id, int(_user.id), bool(_user.is_admin)
-                )
-                deleted_doc_ids.append(doc_id)
-                logger.info(
-                    f"Deleted document '{filename}' (doc_id: {doc_id}) from collection '{collection_name}'"
-                )
-            except Exception as e:
-                error_msg = f"Failed to delete doc_id {doc_id}: {str(e)}"
-                deletion_errors.append(error_msg)
-                logger.error(error_msg)
+    deleted_doc_ids = []
+    deletion_errors = []
 
-        # Return results
-        if deletion_errors:
-            return {
-                "status": "partial_success" if deleted_doc_ids else "failed",
-                "message": f"Deleted {len(deleted_doc_ids)} of {len(matching_docs)} documents",
-                "collection": collection_name,
-                "filename": filename,
-                "deleted_doc_ids": deleted_doc_ids,
-                "errors": deletion_errors,
-            }
+    for doc_info in matching_docs:
+        doc_id = doc_info["doc_id"]
+        try:
+            delete_document(
+                collection_name, doc_id, int(_user.id), bool(_user.is_admin)
+            )
+            deleted_doc_ids.append(doc_id)
+            logger.info(
+                "Deleted document '%s' (doc_id: %s) from collection '%s'",
+                filename,
+                doc_id,
+                collection_name,
+            )
+        except Exception as e:
+            error_msg = f"Failed to delete doc_id {doc_id}: {str(e)}"
+            deletion_errors.append(error_msg)
+            logger.error("%s", error_msg)
 
+    if deletion_errors:
         return {
-            "status": "success",
-            "message": f"Successfully deleted {len(deleted_doc_ids)} document(s)",
+            "status": "partial_success" if deleted_doc_ids else "failed",
+            "message": f"Deleted {len(deleted_doc_ids)} of {len(matching_docs)} documents",
             "collection": collection_name,
             "filename": filename,
             "deleted_doc_ids": deleted_doc_ids,
+            "errors": deletion_errors,
         }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(
-            f"Failed to delete document '{filename}' from collection '{collection_name}': {e}"
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete document: {str(e)}",
-        )
+    return {
+        "status": "success",
+        "message": f"Successfully deleted {len(deleted_doc_ids)} document(s)",
+        "collection": collection_name,
+        "filename": filename,
+        "deleted_doc_ids": deleted_doc_ids,
+    }
 
 
 @kb_router.put(
     "/collections/{collection_name}",
 )
+@handle_kb_exceptions
 async def rename_collection_api(
     collection_name: str,
     new_name: str = Form(..., description="New collection name"),
@@ -958,55 +886,37 @@ async def rename_collection_api(
     Returns:
         Success message
     """
-    try:
-        from ...core.tools.core.RAG_tools.management.collections import (
-            _list_table_names,
+    from ...core.tools.core.RAG_tools.management.collections import (
+        _list_table_names,
+    )
+    from ...core.tools.core.RAG_tools.management.status import (
+        clear_ingestion_status,
+        load_ingestion_status,
+        write_ingestion_status,
+    )
+    from ...core.tools.core.RAG_tools.utils.string_utils import (
+        escape_lancedb_string,
+    )
+
+    conn = get_connection_from_env()
+
+    if not new_name or not new_name.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="New collection name cannot be empty",
         )
-        from ...core.tools.core.RAG_tools.management.status import (
-            load_ingestion_status,
-            write_ingestion_status,
-        )
-        from ...core.tools.core.RAG_tools.utils.string_utils import (
-            escape_lancedb_string,
-        )
 
-        conn = get_connection_from_env()
+    new_name = new_name.strip()
 
-        # Validate new name
-        if not new_name or not new_name.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="New collection name cannot be empty",
-            )
+    if new_name == collection_name:
+        return {"status": "success", "message": "Collection name unchanged"}
 
-        new_name = new_name.strip()
+    warnings: list[str] = []
 
-        if new_name == collection_name:
-            return {"status": "success", "message": "Collection name unchanged"}
+    table_names = _list_table_names(conn, warnings)
 
-        warnings: list[str] = []
-
-        # Update collection name in all tables
-        table_names = _list_table_names(conn, warnings)
-
-        # Core tables
-        for table_name in ["documents", "parses", "chunks"]:
-            if table_name in table_names:
-                try:
-                    table = conn.open_table(table_name)
-                    # Update all rows for this collection
-                    table.update(
-                        f"collection = '{escape_lancedb_string(collection_name)}'",
-                        {"collection": new_name},
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to update '{table_name}': {e}")
-                    warnings.append(f"Failed to update '{table_name}': {e}")
-
-        # Embeddings tables
-        for table_name in table_names:
-            if not table_name.startswith("embeddings_"):
-                continue
+    for table_name in ["documents", "parses", "chunks"]:
+        if table_name in table_names:
             try:
                 table = conn.open_table(table_name)
                 table.update(
@@ -1014,59 +924,57 @@ async def rename_collection_api(
                     {"collection": new_name},
                 )
             except Exception as e:
-                logger.warning(f"Failed to update embeddings table '{table_name}': {e}")
+                logger.warning("Failed to update '%s': %s", table_name, e)
                 warnings.append(f"Failed to update '{table_name}': {e}")
 
-        # Update ingestion status files
+    for table_name in table_names:
+        if not table_name.startswith("embeddings_"):
+            continue
         try:
-            status_entries = load_ingestion_status(collection=collection_name)
-            for entry in status_entries:
-                doc_id = entry.get("doc_id")
-                if doc_id:
-                    # Rewrite status with new collection name
-                    write_ingestion_status(
-                        new_name,
-                        doc_id,
-                        status=entry.get("status", "pending"),
-                        message=entry.get("message", ""),
-                        parse_hash=entry.get("parse_hash", ""),
-                    )
-                    # Clear old status
-                    from ...core.tools.core.RAG_tools.management.status import (
-                        clear_ingestion_status,
-                    )
-
-                    clear_ingestion_status(collection_name, doc_id)
+            table = conn.open_table(table_name)
+            table.update(
+                f"collection = '{escape_lancedb_string(collection_name)}'",
+                {"collection": new_name},
+            )
         except Exception as e:
-            logger.warning(f"Failed to update ingestion status: {e}")
-            warnings.append(f"Failed to update ingestion status: {e}")
+            logger.warning("Failed to update embeddings table '%s': %s", table_name, e)
+            warnings.append(f"Failed to update '{table_name}': {e}")
 
-        if warnings:
-            return {
-                "status": "partial_success",
-                "message": f"Collection renamed from '{collection_name}' to '{new_name}' with some warnings",
-                "warnings": warnings,
-            }
+    try:
+        status_entries = load_ingestion_status(collection=collection_name)
+        for entry in status_entries:
+            doc_id = entry.get("doc_id")
+            if doc_id:
+                write_ingestion_status(
+                    new_name,
+                    doc_id,
+                    status=entry.get("status", "pending"),
+                    message=entry.get("message", ""),
+                    parse_hash=entry.get("parse_hash", ""),
+                )
+                clear_ingestion_status(collection_name, doc_id)
+    except Exception as e:
+        logger.warning("Failed to update ingestion status: %s", e)
+        warnings.append(f"Failed to update ingestion status: {e}")
 
+    if warnings:
         return {
-            "status": "success",
-            "message": f"Collection renamed from '{collection_name}' to '{new_name}'",
+            "status": "partial_success",
+            "message": f"Collection renamed from '{collection_name}' to '{new_name}' with some warnings",
+            "warnings": warnings,
         }
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Failed to rename collection '{collection_name}': {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to rename collection: {str(e)}",
-        )
+    return {
+        "status": "success",
+        "message": f"Collection renamed from '{collection_name}' to '{new_name}'",
+    }
 
 
 @kb_router.get(
     "/collections/{collection_name}/parses/{doc_id}/parse_result",
     response_model=ParseResultResponse,
 )
+@handle_kb_exceptions
 async def get_parse_result_api(
     collection_name: str,
     doc_id: str,
@@ -1090,25 +998,22 @@ async def get_parse_result_api(
     Returns:
         ParseResultResponse with paginated text segments, tables, and figures
     """
+    from ...core.tools.core.RAG_tools.core.exceptions import DocumentNotFoundError
+    from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
+
+    safe_doc_id = sanitize_for_doc_id(doc_id)
+    if safe_doc_id != doc_id:
+        logger.warning("Invalid doc_id format detected: %s", doc_id)
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    if page < 1:
+        raise HTTPException(status_code=422, detail="Page number must be >= 1")
+    if page_size < 1 or page_size > 100:
+        raise HTTPException(
+            status_code=422, detail="Page size must be between 1 and 100"
+        )
+
     try:
-        from ...core.tools.core.RAG_tools.core.exceptions import DocumentNotFoundError
-        from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
-
-        # Validate doc_id to prevent path traversal or invalid format
-        safe_doc_id = sanitize_for_doc_id(doc_id)
-        if safe_doc_id != doc_id:
-            logger.warning(f"Invalid doc_id format detected: {doc_id}")
-            raise HTTPException(status_code=400, detail="Invalid document ID format")
-
-        # Validate pagination parameters (redundant but safe)
-        if page < 1:
-            raise HTTPException(status_code=422, detail="Page number must be >= 1")
-        if page_size < 1 or page_size > 100:
-            raise HTTPException(
-                status_code=422, detail="Page size must be between 1 and 100"
-            )
-
-        # Reconstruct parse result from database (with multi-tenancy filter)
         elements, actual_parse_hash = reconstruct_parse_result_from_db(
             collection_name,
             doc_id,
@@ -1116,27 +1021,17 @@ async def get_parse_result_api(
             user_id=int(_user.id),
             is_admin=bool(_user.is_admin),
         )
-
-        # Apply pagination
-        paginated_elements, pagination_info = paginate_parse_results(
-            elements, page, page_size
-        )
-
-        return ParseResultResponse(
-            doc_id=doc_id,
-            parse_hash=actual_parse_hash or "",
-            elements=paginated_elements,
-            pagination=pagination_info,
-        )
-
     except DocumentNotFoundError as e:
-        logger.warning(f"Parse result not found: {e}")
+        logger.warning("Parse result not found: %s", e)
         raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Failed to get parse result: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get parse result: {str(e)}",
-        )
+
+    paginated_elements, pagination_info = paginate_parse_results(
+        elements, page, page_size
+    )
+
+    return ParseResultResponse(
+        doc_id=doc_id,
+        parse_hash=actual_parse_hash or "",
+        elements=paginated_elements,
+        pagination=pagination_info,
+    )

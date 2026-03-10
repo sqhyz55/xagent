@@ -489,6 +489,27 @@ def _coerce_search_config(
     return SearchConfig.model_validate(payload)
 
 
+def _handle_search_error(
+    exc: Exception,
+    current_step: str,
+    search_type: SearchType,
+    warnings: List[str],
+) -> SearchPipelineResult:
+    """Unify error handling for the search pipeline."""
+    logger.exception(
+        "Document search pipeline failed at step '%s': %s", current_step, exc
+    )
+    return SearchPipelineResult(
+        status="error",
+        search_type=search_type,
+        results=[],
+        result_count=0,
+        warnings=warnings + [f"{current_step}: {exc}"],
+        message=f"{current_step} failed: {exc}",
+        used_rerank=False,
+    )
+
+
 def search_documents(
     collection: str,
     query_text: str,
@@ -722,33 +743,12 @@ def search_documents(
             cfg=cfg,
         )
 
-    except RagCoreException as exc:
-        logger.exception(
-            "Document search pipeline failed at step '%s': %s", current_step, exc
-        )
-        return SearchPipelineResult(
-            status="error",
+    except (RagCoreException, Exception) as exc:
+        return _handle_search_error(
+            exc=exc,
+            current_step=current_step,
             search_type=cfg.search_type,
-            results=[],
-            result_count=0,
-            warnings=warnings + [f"{current_step}: {exc}"],
-            message=f"{current_step} failed: {exc}",
-            used_rerank=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Document search pipeline encountered unexpected error at step '%s': %s",
-            current_step,
-            exc,
-        )
-        return SearchPipelineResult(
-            status="error",
-            search_type=cfg.search_type,
-            results=[],
-            result_count=0,
-            warnings=warnings + [f"{current_step}: {exc}"],
-            message=f"{current_step} failed: {exc}",
-            used_rerank=False,
+            warnings=warnings,
         )
 
 
