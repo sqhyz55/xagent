@@ -14,9 +14,14 @@ import pandas as pd
 from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import MainPointerError
 from ..LanceDB.schema_manager import ensure_main_pointers_table
-from ..utils.string_utils import build_lancedb_filter_expression
+from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_model_tag(model_tag: Optional[str]) -> str:
+    """Normalize model_tag to empty string if None."""
+    return model_tag if model_tag is not None else ""
 
 
 def get_main_pointer(
@@ -43,19 +48,20 @@ def get_main_pointer(
         table = conn.open_table("main_pointers")
 
         # Build safe filter conditions
-        base_filters = {
-            "collection": collection,
-            "doc_id": doc_id,
-            "step_type": step_type,
-        }
+        normalized_tag = _normalize_model_tag(model_tag)
 
-        # Handle model_tag (supports both value and NULL)
-        if model_tag is not None:
-            base_filters["model_tag"] = model_tag
-            filter_expr = build_lancedb_filter_expression(base_filters)
+        # Base filters for collection, doc_id, and step_type
+        base_expr = (
+            f"collection == '{escape_lancedb_string(collection)}' AND "
+            f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
+            f"step_type == '{escape_lancedb_string(step_type)}'"
+        )
+
+        # Handle model_tag: check for both normalized empty string AND NULL for backward compatibility
+        if normalized_tag == "":
+            filter_expr = f"{base_expr} AND (model_tag == '' OR model_tag IS NULL)"
         else:
-            filter_expr = build_lancedb_filter_expression(base_filters)
-            filter_expr += " AND model_tag IS NULL"
+            filter_expr = f"{base_expr} AND model_tag == '{escape_lancedb_string(normalized_tag)}'"
 
         # Query the table
         result = table.search().where(filter_expr).to_pandas()
@@ -63,13 +69,16 @@ def get_main_pointer(
         if result.empty:
             return None
 
-        # Return the first (and should be only) result
+        # Return the first result, preferring non-NULL model_tag if multiple found
+        if len(result) > 1:
+            result = result.sort_values("model_tag", ascending=False)
+
         row = result.iloc[0]
         return {
             "collection": row["collection"],
             "doc_id": row["doc_id"],
             "step_type": row["step_type"],
-            "model_tag": row["model_tag"],
+            "model_tag": row["model_tag"] if row["model_tag"] is not None else "",
             "semantic_id": row["semantic_id"],
             "technical_id": row["technical_id"],
             "created_at": row["created_at"],
@@ -82,7 +91,7 @@ def get_main_pointer(
 
 
 def set_main_pointer(
-    lancedb_dir: str,
+    lancedb_dir: str,  # Kept for backward compatibility
     collection: str,
     doc_id: str,
     step_type: str,
@@ -93,7 +102,11 @@ def set_main_pointer(
 ) -> None:
     """Set or update the main pointer for a specific document and stage.
 
+    Uses merge_insert for atomicity and avoids 'delete-then-add' race conditions.
+    Normalizes None model_tag to empty string.
+
     Args:
+        lancedb_dir: Directory for LanceDB (unused, using connection from env)
         collection: Collection name
         doc_id: Document ID
         step_type: Processing stage type (parse, chunk, embed)
@@ -110,59 +123,50 @@ def set_main_pointer(
         ensure_main_pointers_table(conn)
 
         table = conn.open_table("main_pointers")
-
-        # Check if pointer already exists
-        existing = get_main_pointer(collection, doc_id, step_type, model_tag)
-
+        normalized_tag = _normalize_model_tag(model_tag)
         now = pd.Timestamp.now(tz="UTC")
 
+        # Check if pointer already exists to preserve created_at
+        existing = get_main_pointer(collection, doc_id, step_type, model_tag)
+
         if existing:
-            # Update existing pointer
-            update_data = {
-                "collection": [collection],
-                "doc_id": [doc_id],
-                "step_type": [step_type],
-                "model_tag": [model_tag],
-                "semantic_id": [semantic_id],
-                "technical_id": [technical_id],
-                "created_at": [existing["created_at"]],  # Keep original creation time
-                "updated_at": [now],
-                "operator": [operator or "unknown"],
-            }
+            created_at = existing["created_at"]
 
-            # Delete old record and insert new one
-            base_filters = {
-                "collection": collection,
-                "doc_id": doc_id,
-                "step_type": step_type,
-            }
-
-            if model_tag is not None:
-                base_filters["model_tag"] = model_tag
-                delete_expr = build_lancedb_filter_expression(base_filters)
-            else:
-                delete_expr = build_lancedb_filter_expression(base_filters)
-                delete_expr += " AND model_tag IS NULL"
-
-            table.delete(delete_expr)
-
+            # Fix-up: normalize NULL model_tag to "" in DB before merge_insert to avoid duplicates
+            if normalized_tag == "":
+                base_expr = (
+                    f"collection == '{escape_lancedb_string(collection)}' AND "
+                    f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
+                    f"step_type == '{escape_lancedb_string(step_type)}'"
+                )
+                null_filter = f"{base_expr} AND model_tag IS NULL"
+                try:
+                    table.update(where=null_filter, values={"model_tag": ""})
+                except Exception as update_err:
+                    logger.warning("Failed to normalize NULL model_tag: %s", update_err)
         else:
-            # Create new pointer
-            update_data = {
-                "collection": [collection],
-                "doc_id": [doc_id],
-                "step_type": [step_type],
-                "model_tag": [model_tag],
-                "semantic_id": [semantic_id],
-                "technical_id": [technical_id],
-                "created_at": [now],
-                "updated_at": [now],
-                "operator": [operator or "unknown"],
-            }
+            created_at = now
 
-        # Insert the new/updated record
+        # Prepare data for merge_insert
+        update_data = {
+            "collection": [collection],
+            "doc_id": [doc_id],
+            "step_type": [step_type],
+            "model_tag": [normalized_tag],
+            "semantic_id": [semantic_id],
+            "technical_id": [technical_id],
+            "created_at": [created_at],
+            "updated_at": [now],
+            "operator": [operator or "unknown"],
+        }
         df = pd.DataFrame(update_data)
-        table.add(df)
+
+        (
+            table.merge_insert(on=["collection", "doc_id", "step_type", "model_tag"])
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(df)
+        )
 
         logger.info(
             f"Set main pointer for {collection}/{doc_id}/{step_type} to {technical_id} (semantic: {semantic_id})"
@@ -215,7 +219,9 @@ def list_main_pointers(
                     "collection": row["collection"],
                     "doc_id": row["doc_id"],
                     "step_type": row["step_type"],
-                    "model_tag": row["model_tag"],
+                    "model_tag": row["model_tag"]
+                    if row["model_tag"] is not None
+                    else "",
                     "semantic_id": row["semantic_id"],
                     "technical_id": row["technical_id"],
                     "created_at": row["created_at"],
@@ -254,26 +260,24 @@ def delete_main_pointer(
         table = conn.open_table("main_pointers")
 
         # Build safe filter conditions
-        base_filters = {
-            "collection": collection,
-            "doc_id": doc_id,
-            "step_type": step_type,
-        }
+        normalized_tag = _normalize_model_tag(model_tag)
+        base_expr = (
+            f"collection == '{escape_lancedb_string(collection)}' AND "
+            f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
+            f"step_type == '{escape_lancedb_string(step_type)}'"
+        )
 
-        # Handle model_tag (supports both value and NULL)
-        if model_tag is not None:
-            base_filters["model_tag"] = model_tag
-            filter_expr = build_lancedb_filter_expression(base_filters)
+        if normalized_tag == "":
+            filter_expr = f"{base_expr} AND (model_tag == '' OR model_tag IS NULL)"
         else:
-            filter_expr = build_lancedb_filter_expression(base_filters)
-            filter_expr += " AND model_tag IS NULL"
+            filter_expr = f"{base_expr} AND model_tag == '{escape_lancedb_string(normalized_tag)}'"
 
         # Check if pointer exists using count_rows for efficiency
         count = table.search().where(filter_expr).count_rows()
         if count == 0:
             return False
 
-        # Delete the pointer
+        # Delete the pointer(s)
         table.delete(filter_expr)
         logger.info(f"Deleted main pointer for {collection}/{doc_id}/{step_type}")
         return True
