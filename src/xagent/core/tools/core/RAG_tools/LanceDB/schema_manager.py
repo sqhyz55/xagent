@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
@@ -16,6 +17,7 @@ __all__ = [
     "ensure_prompt_templates_table",
     "ensure_ingestion_runs_table",
     "ensure_collection_config_table",
+    "ensure_collection_metadata_table",
 ]
 
 
@@ -27,18 +29,27 @@ def _table_exists(conn: DBConnection, name: str) -> bool:
         return False
 
 
-def _validate_schema_fields(
-    conn: DBConnection, table_name: str, required_fields: list[str]
+def _get_sql_default_for_pa_type(pa_type: Any) -> str:
+    """Map PyArrow type to LanceDB SQL default value expression."""
+    if pa.types.is_string(pa_type) or pa.types.is_large_string(pa_type):
+        return "''"
+    if pa.types.is_integer(pa_type):
+        return "0"
+    if pa.types.is_floating(pa_type):
+        return "0.0"
+    if pa.types.is_boolean(pa_type):
+        return "false"
+    if pa.types.is_timestamp(pa_type):
+        return "CAST(NULL AS TIMESTAMP)"
+    return "NULL"
+
+
+def _ensure_schema_fields(
+    conn: DBConnection, table_name: str, target_schema: Any
 ) -> None:
-    """Validate that an existing table contains all required fields.
+    """Ensure an existing table matches the target schema by adding missing columns.
 
-    Args:
-        conn: LanceDB connection
-        table_name: Name of the table to validate
-        required_fields: List of required field names
-
-    Raises:
-        ValueError: If the table exists but is missing required fields.
+    Only ADDS missing columns. Does not delete extra columns nor modify existing types.
     """
     if not _table_exists(conn, table_name):
         return
@@ -47,34 +58,37 @@ def _validate_schema_fields(
         table = conn.open_table(table_name)
         existing_schema = table.schema
         existing_field_names = {field.name for field in existing_schema}
-
-        missing_fields = [f for f in required_fields if f not in existing_field_names]
+        missing_fields = [
+            f for f in target_schema if f.name not in existing_field_names
+        ]
 
         if missing_fields:
-            error_msg = (
-                f"Table '{table_name}' exists but is missing required fields: {missing_fields}. "
-                f"This is likely due to a schema upgrade. "
-                f"Please delete the existing table or manually add the missing fields. "
-                f"Note: During development, we do not provide automatic migration scripts. "
-                f"To upgrade, you can either:\n"
-                f"1. Delete the table (data will be lost): conn.drop_table('{table_name}')\n"
-                f"2. Manually add the missing fields using LanceDB's schema update capabilities"
+            logger.info(
+                "Auto-migrating schema for table '%s'. Adding missing fields: %s",
+                table_name,
+                [f.name for f in missing_fields],
             )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-    except ValueError:
-        # Re-raise ValueError (our validation error)
-        raise
+            new_cols = {}
+            for field in missing_fields:
+                default_expr = _get_sql_default_for_pa_type(field.type)
+                new_cols[field.name] = default_expr
+            try:
+                table.add_columns(new_cols)
+                logger.info("Successfully migrated schema for table '%s'", table_name)
+            except Exception as e:
+                logger.error("Failed to add columns to table '%s': %s", table_name, e)
     except Exception as e:
-        # Log other errors but don't fail - schema validation is best-effort
         logger.warning(
-            f"Could not validate schema for table '{table_name}': {e}. "
-            f"Proceeding with table creation/usage."
+            "Could not validate or migrate schema for table '%s': %s",
+            table_name,
+            e,
         )
 
 
-def _create_table(conn: DBConnection, name: str, schema: object | None = None) -> None:
+def _create_table(conn: DBConnection, name: str, schema: Any | None = None) -> None:
     if _table_exists(conn, name):
+        if schema:
+            _ensure_schema_fields(conn, name, schema)
         return
     conn.create_table(name, schema=schema)
 
@@ -140,32 +154,9 @@ def ensure_parses_table(conn: DBConnection) -> None:
 def ensure_chunks_table(conn: DBConnection) -> None:
     """Ensure the chunks table exists with proper schema.
 
-    This function creates the table if it doesn't exist, and validates that
-    existing tables contain all required fields (especially 'metadata').
-
-    Args:
-        conn: LanceDB connection
-
-    Raises:
-        ValueError: If the table exists but is missing required fields.
-            This typically happens when an old table schema doesn't include
-            the 'metadata' field. During development, we do not provide
-            automatic migration scripts. Users must either delete the table
-            or manually add the missing fields.
-
-    Note:
-        There's no upgrade path for existing chunks tables. Any deployment
-        with an existing table will hit schema-mismatch errors once the pipeline
-        starts writing a column that doesn't exist. If you encounter this error,
-        you need to either delete the existing table or manually add the missing
-        'metadata' field.
+    If the table already exists, we attempt best-effort schema evolution by
+    adding any missing columns (see _ensure_schema_fields).
     """
-    # Required fields that must exist in the table (especially for schema validation)
-    required_fields = ["metadata"]
-
-    # Validate existing table schema before creating/using it
-    _validate_schema_fields(conn, "chunks", required_fields)
-
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -193,35 +184,10 @@ def ensure_embeddings_table(
 ) -> None:
     """Ensure the embeddings table exists with proper schema.
 
-    This function creates the table if it doesn't exist, and validates that
-    existing tables contain all required fields (especially 'metadata').
-
-    Args:
-        conn: LanceDB connection
-        model_tag: Model tag used to construct the table name (e.g., 'bge_large')
-        vector_dim: Optional vector dimension for fixed-size vectors
-
-    Raises:
-        ValueError: If the table exists but is missing required fields.
-            This typically happens when an old table schema doesn't include
-            the 'metadata' field. During development, we do not provide
-            automatic migration scripts. Users must either delete the table
-            or manually add the missing fields.
-
-    Note:
-        There's no upgrade path for existing embeddings tables. Any deployment
-        with an existing table will hit schema-mismatch errors once the pipeline
-        starts writing a column that doesn't exist. If you encounter this error,
-        you need to either delete the existing table or manually add the missing
-        'metadata' field.
+    If the table already exists, we attempt best-effort schema evolution by
+    adding any missing columns (see _ensure_schema_fields).
     """
     table_name = f"embeddings_{model_tag}"
-
-    # Required fields that must exist in the table (especially for schema validation)
-    required_fields = ["metadata"]
-
-    # Validate existing table schema before creating/using it
-    _validate_schema_fields(conn, table_name, required_fields)
 
     # Support dynamic vector dimension: if provided, create a FixedSizeList; otherwise allow variable-length
     vector_field_type = (
@@ -253,11 +219,6 @@ def ensure_embeddings_table(
 
 
 def ensure_main_pointers_table(conn: DBConnection) -> None:
-    """Ensure the main_pointers table exists with proper schema.
-
-    Args:
-        conn: LanceDB connection
-    """
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -275,11 +236,6 @@ def ensure_main_pointers_table(conn: DBConnection) -> None:
 
 
 def ensure_prompt_templates_table(conn: DBConnection) -> None:
-    """Ensure the prompt_templates table exists with proper schema.
-
-    Args:
-        conn: LanceDB connection
-    """
     table_name = "prompt_templates"
     schema = pa.schema(
         [
@@ -312,13 +268,6 @@ def ensure_prompt_templates_table(conn: DBConnection) -> None:
 
 
 def ensure_ingestion_runs_table(conn: DBConnection) -> None:
-    """Ensure the ingestion_runs table exists with proper schema.
-
-    This table tracks the status of document ingestion processes.
-
-    Args:
-        conn: LanceDB connection
-    """
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -368,3 +317,30 @@ def ensure_collection_config_table(conn: DBConnection) -> None:
     )
 
     _create_table(conn, table_name, schema=schema)
+
+
+def ensure_collection_metadata_table(conn: DBConnection) -> None:
+    """Ensure the collection_metadata table exists with proper schema."""
+    schema = pa.schema(
+        [
+            pa.field("name", pa.string()),
+            pa.field("schema_version", pa.string()),
+            pa.field("embedding_model_id", pa.string()),
+            pa.field("embedding_dimension", pa.int32()),
+            pa.field("documents", pa.int32()),
+            pa.field("processed_documents", pa.int32()),
+            pa.field("parses", pa.int32()),
+            pa.field("chunks", pa.int32()),
+            pa.field("embeddings", pa.int32()),
+            pa.field("document_names", pa.string()),
+            pa.field("collection_locked", pa.bool_()),
+            pa.field("allow_mixed_parse_methods", pa.bool_()),
+            pa.field("skip_config_validation", pa.bool_()),
+            pa.field("ingestion_config", pa.string()),
+            pa.field("created_at", pa.timestamp("us")),
+            pa.field("updated_at", pa.timestamp("us")),
+            pa.field("last_accessed_at", pa.timestamp("us")),
+            pa.field("extra_metadata", pa.string()),
+        ]
+    )
+    _create_table(conn, "collection_metadata", schema=schema)
