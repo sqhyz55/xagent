@@ -21,6 +21,8 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     EmbeddingWriteResponse,
 )
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
+    _group_embeddings_by_model,
+    _validate_and_prepare_table,
     read_chunks_for_embedding,
     validate_query_vector,
     write_vectors_to_db,
@@ -160,6 +162,160 @@ class TestReadChunksForEmbedding:
             assert result.chunks == []
             assert result.total_count == 0  # Changed from 1 to 0
             assert result.pending_count == 0
+
+
+class TestGroupEmbeddingsByModel:
+    """Tests for _group_embeddings_by_model helper."""
+
+    def test_group_embeddings_by_model_empty(self):
+        """Test grouping empty list returns empty dict."""
+        assert _group_embeddings_by_model([]) == {}
+
+    def test_group_embeddings_by_model_single_model(self):
+        """Test grouping single model returns one key with all items."""
+        from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
+
+        embeddings = [
+            ChunkEmbeddingData(
+                collection="c",
+                doc_id="d1",
+                chunk_id="ch1",
+                parse_hash="h",
+                model="m1",
+                vector=[0.1, 0.2],
+                text="t1",
+                chunk_hash="ch",
+            ),
+            ChunkEmbeddingData(
+                collection="c",
+                doc_id="d2",
+                chunk_id="ch2",
+                parse_hash="h",
+                model="m1",
+                vector=[0.2, 0.3],
+                text="t2",
+                chunk_hash="ch",
+            ),
+        ]
+        result = _group_embeddings_by_model(embeddings)
+        assert list(result.keys()) == ["m1"]
+        assert len(result["m1"]) == 2
+
+    def test_group_embeddings_by_model_multiple_models(self):
+        """Test grouping multiple models returns separate lists."""
+        from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
+
+        embeddings = [
+            ChunkEmbeddingData(
+                collection="c",
+                doc_id="d1",
+                chunk_id="ch1",
+                parse_hash="h",
+                model="m1",
+                vector=[0.1, 0.2],
+                text="t1",
+                chunk_hash="ch",
+            ),
+            ChunkEmbeddingData(
+                collection="c",
+                doc_id="d2",
+                chunk_id="ch2",
+                parse_hash="h",
+                model="m2",
+                vector=[0.2, 0.3],
+                text="t2",
+                chunk_hash="ch",
+            ),
+        ]
+        result = _group_embeddings_by_model(embeddings)
+        assert set(result.keys()) == {"m1", "m2"}
+        assert len(result["m1"]) == 1 and result["m1"][0].model == "m1"
+        assert len(result["m2"]) == 1 and result["m2"][0].model == "m2"
+
+
+class TestValidateAndPrepareTable:
+    """Tests for _validate_and_prepare_table helper."""
+
+    def test_validate_and_prepare_table_existing_same_dimension(self):
+        """Test table exists with same vector dimension is not dropped."""
+        from unittest.mock import MagicMock, patch
+
+        conn = MagicMock()
+        table_name = "embeddings_test_tag"
+        conn.table_names.return_value = [table_name]
+        existing_table = MagicMock()
+        mock_vector_field = MagicMock()
+        mock_vector_field.type.list_size = 2
+        mock_schema = MagicMock()
+        mock_schema.field.return_value = mock_vector_field
+        existing_table.schema = mock_schema
+        conn.open_table.return_value = existing_table
+        conn.drop_table = MagicMock()
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.ensure_embeddings_table"
+        ) as mock_ensure:
+            result = _validate_and_prepare_table(
+                conn, "test_tag", table_name, vector_dim=2
+            )
+        # Same dimension: should not drop; ensure_embeddings_table then open_table
+        conn.drop_table.assert_not_called()
+        mock_ensure.assert_called_once_with(conn, "test_tag", vector_dim=2)
+        assert result is existing_table
+
+    def test_validate_and_prepare_table_incompatible_vector_type_no_list_size(
+        self,
+    ):
+        """Test table with vector field without list_size is dropped and recreated."""
+        from unittest.mock import MagicMock, patch
+
+        conn = MagicMock()
+        table_name = "embeddings_test_tag"
+        conn.table_names.return_value = [table_name]
+        existing_table = MagicMock()
+        # Use a type object without list_size so hasattr(..., "list_size") is False
+        vector_type_no_list_size = type("VectorType", (), {})()
+        mock_vector_field = MagicMock()
+        mock_vector_field.type = vector_type_no_list_size
+        mock_schema = MagicMock()
+        mock_schema.field.return_value = mock_vector_field
+        existing_table.schema = mock_schema
+        conn.open_table.return_value = existing_table
+        conn.drop_table = MagicMock()
+        new_table = MagicMock()
+        conn.open_table.side_effect = [existing_table, new_table]
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.ensure_embeddings_table"
+        ):
+            result = _validate_and_prepare_table(
+                conn, "test_tag", table_name, vector_dim=2
+            )
+        conn.drop_table.assert_called_once_with(table_name)
+        assert result is new_table
+
+    def test_validate_and_prepare_table_schema_check_exception_then_recreate(
+        self,
+    ):
+        """Test when schema check raises, drop is attempted and table is recreated."""
+        from unittest.mock import MagicMock, patch
+
+        conn = MagicMock()
+        table_name = "embeddings_test_tag"
+        conn.table_names.return_value = [table_name]
+        conn.drop_table = MagicMock()
+        new_table = MagicMock()
+        # First open_table (in try) raises; after ensure_embeddings_table, second open_table returns new_table
+        conn.open_table.side_effect = [RuntimeError("schema error"), new_table]
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.ensure_embeddings_table"
+        ):
+            result = _validate_and_prepare_table(
+                conn, "test_tag", table_name, vector_dim=2
+            )
+        conn.drop_table.assert_called_once_with(table_name)
+        assert result is new_table
 
 
 class TestWriteVectorsToDb:
@@ -661,6 +817,73 @@ class TestWriteVectorsToDb:
                     collection=test_collection,
                     embeddings=[embedding],
                 )
+
+    def test_write_vectors_spill_retry(self, temp_lancedb_dir, test_collection):
+        """Test that spill error reduces batch size and retries without losing data."""
+        from unittest.mock import MagicMock, patch
+
+        from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
+
+        mock_db_connection = MagicMock()
+        mock_embeddings_table = _create_mock_table_with_schema()
+
+        def mock_open_table_func(table_name):
+            if table_name.startswith("embeddings_"):
+                return mock_embeddings_table
+            return _create_mock_table_with_schema()
+
+        mock_db_connection.open_table.side_effect = mock_open_table_func
+        mock_db_connection.create_table.return_value = None
+        mock_db_connection.table_names.return_value = []
+
+        # First execute() raises spill; subsequent succeed
+        mock_merge_insert = MagicMock()
+        mock_when_matched = MagicMock()
+        mock_when_not_matched = MagicMock()
+        mock_embeddings_table.merge_insert.return_value = mock_merge_insert
+        mock_merge_insert.when_matched_update_all.return_value = mock_when_matched
+        mock_when_matched.when_not_matched_insert_all.return_value = (
+            mock_when_not_matched
+        )
+        mock_when_not_matched.execute.side_effect = [
+            Exception("Spill has sent an error"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]
+        mock_embeddings_table.count_rows.return_value = 0
+
+        embeddings = [
+            ChunkEmbeddingData(
+                collection=test_collection,
+                doc_id=f"doc_{i}",
+                chunk_id=f"chunk_{i}",
+                parse_hash="test_parse",
+                model="test_model",
+                vector=[0.1, 0.2],
+                text=f"text_{i}",
+                chunk_hash="test_hash",
+            )
+            for i in range(5)
+        ]
+
+        with (
+            patch(
+                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_connection_from_env",
+                return_value=mock_db_connection,
+            ),
+            patch.dict(os.environ, {"LANCEDB_BATCH_SIZE": "2"}, clear=False),
+        ):
+            result = write_vectors_to_db(
+                collection=test_collection,
+                embeddings=embeddings,
+                create_index=False,
+            )
+
+        assert result.upsert_count == 5
+        assert mock_embeddings_table.merge_insert.call_count >= 2
 
     def test_write_vectors_batch_partial_failure(
         self, temp_lancedb_dir, test_collection

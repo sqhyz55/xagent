@@ -184,9 +184,10 @@ class FTSIndexStatus(Enum):
 
 
 class IndexOperation(Enum):
-    """Index operation result types."""
+    """Index operation result types (e.g. for embedding write response)."""
 
     CREATED = "created"
+    READY = "ready"
     SKIPPED = "skipped"
     SKIPPED_THRESHOLD = "skipped_threshold"
     FAILED = "failed"

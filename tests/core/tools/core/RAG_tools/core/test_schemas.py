@@ -826,6 +826,7 @@ class TestIndexOperation:
     def test_enum_values(self):
         """Test that enum has expected values."""
         assert IndexOperation.CREATED.value == "created"
+        assert IndexOperation.READY.value == "ready"
         assert IndexOperation.SKIPPED.value == "skipped"
         assert IndexOperation.SKIPPED_THRESHOLD.value == "skipped_threshold"
         assert IndexOperation.FAILED.value == "failed"
@@ -834,6 +835,7 @@ class TestIndexOperation:
     def test_enum_string_conversion(self):
         """Test that enum converts to string correctly."""
         assert str(IndexOperation.CREATED) == "created"
+        assert str(IndexOperation.READY) == "ready"
         assert str(IndexOperation.SKIPPED) == "skipped"
         assert str(IndexOperation.SKIPPED_THRESHOLD) == "skipped_threshold"
         assert str(IndexOperation.FAILED) == "failed"
@@ -843,6 +845,7 @@ class TestIndexOperation:
         """Test that enum values can be accessed correctly."""
         # Test that enum instances are not equal to strings (type safety)
         assert IndexOperation.CREATED != "created"
+        assert IndexOperation.READY != "ready"
         assert IndexOperation.SKIPPED != "skipped"
         assert IndexOperation.SKIPPED_THRESHOLD != "skipped_threshold"
         assert IndexOperation.FAILED != "failed"
@@ -852,12 +855,14 @@ class TestIndexOperation:
         """Test enum membership checks."""
         operations = {
             IndexOperation.CREATED,
+            IndexOperation.READY,
             IndexOperation.SKIPPED,
             IndexOperation.SKIPPED_THRESHOLD,
             IndexOperation.FAILED,
             IndexOperation.UPDATED,
         }
         assert IndexOperation.CREATED in operations
+        assert IndexOperation.READY in operations
         assert IndexOperation.SKIPPED in operations
         assert IndexOperation.SKIPPED_THRESHOLD in operations
         assert IndexOperation.FAILED in operations

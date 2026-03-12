@@ -32,6 +32,7 @@ from ..core.schemas import (
     ChunkForEmbedding,
     EmbeddingReadResponse,
     EmbeddingWriteResponse,
+    IndexOperation,
 )
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..LanceDB.schema_manager import ensure_chunks_table, ensure_embeddings_table
@@ -489,7 +490,20 @@ def _validate_and_prepare_table(
     table_name: str,
     vector_dim: int,
 ) -> Any:
-    """Ensure database table exists and has compatible schema."""
+    """Ensure database table exists and has compatible schema.
+
+    If the table exists, checks the vector field type and dimension; drops and
+    recreates the table when dimension or type is incompatible.
+
+    Args:
+        conn: LanceDB connection (e.g. from get_connection_from_env).
+        model_tag: Model tag used for table naming (e.g. from to_model_tag).
+        table_name: Full embeddings table name (e.g. embeddings_<model_tag>).
+        vector_dim: Expected vector dimension for the table schema.
+
+    Returns:
+        LanceDB table instance for the embeddings table (existing or newly created).
+    """
     conn_any = cast(Any, conn)
     try:
         existing_tables: List[str] = []
@@ -542,8 +556,18 @@ def _process_batch(
 ) -> int:
     """Process a single batch of embeddings.
 
+    Uses merge_insert for upsert; on recoverable errors falls back to add().
+    Non-recoverable errors (schema/type/dimension) are re-raised without fallback.
+
+    Args:
+        embeddings_table: LanceDB table to write to (from _validate_and_prepare_table).
+        records_to_merge: List of record dicts with keys matching table schema.
+        batch_idx: Zero-based batch index (for logging).
+        total_batches: Total number of batches (for logging).
+        model: Model name (for logging).
+
     Returns:
-        Number of upserted records.
+        Number of upserted records (len(records_to_merge) on success).
     """
     try:
         # Try merge_insert first (preferred method for upserts)
@@ -805,7 +829,7 @@ def _process_model_embeddings(
     logger.info("Processed model %s: upserted %d embeddings", model, upserted_count)
 
     # Handle index creation and reindexing if requested
-    index_status = "skipped"
+    index_status: str = IndexOperation.SKIPPED.value
     if create_index:
         try:
             # Use index manager for index creation
@@ -826,7 +850,7 @@ def _process_model_embeddings(
 
         except Exception as index_error:  # noqa: BLE001
             logger.warning("Failed to create index for %s: %s", table_name, index_error)
-            index_status = "failed"
+            index_status = IndexOperation.FAILED.value
 
     return upserted_count, index_status
 
@@ -840,7 +864,9 @@ def write_vectors_to_db(
     """Write embedding vectors to database with idempotency."""
     if not embeddings:
         return EmbeddingWriteResponse(
-            upsert_count=0, deleted_stale_count=0, index_status="skipped"
+            upsert_count=0,
+            deleted_stale_count=0,
+            index_status=IndexOperation.SKIPPED.value,
         )
 
     try:
@@ -865,28 +891,28 @@ def write_vectors_to_db(
             total_upserted += upserted
             index_statuses.append(idx_status)
 
-        # Determine overall index status
+        # Determine overall index status (map index_manager strings to IndexOperation)
         if "index_building" in index_statuses:
-            overall_index_status = "created"
+            overall_index_status = IndexOperation.CREATED
         elif "index_ready" in index_statuses:
-            overall_index_status = "ready"
+            overall_index_status = IndexOperation.READY
         elif "failed" in index_statuses or "index_corrupted" in index_statuses:
-            overall_index_status = "failed"
+            overall_index_status = IndexOperation.FAILED
         elif "below_threshold" in index_statuses:
-            overall_index_status = "skipped_threshold"
+            overall_index_status = IndexOperation.SKIPPED_THRESHOLD
         else:
-            overall_index_status = "skipped"
+            overall_index_status = IndexOperation.SKIPPED
 
         logger.info(
             "Embedding write completed: %d upserted, index status: %s",
             total_upserted,
-            overall_index_status,
+            overall_index_status.value,
         )
 
         return EmbeddingWriteResponse(
             upsert_count=total_upserted,
             deleted_stale_count=0,  # merge_insert handles updates automatically
-            index_status=overall_index_status,
+            index_status=overall_index_status.value,
         )
 
     except Exception as e:
