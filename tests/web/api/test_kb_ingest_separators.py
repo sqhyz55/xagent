@@ -4,7 +4,7 @@ import io
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -16,6 +16,7 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     WebIngestionResult,
 )
 from xagent.web.api.kb import kb_router
+from xagent.web.models.database import get_db
 
 
 @pytest.fixture
@@ -23,6 +24,13 @@ def mock_user():
     """Minimal user-like object for ingest dependency."""
     u = type("User", (), {"id": 1, "is_admin": False})()
     return u
+
+
+def _make_mock_db():
+    """Session mock for ingest: query(...).filter(...).first() and add/flush/commit."""
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    return db
 
 
 @pytest.fixture
@@ -33,9 +41,13 @@ def app_with_kb(mock_user):
     def override_get_current_user():
         return mock_user
 
+    def override_get_db():
+        yield _make_mock_db()
+
     app = FastAPI()
     app.include_router(kb_router)
     app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_db] = override_get_db
     return app
 
 

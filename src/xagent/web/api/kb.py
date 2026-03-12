@@ -20,6 +20,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
@@ -255,18 +256,37 @@ async def ingest(
         logger.error("File system error saving file %s: %s", safe_filename, e)
         raise HTTPException(status_code=403, detail="文件系统错误: {0}".format(str(e))) from e
 
-    # Register file in DB for file_id / downloads
-    import mimetypes
-
-    mime_type = mimetypes.guess_type(safe_filename)[0] or "application/octet-stream"
-    file_record = UploadedFile(
-        user_id=int(_user.id),
-        filename=safe_filename,
-        storage_path=str(file_path),
-        mime_type=mime_type,
-        file_size=len(content),
+    # Register file in unified file management (file_id) for /api/files/list and file_id download/preview/delete
+    storage_path_str = str(file_path)
+    existing = (
+        db.query(UploadedFile)
+        .filter(UploadedFile.storage_path == storage_path_str)
+        .first()
     )
-    db.add(file_record)
+    if existing:
+        existing.file_size = len(content)  # type: ignore[assignment]
+        existing.mime_type = getattr(
+            file, "content_type", None
+        ) or existing.mime_type  # type: ignore[assignment]
+        db.flush()
+        file_record = existing
+    else:
+        import mimetypes
+
+        mime_type = (
+            getattr(file, "content_type", None)
+            or mimetypes.guess_type(safe_filename)[0]
+            or "application/octet-stream"
+        )
+        file_record = UploadedFile(
+            user_id=int(_user.id),
+            filename=safe_filename,
+            storage_path=storage_path_str,
+            mime_type=mime_type,
+            file_size=len(content),
+        )
+        db.add(file_record)
+        db.flush()
     db.commit()
     db.refresh(file_record)
 
@@ -806,6 +826,26 @@ async def delete_collection_api(
                             int(_user.id),
                             safe_collection,
                         )
+                    # Sync DB: remove UploadedFile records for files under this
+                    # collection so file list stays consistent with file_id design.
+                    collection_dir_str = str(collection_dir)
+                    deleted_count = (
+                        db.query(UploadedFile)
+                        .filter(
+                            UploadedFile.user_id == int(_user.id),
+                            UploadedFile.storage_path.startswith(
+                                collection_dir_str + "/"
+                            ),
+                        )
+                        .delete(synchronize_session=False)
+                    )
+                    db.commit()
+                    if deleted_count:
+                        logger.info(
+                            "Removed %d uploaded_files record(s) for collection %s",
+                            deleted_count,
+                            collection_name,
+                        )
                     physical_cleanup_status = "success"
                     logger.info(
                         "Collection directory moved to trash: %s",
@@ -1253,6 +1293,44 @@ async def rename_collection_api(
             try:
                 with collection_physical_lock(old_collection_dir):
                     old_collection_dir.rename(new_collection_dir)
+                    # Sync DB: update storage_path for UploadedFile so file_id resolution still finds the file
+                    old_str = str(old_collection_dir)
+                    new_str = str(new_collection_dir)
+                    uploads_resolved = UPLOADS_DIR.resolve()
+                    records = (
+                        db.query(UploadedFile)
+                        .filter(
+                            UploadedFile.user_id == int(_user.id),
+                            UploadedFile.storage_path.startswith(old_str + "/"),
+                        )
+                        .all()
+                    )
+                    for rec in records:
+                        suffix = rec.storage_path[len(old_str) :]
+                        if ".." in suffix:
+                            logger.warning(
+                                "Skipping storage_path update (invalid suffix): %s",
+                                suffix,
+                            )
+                            continue
+                        new_path = new_str + suffix
+                        try:
+                            Path(new_path).resolve().relative_to(uploads_resolved)
+                        except ValueError:
+                            logger.warning(
+                                "Skipping storage_path update (path outside UPLOADS_DIR): %s",
+                                new_path,
+                            )
+                            continue
+                        rec.storage_path = new_path  # type: ignore[assignment]
+                    db.commit()
+                    if records:
+                        logger.info(
+                            "Updated %d uploaded_files record(s) for renamed collection %s -> %s",
+                            len(records),
+                            collection_name,
+                            new_name,
+                        )
                 physical_rename_status = "success"
                 logger.info(
                     "Physically renamed collection directory: %s -> %s",
@@ -1347,26 +1425,6 @@ async def rename_collection_api(
         except Exception as e:
             logger.warning("Failed to update embeddings table '%s': %s", table_name, e)
             warnings.append(f"Failed to update '{table_name}': {e}")
-
-    # Update UploadedFile.storage_path for files under the renamed collection
-    if old_collection_dir is not None and new_collection_dir is not None:
-        old_prefix = str(old_collection_dir.resolve()) + os.sep
-        new_prefix = str(new_collection_dir.resolve()) + os.sep
-        records = (
-            db.query(UploadedFile)
-            .filter(UploadedFile.storage_path.startswith(old_prefix))
-            .all()
-        )
-        for rec in records:
-            rec.storage_path = new_prefix + rec.storage_path[len(old_prefix) :]
-        if records:
-            db.commit()
-            logger.info(
-                "Updated %s UploadedFile storage_path(s) for collection rename %s -> %s",
-                len(records),
-                collection_name,
-                new_name,
-            )
 
     # Migrate ingestion status from old collection name to new
     try:

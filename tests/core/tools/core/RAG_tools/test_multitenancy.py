@@ -767,7 +767,13 @@ class TestAPIMultiTenancy:
         )
         mock_delete_collection.return_value = mock_result
 
-        result = await delete_collection_api("test_collection", _user=mock_user)
+        # delete_collection_api now requires db (file_id: remove UploadedFile records).
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.delete.return_value = 0
+
+        result = await delete_collection_api(
+            "test_collection", _user=mock_user, db=mock_db
+        )
 
         mock_delete_collection.assert_called_once_with("test_collection", 123, False)
         mock_move_to_trash.assert_called_once()
@@ -809,7 +815,12 @@ class TestAPIMultiTenancy:
         )
         mock_delete_collection.return_value = mock_result
 
-        result = await delete_collection_api("test_collection", _user=mock_user)
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.delete.return_value = 0
+
+        result = await delete_collection_api(
+            "test_collection", _user=mock_user, db=mock_db
+        )
 
         mock_delete_collection.assert_called_once_with("test_collection", 999, True)
         mock_move_to_trash.assert_called_once()

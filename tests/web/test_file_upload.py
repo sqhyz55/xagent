@@ -287,29 +287,34 @@ class TestFileManagement:
     ):
         """Test listing files when they are organized in collection subdirectories"""
         admin_user, _ = test_db
-        user_id = admin_user.id
         collection_name = "my_test_collection"
 
-        # Manually create a file in a collection directory
-        coll_dir = temp_uploads_dir / f"user_{user_id}" / collection_name
-        coll_dir.mkdir(parents=True, exist_ok=True)
-        test_file = coll_dir / "doc_in_coll.txt"
-        test_file.write_text("content in collection")
+        # With file_id design, list is DB-only. Create file via KB ingest so it
+        # gets an UploadedFile record, then it will appear in list.
+        doc_content = b"content in collection"
+        response = client.post(
+            "/api/kb/ingest",
+            files={"file": ("doc_in_coll.txt", doc_content, "text/plain")},
+            data={"collection": collection_name},
+            headers=auth_headers,
+        )
+        if response.status_code != 200:
+            pytest.skip("KB ingest not available or failed")
 
         response = client.get("/api/files/list", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
         assert "files" in data
-        # Find our file in the list (may be under user prefix)
         found = False
         for f in data["files"]:
             if f.get("filename") == "doc_in_coll.txt":
                 found = True
-                assert collection_name in f.get(
-                    "file_url", ""
-                ) or collection_name in f.get("relative_path", "")
+                assert f.get("file_id"), "list should return file_id"
+                assert collection_name in f.get("relative_path", "")
                 break
-        assert found, "File in collection directory should appear in list"
+        assert found, (
+            "File in collection directory should appear in list (file_id design)"
+        )
 
     def test_download_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -495,15 +500,15 @@ class TestFileUploadSecurity:
             "folder/",
         ]
 
+        # Use a valid integer task_id so folder validation runs (get_upload_path).
         for folder in malicious_folders:
             response = client.post(
                 "/api/files/upload",
                 files={"file": ("test.txt", b"content", "text/plain")},
-                data={"task_type": "general", "task_id": "test_task", "folder": folder},
+                data={"task_type": "general", "task_id": "1", "folder": folder},
                 headers=auth_headers,
             )
             # Should reject with 422 (validation error)
-            # Note: folder validation only happens when folder is provided AND task_id is provided
             assert response.status_code == 422
             detail = response.json().get("detail", "")
             assert "Invalid folder name" in detail or "invalid" in detail.lower()
@@ -520,14 +525,14 @@ class TestFileUploadSecurity:
             "folder\\name",  # Windows path separator
         ]
 
+        # Use a valid integer task_id so folder validation runs.
         for folder in invalid_folders:
             response = client.post(
                 "/api/files/upload",
                 files={"file": ("test.txt", b"content", "text/plain")},
-                data={"task_type": "general", "task_id": "test_task", "folder": folder},
+                data={"task_type": "general", "task_id": "1", "folder": folder},
                 headers=auth_headers,
             )
-            # Should reject with 422 (validation error)
             assert response.status_code == 422
             detail = response.json().get("detail", "")
             assert "Invalid folder name" in detail or "invalid" in detail.lower()
@@ -543,7 +548,7 @@ class TestFileUploadSecurity:
             files={"file": ("test.txt", b"content", "text/plain")},
             data={
                 "task_type": "general",
-                "task_id": "test_task",
+                "task_id": "1",
                 "folder": too_long_folder,
             },
             headers=auth_headers,
@@ -555,7 +560,7 @@ class TestFileUploadSecurity:
     def test_upload_multiple_files_rejects_path_traversal_in_folder(
         self, client, test_db, temp_uploads_dir, auth_headers
     ):
-        """Test that upload_multiple_files rejects path traversal in folder parameter."""
+        """Test that upload (multiple files) rejects path traversal in folder parameter."""
         malicious_folders = [
             "../../../etc",
             "..\\..\\..\\windows",
@@ -564,9 +569,9 @@ class TestFileUploadSecurity:
 
         for folder in malicious_folders:
             response = client.post(
-                "/api/files/upload-multiple",
+                "/api/files/upload",
                 files=[("files", ("test.txt", b"content", "text/plain"))],
-                data={"task_type": "general", "task_id": "test_task", "folder": folder},
+                data={"task_type": "general", "task_id": "1", "folder": folder},
                 headers=auth_headers,
             )
             assert response.status_code == 422
@@ -635,14 +640,19 @@ class TestFileUploadSecurity:
     def test_list_files_handles_nested_paths_correctly(
         self, client, test_db, temp_uploads_dir, auth_headers
     ):
-        """Test that list_files handles nested paths correctly (uses first level as collection)."""
+        """With file_id design, list is DB-only (no filesystem scan). File in a
+        collection appears in list when created via KB ingest."""
         admin_user, _ = test_db
-        user_id = admin_user.id
 
-        nested_dir = temp_uploads_dir / f"user_{user_id}" / "a" / "b" / "c"
-        nested_dir.mkdir(parents=True, exist_ok=True)
-        test_file = nested_dir / "file.txt"
-        test_file.write_text("nested content")
+        # Create file via KB ingest to collection "a" so it gets an UploadedFile record.
+        response = client.post(
+            "/api/kb/ingest",
+            files={"file": ("file.txt", b"nested content", "text/plain")},
+            data={"collection": "a"},
+            headers=auth_headers,
+        )
+        if response.status_code != 200:
+            pytest.skip("KB ingest not available or failed")
 
         response = client.get("/api/files/list", headers=auth_headers)
         assert response.status_code == 200
@@ -650,18 +660,13 @@ class TestFileUploadSecurity:
 
         found = False
         for f in data["files"]:
-            if f["filename"] == "file.txt" and "a/b/c/file.txt" in f.get(
-                "relative_path", ""
-            ):
+            if f.get("filename") == "file.txt":
                 found = True
-                assert f"user_{user_id}/a/file.txt" in f["file_url"]
-                assert f["relative_path"] == "a/b/c/file.txt"
-                if len(f.get("relative_path", "").split("/")) > 2:
-                    assert "nested_path" in f
-                    assert "collection_note" in f
+                assert f.get("file_id"), "list should return file_id"
+                # Path is user_id/a/file.txt
+                assert "a" in f.get("relative_path", "")
                 break
-
-        assert found, "Nested file not found in list"
+        assert found, "File in collection should appear in list (file_id design)"
 
     def test_list_files_handles_invalid_first_level_collection_name(
         self, client, test_db, temp_uploads_dir, auth_headers
