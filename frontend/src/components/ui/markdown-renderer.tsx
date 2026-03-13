@@ -1,6 +1,9 @@
 import React from 'react'
-import { marked } from 'marked'
-import katex from 'katex'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import type { Components } from 'react-markdown'
 import { getApiUrl } from '@/lib/utils'
 
 // Enhanced Markdown detection function: covers broader Markdown features not limited to starting with #
@@ -20,47 +23,6 @@ const isLikelyMarkdown = (s: string): boolean => {
   )
 }
 
-const renderMathInMarkdown = (markdown: string): string => {
-  // Split by fenced code blocks to avoid parsing math inside ``` ... ``` sections
-  const segments = markdown.split(/(```[\s\S]*?```)/g)
-
-  return segments
-    .map((segment) => {
-      if (segment.startsWith('```')) {
-        return segment
-      }
-
-      let processed = segment
-
-      // Render block-level formulas delimited by $$...$$
-      processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, expr: string) => {
-        try {
-          return katex.renderToString(expr, {
-            displayMode: true,
-            throwOnError: false
-          })
-        } catch {
-          return `$$${expr}$$`
-        }
-      })
-
-      // Render inline formulas delimited by $...$ (avoid $$ and line breaks)
-      processed = processed.replace(/(?<!\$)\$([^\n\$]+?)\$(?!\$)/g, (_, expr: string) => {
-        try {
-          return katex.renderToString(expr, {
-            displayMode: false,
-            throwOnError: false
-          })
-        } catch {
-          return `$${expr}$`
-        }
-      })
-
-      return processed
-    })
-    .join('')
-}
-
 interface MarkdownRendererProps {
   content: string
   className?: string
@@ -68,113 +30,87 @@ interface MarkdownRendererProps {
 }
 
 export function MarkdownRenderer({ content, className = '', onFileClick }: MarkdownRendererProps) {
-  const [html, setHtml] = React.useState('')
-  const containerRef = React.useRef<HTMLDivElement>(null)
-
-  React.useEffect(() => {
-    const parseMarkdown = async () => {
-      try {
-        // Custom renderer for file: protocol links and images
-        const renderer = new marked.Renderer()
-        const defaultLinkRenderer = renderer.link.bind(renderer)
-        const defaultImageRenderer = renderer.image.bind(renderer)
-
-        renderer.link = (href: string | null, title: string | null, text: string) => {
-          // Check if this is a file: protocol link
-          if (href && href.startsWith('file:')) {
-            const filePath = href.replace(/^file:/, '')
-            // Return a data-link attribute so we can handle it with event delegation
-            return `<a href="#" data-file-path="${filePath}" class="file-link" title="${title || ''}">${text}</a>`
+  const components = React.useMemo<Components>(
+    () => ({
+      a({ href, title, children, ...props }) {
+        if (href && href.startsWith('file:')) {
+          const filePath = href.replace(/^file:/, '')
+          const fileNameFromPath = filePath.split('/').pop() || filePath
+          const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+            if (onFileClick) {
+              e.preventDefault()
+              const linkText =
+                (typeof children === 'string' ? children : undefined) ??
+                (Array.isArray(children)
+                  ? children.map((c: any) => (typeof c === 'string' ? c : '')).join('').trim() || undefined
+                  : undefined)
+              const fallbackTitle = title || linkText || fileNameFromPath
+              onFileClick(filePath, fallbackTitle)
+            }
           }
-          // Use default renderer for other links
-          return defaultLinkRenderer(href, title, text)
+
+          return (
+            <a
+              href="#"
+              data-file-path={filePath}
+              className="file-link"
+              title={title || undefined}
+              onClick={handleClick}
+              {...props}
+            >
+              {children}
+            </a>
+          )
         }
 
-        renderer.image = (href: string | null, title: string | null, text: string) => {
-          // Handle image links with file: protocol
-          if (href && href.startsWith('file:')) {
-            const filePath = href.replace(/^file:/, '')
-            const apiUrl = getApiUrl()
-
-            const imageUrl = `${apiUrl}/api/files/public/preview/${encodeURIComponent(filePath)}`
-
-            // Also add data-file-path for click preview
-            return `<img src="${imageUrl}" alt="${text || ''}" title="${title || text || ''}" data-file-path="${filePath}" class="file-image cursor-pointer" />`
-          }
-          // Use default renderer for other images
-          return defaultImageRenderer(href, title, text)
-        }
-
-        // Use marked.use() to configure renderer (marked 5.x API)
-        marked.use({ renderer })
-
-        // Pre-render LaTeX formulas with KaTeX before markdown parsing
-        const contentWithMath = renderMathInMarkdown(content)
-        const parsed = await marked.parse(contentWithMath)
-        setHtml(parsed)
-      } catch (error) {
-        console.error('Error parsing markdown:', error)
-        setHtml(content)
-      }
-    }
-
-    parseMarkdown()
-  }, [content])
-
-  // Handle file link clicks and image clicks
-  React.useEffect(() => {
-    const container = containerRef.current
-    if (!container || !onFileClick) return
-
-    const handleFileClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-
-      // Handle file link clicks
-      const link = target.closest('.file-link') as HTMLAnchorElement
-      if (link) {
-        e.preventDefault()
-        const filePath = link.getAttribute('data-file-path')
-        if (filePath) {
-          const fileName =
-            link.textContent?.trim() ||
-            link.getAttribute('title') ||
-            filePath.split('/').pop() ||
-            filePath
-          onFileClick(filePath, fileName)
-        }
-        return
-      }
-
-      // Handle image clicks with data-file-path attribute
-      const img = target as HTMLImageElement
-      if (img.tagName === 'IMG' && img.hasAttribute('data-file-path')) {
-        e.preventDefault()
-        const filePath = img.getAttribute('data-file-path')
-        if (filePath) {
-          // Extract just the filename from the path, not the full path
-          // This ensures fileName is like "image.jpeg" not "web_task_235/output/image.jpeg"
+        return (
+          <a href={href || undefined} title={title || undefined} {...props}>
+            {children}
+          </a>
+        )
+      },
+      img({ src, alt, title, ...props }) {
+        if (src && src.startsWith('file:')) {
+          const filePath = src.replace(/^file:/, '')
+          const apiUrl = getApiUrl()
+          const imageUrl = `${apiUrl}/api/files/public/preview/${encodeURIComponent(filePath)}`
           const fileName = filePath.split('/').pop() || filePath
-          onFileClick(filePath, fileName)
-        }
-      }
-    }
 
-    container.addEventListener('click', handleFileClick)
-    return () => {
-      container.removeEventListener('click', handleFileClick)
-    }
-  }, [onFileClick])
+          const handleClick = (e: React.MouseEvent<HTMLImageElement>) => {
+            if (!onFileClick) return
+            e.preventDefault()
+            onFileClick(filePath, fileName)
+          }
+
+          return (
+            <img
+              src={imageUrl}
+              alt={alt || ''}
+              title={title || alt || ''}
+              data-file-path={filePath}
+              className="file-image cursor-pointer"
+              onClick={handleClick}
+              {...props}
+            />
+          )
+        }
+
+        return <img src={src || ''} alt={alt || ''} title={title || alt || ''} {...props} />
+      }
+    }),
+    [onFileClick]
+  )
 
   return (
-    <div
-      ref={containerRef}
-      className={`prose prose-invert max-w-none ${className}`}
-      dangerouslySetInnerHTML={{ __html: html }}
-      style={{
-        // Style file links differently
-        '--link-color': '#3b82f6'
-      } as React.CSSProperties}
-    />
+    <div className={`prose prose-invert max-w-none ${className}`}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={components}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
   )
 }
 
