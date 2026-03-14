@@ -8,6 +8,7 @@ Create Date: 2026-03-11 00:47:06.197244
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -18,81 +19,149 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # SQLite doesn't support ALTER CONSTRAINT directly
-    # Need to recreate the table with the new foreign key
-    op.execute("PRAGMA foreign_keys=off")
+    """Change uploaded_files.task_id FK to ON DELETE CASCADE in a dialect-agnostic way."""
 
-    # Create new table with CASCADE constraint
-    op.execute("""
-        CREATE TABLE uploaded_files_new (
-            id INTEGER PRIMARY KEY,
-            file_id VARCHAR(36) UNIQUE NOT NULL,
-            user_id INTEGER NOT NULL,
-            task_id INTEGER,
-            filename VARCHAR(512) NOT NULL,
-            storage_path VARCHAR(2048) NOT NULL UNIQUE,
-            mime_type VARCHAR(255),
-            file_size INTEGER NOT NULL DEFAULT 0,
-            created_at DATETIME,
-            updated_at DATETIME,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    # 1. Create a new table definition with the desired FK behavior.
+    op.create_table(
+        "uploaded_files_new",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("file_id", sa.String(length=36), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("task_id", sa.Integer(), nullable=True),
+        sa.Column("filename", sa.String(length=512), nullable=False),
+        sa.Column("storage_path", sa.String(length=2048), nullable=False),
+        sa.Column("mime_type", sa.String(length=255), nullable=True),
+        sa.Column("file_size", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+        ),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("file_id"),
+        sa.UniqueConstraint("storage_path"),
+    )
+
+    # 2. Migrate existing data into the new table.
+    op.execute(
+        """
+        INSERT INTO uploaded_files_new (
+            id,
+            file_id,
+            user_id,
+            task_id,
+            filename,
+            storage_path,
+            mime_type,
+            file_size,
+            created_at,
+            updated_at
         )
-    """)
+        SELECT
+            id,
+            file_id,
+            user_id,
+            task_id,
+            filename,
+            storage_path,
+            mime_type,
+            file_size,
+            created_at,
+            updated_at
+        FROM uploaded_files
+        """
+    )
 
-    # Copy data from old table to new table
-    op.execute("""
-        INSERT INTO uploaded_files_new
-        SELECT * FROM uploaded_files
-    """)
+    # 3. Drop indexes on the old table to avoid name collisions, then drop the table.
+    op.drop_index(op.f("ix_uploaded_files_file_id"), table_name="uploaded_files")
+    op.drop_index(op.f("ix_uploaded_files_id"), table_name="uploaded_files")
+    op.drop_table("uploaded_files")
 
-    # Drop old table
-    op.execute("DROP TABLE uploaded_files")
-
-    # Rename new table
-    op.execute("ALTER TABLE uploaded_files_new RENAME TO uploaded_files")
-
-    # Recreate indexes
-    op.execute("CREATE INDEX ix_uploaded_files_id ON uploaded_files (id)")
-    op.execute("CREATE INDEX ix_uploaded_files_file_id ON uploaded_files (file_id)")
-
-    op.execute("PRAGMA foreign_keys=on")
+    # 4. Rename the new table back to the original name and recreate indexes.
+    op.rename_table("uploaded_files_new", "uploaded_files")
+    op.create_index(
+        op.f("ix_uploaded_files_id"), "uploaded_files", ["id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_uploaded_files_file_id"),
+        "uploaded_files",
+        ["file_id"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
-    # Revert back to SET NULL
-    op.execute("PRAGMA foreign_keys=off")
+    """Revert uploaded_files.task_id FK back to ON DELETE SET NULL."""
 
-    # Create table with SET NULL constraint
-    op.execute("""
-        CREATE TABLE uploaded_files_new (
-            id INTEGER PRIMARY KEY,
-            file_id VARCHAR(36) UNIQUE NOT NULL,
-            user_id INTEGER NOT NULL,
-            task_id INTEGER,
-            filename VARCHAR(512) NOT NULL,
-            storage_path VARCHAR(2048) NOT NULL UNIQUE,
-            mime_type VARCHAR(255),
-            file_size INTEGER NOT NULL DEFAULT 0,
-            created_at DATETIME,
-            updated_at DATETIME,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+    # 1. Create a new table definition that matches the original schema.
+    op.create_table(
+        "uploaded_files_new",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("file_id", sa.String(length=36), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("task_id", sa.Integer(), nullable=True),
+        sa.Column("filename", sa.String(length=512), nullable=False),
+        sa.Column("storage_path", sa.String(length=2048), nullable=False),
+        sa.Column("mime_type", sa.String(length=255), nullable=True),
+        sa.Column("file_size", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+        ),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("file_id"),
+        sa.UniqueConstraint("storage_path"),
+    )
+
+    # 2. Copy data back into the "original" schema.
+    op.execute(
+        """
+        INSERT INTO uploaded_files_new (
+            id,
+            file_id,
+            user_id,
+            task_id,
+            filename,
+            storage_path,
+            mime_type,
+            file_size,
+            created_at,
+            updated_at
         )
-    """)
+        SELECT
+            id,
+            file_id,
+            user_id,
+            task_id,
+            filename,
+            storage_path,
+            mime_type,
+            file_size,
+            created_at,
+            updated_at
+        FROM uploaded_files
+        """
+    )
 
-    # Copy data
-    op.execute("""
-        INSERT INTO uploaded_files_new
-        SELECT * FROM uploaded_files
-    """)
+    # 3. Drop indexes and the current table, then rename and recreate indexes.
+    op.drop_index(op.f("ix_uploaded_files_file_id"), table_name="uploaded_files")
+    op.drop_index(op.f("ix_uploaded_files_id"), table_name="uploaded_files")
+    op.drop_table("uploaded_files")
 
-    # Drop and rename
-    op.execute("DROP TABLE uploaded_files")
-    op.execute("ALTER TABLE uploaded_files_new RENAME TO uploaded_files")
-
-    # Recreate indexes
-    op.execute("CREATE INDEX ix_uploaded_files_id ON uploaded_files (id)")
-    op.execute("CREATE INDEX ix_uploaded_files_file_id ON uploaded_files (file_id)")
-
-    op.execute("PRAGMA foreign_keys=on")
+    op.rename_table("uploaded_files_new", "uploaded_files")
+    op.create_index(
+        op.f("ix_uploaded_files_id"), "uploaded_files", ["id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_uploaded_files_file_id"),
+        "uploaded_files",
+        ["file_id"],
+        unique=False,
+    )
