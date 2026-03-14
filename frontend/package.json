@@ -64,6 +64,7 @@
   },
   "devDependencies": {
     "@types/dagre": "^0.7.53",
+    "jsdom": "^25.0.0",
     "@types/highlight.js": "^10.0.0",
     "@types/marked": "^5.0.0",
     "@testing-library/react": "^16.0.0",
