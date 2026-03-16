@@ -233,13 +233,29 @@ async def _parse_document_internal(
         timing_data["db_write_start"] = time.perf_counter()
         logger.debug("[PARSE TIMING] Starting database write...")
 
+    # Derive basic page statistics for downstream consumers (e.g. UI)
+    page_numbers: list[int] = []
+    for paragraph in enriched_paragraphs:
+        raw_page = paragraph.metadata.get("page_number")
+        if isinstance(raw_page, int) and raw_page > 0:
+            page_numbers.append(raw_page)
+    unique_pages = sorted(set(page_numbers))
+    page_count = len(unique_pages)
+
     try:
+        # Inject page stats into params so they are persisted in params_json
+        params_with_page_stats = {
+            **params,
+            "page_count": page_count,
+            "page_numbers": unique_pages,
+        }
+
         written = _write_parse_to_db(
             collection,
             doc_id,
             parse_hash,
             str(parse_method),
-            params,
+            params_with_page_stats,
             enriched_paragraphs,
             user_id,
         )

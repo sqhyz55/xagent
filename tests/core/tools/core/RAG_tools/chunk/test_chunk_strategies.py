@@ -210,6 +210,24 @@ class TestApplyRecursiveStrategyCustomSeparators:
         for c in chunks:
             assert c.get("metadata") == meta
 
+    def test_positions_populated_for_multi_page_chunks(self) -> None:
+        """Chunks spanning multiple pages should have metadata['positions'] with all pages."""
+        para1 = {"text": "AAA ", "metadata": {"page_number": 1}}
+        para2 = {"text": "BBB ", "metadata": {"page_number": 2}}
+        paragraphs = [para1, para2]
+        params = {
+            "chunk_size": 100,
+            "chunk_overlap": 0,
+        }
+        chunks = apply_recursive_strategy(paragraphs, params)
+        assert len(chunks) >= 1
+        first = chunks[0]
+        meta = first.get("metadata") or {}
+        positions = meta.get("positions")
+        assert positions == [1, 2]
+        # page_number should be derived from positions when available
+        assert first.get("page_number") == 1
+
 
 class TestProtectedContent:
     """P1: Unit tests for protected content (code blocks, formulas, etc.)."""

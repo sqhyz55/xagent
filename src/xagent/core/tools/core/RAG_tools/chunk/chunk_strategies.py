@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ..core.config import DEFAULT_PROTECTED_PATTERNS, DEFAULT_TIKTOKEN_ENCODING
 from ..utils.token_utils import (
@@ -43,6 +43,50 @@ def _create_chunk_record(
         "json_path": metadata.get("json_path"),
         "metadata": metadata,  # Preserve full metadata dictionary
     }
+
+
+def _collect_pages_from_paragraphs(
+    paragraphs: Iterable[Dict[str, Any]],
+) -> List[int]:
+    """Collect sorted unique positive page numbers from paragraph metadata."""
+    pages: set[int] = set()
+    for para in paragraphs:
+        if not para:
+            continue
+        meta = para.get("metadata") or {}
+        page_num = meta.get("page_number")
+        if isinstance(page_num, int) and page_num > 0:
+            pages.add(page_num)
+    return sorted(pages)
+
+
+def _apply_positions_to_record(
+    record: Dict[str, Any],
+    positions: Any,
+) -> None:
+    """Normalize positions list and apply to final chunk record metadata.
+
+    - Ensures positions are unique positive integers.
+    - Writes them to metadata['positions'] if non-empty.
+    - Derives page_number from the smallest position when missing.
+    """
+    if not isinstance(positions, list):
+        return
+
+    pages: set[int] = set()
+    for p in positions:
+        if isinstance(p, int) and p > 0:
+            pages.add(p)
+    if not pages:
+        return
+
+    sorted_pages = sorted(pages)
+    meta = record.get("metadata") or {}
+    meta["positions"] = sorted_pages
+    record["metadata"] = meta
+
+    if not record.get("page_number"):
+        record["page_number"] = sorted_pages[0]
 
 
 def _split_by_separators_core(text: str, separators: Optional[List[str]]) -> List[str]:
@@ -221,7 +265,7 @@ def _window_with_overlap_and_metadata(
                 metadata_map[i] = source_paragraph
 
     # Apply sliding window
-    windows = []
+    windows: List[Dict[str, Any]] = []
     start = 0
     n = len(tokens)
 
@@ -230,14 +274,27 @@ def _window_with_overlap_and_metadata(
         window_text = "".join(tokens[start:end])
 
         if window_text:
-            # Find the first contributing paragraph for this window
-            first_paragraph = None
-            for i in range(start, end):
-                if i in metadata_map and metadata_map[i] is not None:
-                    first_paragraph = metadata_map[i]
-                    break
+            # Find contributing paragraphs for this window
+            first_paragraph: Optional[Dict[str, Any]] = None
+            contributing_paragraphs: List[Dict[str, Any]] = []
 
-            windows.append({"text": window_text, "source_paragraph": first_paragraph})
+            for i in range(start, end):
+                para = metadata_map.get(i)
+                if para is None:
+                    continue
+                contributing_paragraphs.append(para)
+                if first_paragraph is None:
+                    first_paragraph = para
+
+            window_record: Dict[str, Any] = {
+                "text": window_text,
+                "source_paragraph": first_paragraph,
+            }
+            positions = _collect_pages_from_paragraphs(contributing_paragraphs)
+            if positions:
+                window_record["positions"] = positions
+
+            windows.append(window_record)
 
         if end == n:
             break
@@ -316,7 +373,18 @@ def _merge_units_by_token_limit(
         if current_units:
             chunk_text = "".join(u["text"] for u in current_units)
             first_para = current_units[0].get("source_paragraph")
-            windows.append({"text": chunk_text, "source_paragraph": first_para})
+
+            window_record: Dict[str, Any] = {
+                "text": chunk_text,
+                "source_paragraph": first_para,
+            }
+            positions = _collect_pages_from_paragraphs(
+                (u.get("source_paragraph") or {} for u in current_units)
+            )
+            if positions:
+                window_record["positions"] = positions
+
+            windows.append(window_record)
         # Overlap: take trailing units that fit in chunk_token_overlap
         overlap_units: List[Dict[str, Any]] = []
         overlap_tokens = 0
@@ -333,7 +401,18 @@ def _merge_units_by_token_limit(
     if current_units:
         chunk_text = "".join(u["text"] for u in current_units)
         first_para = current_units[0].get("source_paragraph")
-        windows.append({"text": chunk_text, "source_paragraph": first_para})
+
+        window_record = {
+            "text": chunk_text,
+            "source_paragraph": first_para,
+        }
+        positions = _collect_pages_from_paragraphs(
+            (u.get("source_paragraph") or {} for u in current_units)
+        )
+        if positions:
+            window_record["positions"] = positions
+
+        windows.append(window_record)
 
     return windows
 
@@ -420,12 +499,22 @@ def apply_recursive_strategy(
         sum(out_lens),
     )
 
-    # Create final chunk records with preserved metadata
-    return [
-        _create_chunk_record(w["text"].strip(), w["source_paragraph"])
-        for w in windows
-        if w["text"].strip()
-    ]
+    # Create final chunk records with preserved metadata and multi-page positions
+    final_chunks: List[Dict[str, Any]] = []
+    for w in windows:
+        text = w.get("text", "").strip()
+        if not text:
+            continue
+
+        source_paragraph = w.get("source_paragraph")
+        record = _create_chunk_record(text, source_paragraph)
+
+        positions = w.get("positions")
+        _apply_positions_to_record(record, positions)
+
+        final_chunks.append(record)
+
+    return final_chunks
 
 
 def _split_by_headers(
