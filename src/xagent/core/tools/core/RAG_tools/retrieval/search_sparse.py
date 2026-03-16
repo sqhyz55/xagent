@@ -7,7 +7,6 @@ import pandas as pd
 import pyarrow as pa  # type: ignore
 from pyarrow import Table as PyArrowTable
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.schemas import (
     SearchFallbackAction,
     SearchResult,
@@ -15,12 +14,18 @@ from ..core.schemas import (
     SparseSearchResponse,
 )
 from ..LanceDB.model_tag_utils import to_model_tag
+from ..storage.factory import get_vector_index_store
 from ..utils.metadata_utils import deserialize_metadata
 from ..utils.string_utils import build_lancedb_filter_expression
 from ..utils.user_permissions import UserPermissions
 from ..vector_storage.index_manager import get_index_manager
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def search_sparse(

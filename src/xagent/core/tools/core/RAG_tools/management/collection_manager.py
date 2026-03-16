@@ -12,11 +12,11 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-import pyarrow as pa  # type: ignore
+from lancedb.db import DBConnection
 
-from ......providers.vector_store.lancedb import DBConnection, get_connection_from_env
 from ..core.parser_registry import get_supported_parsers, validate_parser_compatibility
 from ..core.schemas import CollectionInfo
+from ..storage.factory import get_metadata_store, get_vector_index_store
 from ..utils.model_resolver import resolve_embedding_adapter
 from ..utils.string_utils import escape_lancedb_string
 
@@ -136,15 +136,16 @@ class CollectionManager:
 
     def __init__(self) -> None:
         self._conn: Optional[DBConnection] = None
+        self._metadata_store = get_metadata_store()
 
     async def _get_connection(self) -> DBConnection:
-        """Lazy initialization of LanceDB connection.
+        """Legacy connection accessor for compatibility.
 
         Returns:
-            The LanceDB connection instance
+            The backend connection instance.
         """
         if self._conn is None:
-            self._conn = get_connection_from_env()
+            self._conn = self._metadata_store.get_raw_connection()
         return self._conn
 
     async def get_collection(self, collection_name: str) -> CollectionInfo:
@@ -159,24 +160,11 @@ class CollectionManager:
         Raises:
             ValueError: If collection not found
         """
-        conn = await self._get_connection()
-
         try:
-            # Try to read from collection_metadata table
-            table = conn.open_table("collection_metadata")
-            # Use safe parameterized query to prevent SQL injection
-            safe_name = escape_lancedb_string(collection_name)
-            result = table.search().where(f"name = '{safe_name}'").to_pandas()
-
-            if result.empty:
-                raise ValueError(f"Collection '{collection_name}' not found")
-
-            # Convert to dict and deserialize
-            data = result.iloc[0].to_dict()
-            return CollectionInfo.from_storage(data)
+            return await self._metadata_store.get_collection(collection_name)
 
         except Exception as e:
-            # Table might not exist yet, or other LanceDB errors
+            # Table might not exist yet, or other backend errors
             logger.debug(f"Error reading collection {collection_name}: {e}")
             raise ValueError(f"Collection '{collection_name}' not found")
 
@@ -203,31 +191,9 @@ class CollectionManager:
         Raises:
             Exception: If all retry attempts fail
         """
-        conn = await self._get_connection()
-
         for attempt in range(max_retries):
             try:
-                # Ensure collection_metadata table exists
-                await self._ensure_metadata_table()
-
-                # Prepare data for storage
-                data = collection.to_storage()
-                data["updated_at"] = datetime.now(timezone.utc).replace(
-                    tzinfo=None
-                )  # Fresh timestamp
-
-                # Upsert to LanceDB: delete existing then add new
-                table = conn.open_table("collection_metadata")
-                safe_name = escape_lancedb_string(collection.name)
-
-                # Check if collection already exists
-                existing = table.search().where(f"name = '{safe_name}'").to_pandas()
-                if not existing.empty:
-                    # Delete existing record
-                    table.delete(f"name = '{safe_name}'")
-
-                # Add new record
-                table.add([data])
+                await self._metadata_store.save_collection(collection)
                 return
 
             except Exception as e:
@@ -250,47 +216,7 @@ class CollectionManager:
         Creates the table if it doesn't exist, otherwise does nothing.
         """
 
-        conn = await self._get_connection()
-
-        schema = pa.schema(
-            [
-                ("name", pa.string()),
-                ("schema_version", pa.string()),
-                ("embedding_model_id", pa.string()),  # Nullable
-                ("embedding_dimension", pa.int32()),  # Nullable
-                ("documents", pa.int32()),
-                ("processed_documents", pa.int32()),
-                ("parses", pa.int32()),
-                ("chunks", pa.int32()),
-                ("embeddings", pa.int32()),
-                ("document_names", pa.string()),  # JSON string
-                ("collection_locked", pa.bool_()),
-                ("allow_mixed_parse_methods", pa.bool_()),
-                ("skip_config_validation", pa.bool_()),
-                ("ingestion_config", pa.string()),  # JSON string
-                ("created_at", pa.timestamp("us")),
-                ("updated_at", pa.timestamp("us")),
-                ("last_accessed_at", pa.timestamp("us")),
-                ("extra_metadata", pa.string()),  # JSON string
-            ]
-        )
-
-        # Check if table already exists
-        table_names_fn = getattr(conn, "table_names", None)
-        table_exists = False
-        if table_names_fn:
-            try:
-                existing_tables = table_names_fn()
-                table_exists = "collection_metadata" in existing_tables
-            except Exception as e:
-                logger.debug(f"Table names check failed: {e}")
-
-        if not table_exists:
-            try:
-                conn.create_table("collection_metadata", schema=schema)
-            except Exception as e:
-                logger.debug(f"Table creation failed (may already exist): {e}")
-                # Table might already exist, continue
+        await self._metadata_store.ensure_collection_metadata_table()
 
     async def initialize_collection_embedding(
         self, collection_name: str, embedding_model_id: str
@@ -591,8 +517,6 @@ def rebuild_collection_metadata() -> None:
 
     This is a synchronous blocking operation.
     """
-    from xagent.providers.vector_store.lancedb import get_connection_from_env
-
     from . import collections
 
     # Get all existing collections (use is_admin=True to bypass user filtering)
@@ -606,7 +530,7 @@ def rebuild_collection_metadata() -> None:
         return
 
     # Get connection and find embeddings tables
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     table_names = conn.table_names()  # type: ignore[attr-defined]
     embeddings_tables = [t for t in table_names if t.startswith("embeddings_")]
 

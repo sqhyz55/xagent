@@ -8,13 +8,18 @@ handling input validation and orchestrating the search execution.
 import logging
 from typing import Any, Dict, List, Optional
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import DocumentValidationError, VectorValidationError
 from ..core.schemas import DenseSearchResponse, IndexStatus
+from ..storage.factory import get_vector_index_store
 from ..vector_storage.vector_manager import validate_query_vector
 from .search_engine import search_dense_engine
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def search_dense(

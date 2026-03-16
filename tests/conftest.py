@@ -22,6 +22,7 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 from xagent.core.model import ChatModelConfig, EmbeddingModelConfig, RerankModelConfig
 from xagent.core.observability.langfuse_tracer import init_tracer, reset_tracer
+from xagent.core.tools.core.RAG_tools.storage import reset_kb_write_coordinator
 
 # YAML entrypoint has been removed, commenting out these imports
 # from xagent.entrypoint.yaml.parser import MigrationManager
@@ -85,6 +86,18 @@ def temp_dir():
     """Provide a temporary directory for tests."""
     with TemporaryDirectory() as temp_dir:
         yield temp_dir
+
+
+@pytest.fixture(autouse=True, scope="function")
+def reset_kb_storage_singleton():
+    """Reset KB storage singleton before and after each test.
+
+    In production we keep a process-wide singleton coordinator.
+    In tests this fixture guarantees each test sees an isolated LanceDB view.
+    """
+    reset_kb_write_coordinator()
+    yield
+    reset_kb_write_coordinator()
 
 
 @pytest.fixture

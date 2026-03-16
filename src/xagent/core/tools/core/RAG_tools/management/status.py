@@ -12,9 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from xagent.providers.vector_store.lancedb import get_connection_from_env
-
 from ..LanceDB.schema_manager import ensure_ingestion_runs_table
+from ..storage.factory import get_metadata_store
 from ..utils.string_utils import build_lancedb_filter_expression
 from ..utils.user_permissions import UserPermissions
 
@@ -51,7 +50,7 @@ def write_ingestion_status(
         None
     """
 
-    conn = get_connection_from_env()
+    conn = get_metadata_store().get_raw_connection()
     ensure_ingestion_runs_table(conn)
     table = conn.open_table("ingestion_runs")
 
@@ -104,7 +103,7 @@ def load_ingestion_status(
         - user_id: User ID who owns the document
     """
 
-    conn = get_connection_from_env()
+    conn = get_metadata_store().get_raw_connection()
     ensure_ingestion_runs_table(conn)
     table = conn.open_table("ingestion_runs")
 
@@ -154,7 +153,7 @@ def clear_ingestion_status(
         None
     """
 
-    conn = get_connection_from_env()
+    conn = get_metadata_store().get_raw_connection()
     ensure_ingestion_runs_table(conn)
     table = conn.open_table("ingestion_runs")
 

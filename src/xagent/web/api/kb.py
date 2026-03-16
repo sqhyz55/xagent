@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
     CollectionOperationResult,
@@ -55,7 +56,7 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
-from ...providers.vector_store.lancedb import get_connection_from_env
+from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
@@ -1224,16 +1225,6 @@ async def check_documents_exist_api(
     for admins), so "already exists" matches what will be overwritten on re-upload.
     """
     try:
-        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-            ensure_documents_table,
-        )
-        from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
-        from ...core.tools.core.RAG_tools.utils.string_utils import (
-            build_lancedb_filter_expression,
-        )
-        from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
-        from ...providers.vector_store.lancedb import get_connection_from_env
-
         filenames = body.get("filenames")
         if not isinstance(filenames, list):
             raise HTTPException(
@@ -1249,26 +1240,17 @@ async def check_documents_exist_api(
         if not requested:
             return {"existing_filenames": []}
 
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        table = conn.open_table("documents")
-
-        base_filter = build_lancedb_filter_expression({"collection": collection_name})
-        # Use own-files-only filter even for admins so duplicate check matches re-upload behavior
-        user_filter = UserPermissions.get_user_filter(int(_user.id), is_admin=False)
-        combined_filter = (
-            f"({base_filter}) and ({user_filter})"
-            if user_filter and base_filter
-            else (user_filter or base_filter)
-        )
-        MAX_SEARCH_RESULTS = 10000
-        records = query_to_list(
-            table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
+        vector_store = get_vector_index_store()
+        records = vector_store.list_document_records(
+            collection_name=collection_name,
+            user_id=int(_user.id),
+            is_admin=False,
+            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
         )
 
         existing_basenames = set()
         for record in records:
-            sp = record.get("source_path")
+            sp = record.source_path
             if sp:
                 existing_basenames.add(os.path.basename(str(sp)))
 
@@ -1309,46 +1291,25 @@ async def delete_document_api(
         use, consider using doc_id directly or adding a filename index column.
     """
     # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
-    from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-        ensure_documents_table,
-    )
     from ...core.tools.core.RAG_tools.management.collections import delete_document
-    from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
-    from ...core.tools.core.RAG_tools.utils.string_utils import (
-        build_lancedb_filter_expression,
-    )
-    from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
-    from ...providers.vector_store.lancedb import get_connection_from_env
 
-    # Look up doc_id(s) by filename
-    conn = get_connection_from_env()
-    ensure_documents_table(conn)
-    table = conn.open_table("documents")
-
-    # Filter by collection first to reduce search space
-    base_filter = build_lancedb_filter_expression({"collection": collection_name})
-
-    user_filter = UserPermissions.get_user_filter(int(_user.id), bool(_user.is_admin))
-
-    if user_filter and base_filter:
-        combined_filter = f"({base_filter}) and ({user_filter})"
-    elif user_filter:
-        combined_filter = user_filter
-    else:
-        combined_filter = base_filter
-
-    MAX_SEARCH_RESULTS = 10000
-    records = query_to_list(
-        table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
+    vector_store = get_vector_index_store()
+    records = vector_store.list_document_records(
+        collection_name=collection_name,
+        user_id=int(_user.id),
+        is_admin=bool(_user.is_admin),
+        max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
     )
 
+    # Find all matching documents (handle duplicates)
     matching_docs = []
     for record in records:
-        source_path = record.get("source_path", "")
+        source_path = record.source_path or ""
+        # Use basename for exact matching
         if source_path and os.path.basename(str(source_path)) == filename:
             matching_docs.append(
                 {
-                    "doc_id": record.get("doc_id"),
+                    "doc_id": record.doc_id,
                     "source_path": source_path,
                 }
             )
@@ -1429,6 +1390,7 @@ async def rename_collection_api(
     from ...core.tools.core.RAG_tools.utils.string_utils import (
         escape_lancedb_string,
     )
+    from ...providers.vector_store.lancedb import get_connection_from_env
 
     conn = get_connection_from_env()
 
@@ -1630,17 +1592,13 @@ async def rename_collection_api(
     # Step 2: Update collection name in all tables
     table_names = _list_table_names(conn, warnings)
 
-    for table_name in ["documents", "parses", "chunks"]:
-        if table_name in table_names:
-            try:
-                table = conn.open_table(table_name)
-                table.update(
-                    f"collection = '{escape_lancedb_string(collection_name)}'",
-                    {"collection": new_name},
-                )
-            except Exception as e:
-                logger.warning("Failed to update '%s': %s", table_name, e)
-                warnings.append(f"Failed to update '{table_name}': {e}")
+    vector_store = get_vector_index_store()
+    warnings.extend(
+        vector_store.rename_collection_data(
+            collection_name=collection_name,
+            new_name=new_name,
+        )
+    )
 
     for table_name in table_names:
         if not table_name.startswith("embeddings_"):

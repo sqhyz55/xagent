@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.config import (
     DEFAULT_IMAGE_CONTEXT_SIZE,
     DEFAULT_TABLE_CONTEXT_SIZE,
@@ -24,6 +23,7 @@ from ..core.exceptions import (
 )
 from ..core.schemas import ChunkStrategy
 from ..LanceDB.schema_manager import ensure_chunks_table
+from ..storage.factory import get_vector_index_store
 from ..utils.hash_utils import compute_chunk_hash
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
@@ -37,6 +37,11 @@ from .chunk_strategies import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def chunk_document(

@@ -8,7 +8,6 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import DatabaseOperationError, DocumentNotFoundError
 from ..core.schemas import (
     ParsedElementDisplay,
@@ -17,11 +16,17 @@ from ..core.schemas import (
     ParsedTextSegmentDisplay,
 )
 from ..LanceDB.schema_manager import ensure_parses_table
+from ..storage.factory import get_vector_index_store
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression
 from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def reconstruct_parse_result_from_db(

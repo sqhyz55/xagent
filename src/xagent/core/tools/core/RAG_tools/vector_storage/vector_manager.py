@@ -21,6 +21,7 @@ import pandas as pd
 
 from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.config import DEFAULT_LANCEDB_BATCH_DELAY_MS, IndexPolicy
+from ..core.config import IndexPolicy
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
@@ -36,6 +37,7 @@ from ..core.schemas import (
 )
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..LanceDB.schema_manager import ensure_chunks_table, ensure_embeddings_table
+from ..storage.factory import get_vector_index_store
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
 from ..utils.string_utils import build_lancedb_filter_expression
@@ -109,8 +111,9 @@ def _is_non_recoverable_merge_error(error: Exception) -> bool:
         )
 
     return is_non_recoverable
-
-
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 def _should_reindex(
     table: Any,
     table_name: str,

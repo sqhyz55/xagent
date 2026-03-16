@@ -34,7 +34,7 @@ from src.xagent.core.tools.core.RAG_tools.management import (
     retry_document,
 )
 from src.xagent.core.tools.core.RAG_tools.management.status import load_ingestion_status
-from src.xagent.providers.vector_store.lancedb import get_connection_from_env
+from src.xagent.core.tools.core.RAG_tools.storage import get_vector_index_store
 
 
 @pytest.fixture()
@@ -51,7 +51,7 @@ def temp_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
 
 
 def _insert_documents(records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_documents_table(conn)
     table = conn.open_table("documents")
 
@@ -76,7 +76,7 @@ def _insert_documents(records: List[Dict[str, object]]) -> None:
 
 
 def _insert_parses(records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_parses_table(conn)
     table = conn.open_table("parses")
     table.add(records)
@@ -94,14 +94,14 @@ def _insert_parses(records: List[Dict[str, object]]) -> None:
 
 
 def _insert_chunks(records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_chunks_table(conn)
     table = conn.open_table("chunks")
     table.add(records)
 
 
 def _insert_embeddings(model_name: str, records: List[Dict[str, object]]) -> None:
-    conn = get_connection_from_env()
+    conn = get_vector_index_store().get_raw_connection()
     ensure_embeddings_table(conn, to_model_tag(model_name), vector_dim=3)
     table = conn.open_table(embeddings_table_name(model_name))
     table.add(records)

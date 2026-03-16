@@ -4,10 +4,15 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, cast
 
-from ......providers.vector_store.lancedb import get_connection_from_env
+from ..storage.factory import get_vector_index_store
 from .string_utils import escape_lancedb_string
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:

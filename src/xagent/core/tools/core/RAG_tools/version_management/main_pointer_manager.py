@@ -11,10 +11,11 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import MainPointerError
 from ..LanceDB.schema_manager import ensure_main_pointers_table
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
+from ..storage.factory import get_metadata_store
+from ..utils.string_utils import build_lancedb_filter_expression
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ def _build_base_filter_expression(collection: str, doc_id: str, step_type: str) 
         f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
         f"step_type == '{escape_lancedb_string(step_type)}'"
     )
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_metadata_store().get_raw_connection()
 
 
 def get_main_pointer(
