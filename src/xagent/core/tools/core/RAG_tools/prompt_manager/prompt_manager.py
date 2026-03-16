@@ -11,8 +11,6 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from xagent.providers.vector_store.lancedb import get_connection_from_env
-
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
@@ -20,6 +18,7 @@ from ..core.exceptions import (
 )
 from ..core.schemas import PromptTemplate
 from ..LanceDB.schema_manager import ensure_prompt_templates_table
+from ..storage.factory import get_metadata_store
 from ..utils.string_utils import escape_lancedb_string
 
 logger = logging.getLogger(__name__)
@@ -64,7 +63,7 @@ def _get_prompt_table() -> Any:
         DatabaseOperationError: If table access fails.
     """
     try:
-        db = get_connection_from_env()
+        db = get_metadata_store().get_raw_connection()
         table_name = "prompt_templates"
 
         # Ensure table exists with proper schema

@@ -18,7 +18,6 @@ from ......core.tools.core.document_parser import (
     DocumentParseArgs,
 )
 from ......core.tools.core.document_parser import parse_document as core_parse_document
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
@@ -32,12 +31,18 @@ from ..core.schemas import (
     ParseMethod,
 )
 from ..LanceDB.schema_manager import ensure_documents_table, ensure_parses_table
+from ..storage.factory import get_vector_index_store
 from ..utils.hash_utils import compute_parse_hash, get_parse_params_whitelist
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression
 from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def parse_document(

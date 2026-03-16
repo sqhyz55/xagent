@@ -16,7 +16,6 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from ......providers.vector_store.lancedb import get_connection_from_env
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
@@ -25,6 +24,7 @@ from ..core.exceptions import (
 )
 from ..core.schemas import RegisterDocumentRequest, RegisterDocumentResponse
 from ..LanceDB.schema_manager import ensure_documents_table
+from ..storage.factory import get_vector_index_store
 from ..utils import check_file_type, compute_file_hash
 from ..utils.string_utils import (
     build_lancedb_filter_expression,
@@ -32,6 +32,12 @@ from ..utils.string_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
+
 
 # Public entry with explicit arguments (for LG/CLI/FastAPI). Returns plain dict.
 # Internally constructs Pydantic request and delegates to _register_document.

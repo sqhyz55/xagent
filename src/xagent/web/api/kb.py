@@ -24,6 +24,7 @@ from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
     CollectionOperationResult,
@@ -53,7 +54,7 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
-from ...providers.vector_store.lancedb import get_connection_from_env
+from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
@@ -1230,11 +1231,17 @@ async def check_documents_exist_api(
         if not requested:
             return {"existing_filenames": []}
 
-        records = _list_documents_for_user(
+        # Use storage abstraction layer to fetch document records
+        vector_store = get_vector_index_store()
+        records = vector_store.list_document_records(
+            collection_name=collection_name,
             user_id=int(_user.id),
             is_admin=False,
-            collection_name=collection_name,
+            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
         )
+
+        # Build filename map from file_ids (for UploadedFile lookup)
+        # This preserves main branch's file_id -> filename resolution
         filename_map = _build_uploaded_filename_map(
             db,
             user_id=int(_user.id),
@@ -1249,6 +1256,7 @@ async def check_documents_exist_api(
 
         existing_filenames = set()
         for record in records:
+            # Resolve filename using file_id first, then fallback to source_path basename
             resolved_filename = _resolve_document_filename(record, filename_map)
             if resolved_filename:
                 existing_filenames.add(resolved_filename)
@@ -1297,34 +1305,43 @@ async def delete_document_api(
     # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
     from ...core.tools.core.RAG_tools.management.collections import delete_document
 
-    records = _list_documents_for_user(
+    # Use storage abstraction layer to fetch document records
+    vector_store = get_vector_index_store()
+    records = vector_store.list_document_records(
+        collection_name=collection_name,
         user_id=int(_user.id),
         is_admin=bool(_user.is_admin),
-        collection_name=collection_name,
+        max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
     )
+
+    # Build filename map from file_ids (for UploadedFile lookup and advanced matching)
     filename_map = _build_uploaded_filename_map(
         db,
         user_id=int(_user.id),
         file_ids=[
-            current_file_id
-            for current_file_id in (
+            file_id
+            for file_id in (
                 _get_document_record_file_id(record) for record in records
             )
-            if current_file_id
+            if file_id
         ],
     )
 
+    # Find all matching documents (handle duplicates)
     matching_docs = []
     for record in records:
-        current_doc_id = record.get("doc_id")
+        current_doc_id = record.doc_id
         current_file_id = _get_document_record_file_id(record)
         resolved_filename = _resolve_document_filename(record, filename_map)
+
+        # Support filtering by doc_id, file_id, or filename (main branch feature)
         if doc_id and current_doc_id != doc_id:
             continue
         if file_id and current_file_id != file_id:
             continue
         if not doc_id and not file_id and resolved_filename != filename:
             continue
+
         matching_docs.append(
             {
                 "doc_id": current_doc_id,
@@ -1342,7 +1359,8 @@ async def delete_document_api(
     deleted_doc_ids = []
     deletion_errors = []
 
-    remaining_records = _list_documents_for_user(
+    # Get remaining documents to check for orphaned UploadedFile records
+    remaining_records = vector_store.list_document_records(
         user_id=int(_user.id),
         is_admin=bool(_user.is_admin),
     )
@@ -1442,6 +1460,7 @@ async def rename_collection_api(
     from ...core.tools.core.RAG_tools.utils.string_utils import (
         escape_lancedb_string,
     )
+    from ...providers.vector_store.lancedb import get_connection_from_env
 
     conn = get_connection_from_env()
 
@@ -1510,33 +1529,15 @@ async def rename_collection_api(
             ),
         )
 
-    # Step 2: Update collection name in all tables
-    table_names = _list_table_names(conn, warnings)
-
-    for table_name in ["documents", "parses", "chunks"]:
-        if table_name in table_names:
-            try:
-                table = conn.open_table(table_name)
-                table.update(
-                    f"collection = '{escape_lancedb_string(collection_name)}'",
-                    {"collection": new_name},
-                )
-            except Exception as e:
-                logger.warning("Failed to update '%s': %s", table_name, e)
-                warnings.append(f"Failed to update '{table_name}': {e}")
-
-    for table_name in table_names:
-        if not table_name.startswith("embeddings_"):
-            continue
-        try:
-            table = conn.open_table(table_name)
-            table.update(
-                f"collection = '{escape_lancedb_string(collection_name)}'",
-                {"collection": new_name},
-            )
-        except Exception as e:
-            logger.warning("Failed to update embeddings table '%s': %s", table_name, e)
-            warnings.append(f"Failed to update '{table_name}': {e}")
+    # Step 2: Update collection name in all tables (documents, parses, chunks, embeddings)
+    # Use storage abstraction layer which handles all tables including embeddings
+    vector_store = get_vector_index_store()
+    warnings.extend(
+        vector_store.rename_collection_data(
+            collection_name=collection_name,
+            new_name=new_name,
+        )
+    )
 
     # Migrate ingestion status from old collection name to new
     try:

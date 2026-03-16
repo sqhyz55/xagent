@@ -14,8 +14,6 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
 
-from xagent.providers.vector_store.lancedb import get_connection_from_env
-
 from ..core.config import DEFAULT_LANCEDB_SCAN_BATCH_SIZE
 from ..core.schemas import (
     CollectionInfo,
@@ -42,6 +40,7 @@ from ..management.status import (
     load_ingestion_status,
     write_ingestion_status,
 )
+from ..storage.factory import get_vector_index_store
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from ..version_management.cascade_cleaner import cleanup_document_cascade
@@ -438,7 +437,7 @@ def list_collections(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
+        conn = get_vector_index_store().get_raw_connection()
         ensure_documents_table(conn)
         ensure_parses_table(conn)
         ensure_chunks_table(conn)
@@ -629,7 +628,7 @@ def get_document_stats(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
+        conn = get_vector_index_store().get_raw_connection()
         ensure_documents_table(conn)
         ensure_parses_table(conn)
         ensure_chunks_table(conn)
@@ -764,7 +763,7 @@ def list_documents(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
+        conn = get_vector_index_store().get_raw_connection()
         ensure_documents_table(conn)
         ensure_parses_table(conn)
         ensure_chunks_table(conn)
@@ -911,7 +910,7 @@ def delete_collection(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
+        conn = get_vector_index_store().get_raw_connection()
         ensure_documents_table(conn)
         ensure_parses_table(conn)
         ensure_chunks_table(conn)
@@ -1158,7 +1157,7 @@ def cancel_collection(
     warnings: List[str] = []
 
     try:
-        conn = get_connection_from_env()
+        conn = get_vector_index_store().get_raw_connection()
         ensure_documents_table(conn)
         ensure_parses_table(conn)
         ensure_chunks_table(conn)

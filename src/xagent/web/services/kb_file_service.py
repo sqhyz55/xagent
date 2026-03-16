@@ -104,23 +104,48 @@ def build_uploaded_filename_map(
     return {str(record.file_id): str(record.filename) for record in records}
 
 
-def get_document_record_file_id(record: Dict[str, Any]) -> Optional[str]:
-    """Extract a normalized ``file_id`` from a KB document record."""
-    raw_file_id = record.get("file_id")
+def get_document_record_file_id(record) -> Optional[str]:
+    """Extract a normalized ``file_id`` from a KB document record.
+
+    Args:
+        record: Either a Dict[str, Any] or DocumentRecord dataclass.
+
+    Returns:
+        Normalized file_id string or None.
+    """
+    # Handle both Dict and DocumentRecord types
+    if isinstance(record, dict):
+        raw_file_id = record.get("file_id")
+    else:
+        # Assume DocumentRecord dataclass with file_id attribute
+        raw_file_id = getattr(record, "file_id", None)
+
     if raw_file_id is None:
         return None
     file_id = str(raw_file_id).strip()
     return file_id or None
 
 
-def resolve_document_filename(
-    record: Dict[str, Any], filename_map: Dict[str, str]
-) -> Optional[str]:
-    """Resolve a user-facing filename from ``file_id`` first, then legacy path."""
+def resolve_document_filename(record, filename_map: Dict[str, str]) -> Optional[str]:
+    """Resolve a user-facing filename from ``file_id`` first, then legacy path.
+
+    Args:
+        record: Either a Dict[str, Any] or DocumentRecord dataclass.
+        filename_map: Mapping from file_id to filename.
+
+    Returns:
+        Resolved filename or None.
+    """
     file_id = get_document_record_file_id(record)
     if file_id and filename_map.get(file_id):
         return filename_map[file_id]
-    source_path = record.get("source_path")
+
+    # Handle both Dict and DocumentRecord types for source_path
+    if isinstance(record, dict):
+        source_path = record.get("source_path")
+    else:
+        source_path = getattr(record, "source_path", None)
+
     if source_path:
         return os.path.basename(str(source_path))
     return None

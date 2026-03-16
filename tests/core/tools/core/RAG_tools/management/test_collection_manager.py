@@ -39,39 +39,17 @@ class TestCollectionManager:
     @pytest.mark.asyncio
     async def test_get_collection_success(self, manager):
         """Test successful collection retrieval."""
-        # Mock connection and table
-        mock_connection = Mock()
-        mock_table = Mock()
-        mock_result = Mock()
-
-        # Set up the mock chain - schema_manager._ensure_schema_fields expects iterable schema fields
-        mock_table.schema = [SimpleNamespace(name="name")]
-        mock_connection.open_table.return_value = mock_table
-        mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-            mock_result
+        expected = CollectionInfo(
+            name="test_collection",
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+            processed_documents=3,
+            document_names=["doc1.pdf", "doc2.md"],
         )
-
-        # Mock data
-        mock_data = {
-            "name": "test_collection",
-            "schema_version": "1.0.0",
-            "embedding_model_id": "text-embedding-ada-002",
-            "embedding_dimension": 1536,
-            "documents": 5,
-            "processed_documents": 3,
-            "document_names": '["doc1.pdf", "doc2.md"]',
-        }
-        mock_result.empty = False
-        mock_result.iloc = [Mock(to_dict=Mock(return_value=mock_data))]
-
-        # Mock the _get_connection method
-        with patch.object(
-            manager,
-            "_get_connection",
-            new_callable=AsyncMock,
-            return_value=mock_connection,
-        ):
-            result = await manager.get_collection("test_collection")
+        manager._metadata_store = Mock()
+        manager._metadata_store.get_collection = AsyncMock(return_value=expected)
+        result = await manager.get_collection("test_collection")
 
         assert result.name == "test_collection"
         assert result.embedding_model_id == "text-embedding-ada-002"
@@ -83,81 +61,33 @@ class TestCollectionManager:
     @pytest.mark.asyncio
     async def test_get_collection_not_found(self, manager):
         """Test collection retrieval when not found."""
-        mock_connection = Mock()
-        mock_table = Mock()
-        mock_result = Mock()
-
-        # Set up the mock chain - schema_manager._ensure_schema_fields expects iterable schema fields
-        mock_table.schema = [SimpleNamespace(name="name")]
-        mock_connection.open_table.return_value = mock_table
-        mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-            mock_result
+        manager._metadata_store = Mock()
+        manager._metadata_store.get_collection = AsyncMock(
+            side_effect=ValueError("Collection 'test_collection' not found")
         )
-
-        # Mock empty result
-        mock_result.empty = True
-
-        with patch.object(
-            manager,
-            "_get_connection",
-            new_callable=AsyncMock,
-            return_value=mock_connection,
-        ):
-            with pytest.raises(
-                ValueError, match="Collection 'test_collection' not found"
-            ):
-                await manager.get_collection("test_collection")
+        with pytest.raises(ValueError, match="Collection 'test_collection' not found"):
+            await manager.get_collection("test_collection")
 
     @pytest.mark.asyncio
     async def test_save_collection_success(self, manager, sample_collection):
         """Test successful collection saving."""
-        mock_connection = Mock()
-        mock_table = Mock()
-        mock_connection.open_table.return_value = mock_table
-        # schema_manager._ensure_schema_fields expects iterable schema fields.
-        mock_table.schema = [SimpleNamespace(name="name")]
-        mock_table.add = Mock()
-
-        with patch.object(
-            manager,
-            "_get_connection",
-            new_callable=AsyncMock,
-            return_value=mock_connection,
-        ):
-            await manager.save_collection(sample_collection)
-
-        # Verify upsert was called
-        mock_table.add.assert_called_once()
-        call_args = mock_table.add.call_args
-        # We check only data since mode might vary or be tested separately
-        assert len(call_args[0]) > 0
+        manager._metadata_store = Mock()
+        manager._metadata_store.save_collection = AsyncMock(return_value=None)
+        await manager.save_collection(sample_collection)
+        manager._metadata_store.save_collection.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_initialize_collection_embedding_success(self, manager):
         """Test successful collection embedding initialization."""
-        # Mock connection for get_collection calls
-        mock_connection = Mock()
-        mock_table = Mock()
-        mock_result = Mock()
-        # schema_manager._ensure_schema_fields expects iterable schema fields
-        mock_table.schema = [SimpleNamespace(name="name")]
-        mock_connection.open_table.return_value = mock_table
-        mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-            mock_result
-        )
-
         # Mock data for existing collection
-        mock_data = {
-            "name": "test_collection",
-            "schema_version": "1.0.0",
-            "embedding_model_id": None,
-            "embedding_dimension": None,
-            "documents": 0,
-            "processed_documents": 0,
-            "document_names": "[]",
-        }
-        mock_result.empty = False
-        mock_result.iloc = [Mock(to_dict=Mock(return_value=mock_data))]
+        existing_collection = CollectionInfo(
+            name="test_collection",
+            embedding_model_id=None,
+            embedding_dimension=None,
+            documents=0,
+            processed_documents=0,
+            document_names=[],
+        )
 
         # Mock embedding adapter resolution
         mock_config = Mock()
@@ -165,10 +95,7 @@ class TestCollectionManager:
         mock_resolve = Mock(return_value=(mock_config, Mock()))
 
         with patch.object(
-            manager,
-            "_get_connection",
-            new_callable=AsyncMock,
-            return_value=mock_connection,
+            manager, "get_collection", AsyncMock(return_value=existing_collection)
         ):
             with patch.object(manager, "_save_collection_with_retry") as mock_save:
                 with patch(
@@ -179,10 +106,10 @@ class TestCollectionManager:
                         "test_collection", "text-embedding-ada-002"
                     )
 
-                assert result.name == "test_collection"
-                assert result.embedding_model_id == "text-embedding-ada-002"
-                assert result.embedding_dimension == 1536
-                mock_save.assert_called_once()
+        assert result.name == "test_collection"
+        assert result.embedding_model_id == "text-embedding-ada-002"
+        assert result.embedding_dimension == 1536
+        mock_save.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_update_collection_stats_success(self, manager):
