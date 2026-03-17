@@ -206,12 +206,17 @@ async def ingest(
     # Get upload path with user isolation using unified path management
     file_path = get_upload_path(safe_filename, user_id=int(_user.id))
 
-    # Save uploaded file
-    with open(file_path, "wb") as buffer:
-        buffer.write(content)
-    logger.info(
-        "File uploaded: %s -> %s (user: %s)", safe_filename, file_path, _user.id
-    )
+    # Save uploaded file with filename-specific error logging
+    try:
+        with open(file_path, "wb") as buffer:
+            buffer.write(content)
+        logger.info(
+            "File uploaded: %s -> %s (user: %s)", safe_filename, file_path, _user.id
+        )
+    except (PermissionError, OSError) as e:
+        # Log with filename for better debugging before re-raising
+        logger.error("File system error saving file %s: %s", safe_filename, e)
+        raise
 
     # Build configuration from individual parameters
     # Use defaults that match IngestionConfig defaults exactly
