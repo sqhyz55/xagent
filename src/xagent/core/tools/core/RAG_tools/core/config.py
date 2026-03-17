@@ -49,6 +49,12 @@ to its defaults for any unspecified options (e.g. stemming, stop-word removal).
 DEFAULT_LANCEDB_SCAN_BATCH_SIZE: Final[int] = 2048
 """Default batch size when streaming LanceDB tables for statistics aggregation."""
 
+DEFAULT_LANCEDB_BATCH_DELAY_MS: Final[int] = 0
+"""Default delay (ms) between embedding write batches to LanceDB.
+
+Set to 0 to disable any artificial throttling.
+"""
+
 # Parameters that affect parse hash
 PARSE_PARAM_WHITELIST: Final[Sequence[str]] = (
     "extract_tables",

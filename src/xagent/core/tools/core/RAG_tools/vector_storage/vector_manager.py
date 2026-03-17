@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, cast
 import pandas as pd
 
 from ......providers.vector_store.lancedb import get_connection_from_env
-from ..core.config import IndexPolicy
+from ..core.config import DEFAULT_LANCEDB_BATCH_DELAY_MS, IndexPolicy
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
@@ -43,6 +43,41 @@ from ..utils.user_permissions import UserPermissions
 from .index_manager import get_index_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _is_non_recoverable_merge_error(error: Exception) -> bool:
+    """Best-effort classification for merge_insert failures.
+
+    Prefer LanceDB-specific exception types when available; otherwise fall back
+    to keyword matching on error message.
+    """
+    # Prefer explicit LanceDB exception types (if installed / exposed).
+    try:  # pragma: no cover - depends on installed lancedb version
+        from lancedb.exceptions import (  # type: ignore[import-not-found]
+            LanceDBSchemaError,
+            LanceDBValidationError,
+        )
+
+        if isinstance(error, (LanceDBSchemaError, LanceDBValidationError)):
+            return True
+    except Exception:  # noqa: BLE001
+        # Fall back to string matching below.
+        pass
+
+    error_str = str(error).lower()
+
+    # Keep this list intentionally narrow to reduce false positives.
+    non_recoverable_keywords = (
+        "schema",
+        "type mismatch",
+        "type error",
+        "validation",
+        "dimension",
+        "field",
+        "column",
+        "attributeerror",
+    )
+    return any(keyword in error_str for keyword in non_recoverable_keywords)
 
 
 def _should_reindex(
@@ -578,30 +613,8 @@ def _process_batch(
         )
         method_used = "merge_insert"
     except Exception as merge_error:  # noqa: BLE001
-        error_str = str(merge_error).lower()
         error_type = type(merge_error).__name__
-
-        # Identify non-recoverable errors that should not fallback to add
-        # These indicate serious issues like schema mismatches or data corruption
-        non_recoverable_keywords = [
-            "schema",
-            "type mismatch",
-            "type error",
-            "validation",
-            "invalid",
-            "corrupt",
-            "malformed",
-            "dimension",
-            "field",
-            "column",
-            "attributeerror",
-        ]
-
-        is_recoverable = not any(
-            keyword in error_str for keyword in non_recoverable_keywords
-        )
-
-        if not is_recoverable:
+        if _is_non_recoverable_merge_error(merge_error):
             # Log critical error and re-raise without fallback
             logger.error(
                 "merge_insert failed with non-recoverable error for batch %d/%d "
@@ -651,9 +664,10 @@ def _process_batch(
         method_used,
     )
 
-    # Add a small delay between batches to allow I/O operations to complete
-    if batch_idx < total_batches - 1:  # No delay after the last batch
-        time.sleep(0.1)
+    # Optional delay between batches to reduce I/O pressure (default: disabled)
+    batch_delay_ms = DEFAULT_LANCEDB_BATCH_DELAY_MS
+    if batch_delay_ms > 0 and batch_idx < total_batches - 1:  # No delay after last
+        time.sleep(batch_delay_ms / 1000.0)
 
     return batch_upserted
 
@@ -708,25 +722,17 @@ def _process_model_embeddings(
     )
 
     # Process embeddings in batches to prevent memory issues and LanceDB spills
-    batch_size = int(os.getenv("LANCEDB_BATCH_SIZE", "1000"))
-    total_batches = (len(model_embeddings) + batch_size - 1) // batch_size
+    original_batch_size = int(os.getenv("LANCEDB_BATCH_SIZE", "1000"))
+    batch_size = original_batch_size
+    total_batches_for_logging = (
+        len(model_embeddings) + original_batch_size - 1
+    ) // original_batch_size
     logger.info(
         "Processing %d embeddings in %d batches of size %d",
         len(model_embeddings),
-        total_batches,
-        batch_size,
+        total_batches_for_logging,
+        original_batch_size,
     )
-
-    # OPTIMIZATION: Batch validate vector dimensions using list comprehension
-    vector_dims = [len(emb.vector) for emb in model_embeddings]
-    if not all(dim == vector_dim for dim in vector_dims):
-        # Find the first inconsistent dimension for error reporting
-        for i, dim in enumerate(vector_dims):
-            if dim != vector_dim:
-                raise VectorValidationError(
-                    f"Inconsistent vector dimensions in batch for model {model}: "
-                    f"expected {vector_dim}, got {dim} at index {i}"
-                )
 
     # OPTIMIZATION: Use single timestamp for entire batch
     batch_timestamp = pd.Timestamp.now(tz="UTC")
@@ -736,6 +742,9 @@ def _process_model_embeddings(
 
     current_idx = 0
     total_embeddings = len(model_embeddings)
+
+    max_spill_retries = int(os.getenv("LANCEDB_MAX_SPILL_RETRIES", "3"))
+    spill_retry_count = 0
 
     while current_idx < total_embeddings:
         end_idx = min(current_idx + batch_size, total_embeddings)
@@ -762,17 +771,17 @@ def _process_model_embeddings(
         ]
 
         try:
+            batch_idx_for_logging = current_idx // original_batch_size
             batch_upserted = _process_batch(
                 embeddings_table,
                 records_to_merge,
-                (current_idx // batch_size),  # approximate batch_idx
-                (
-                    (total_embeddings + batch_size - 1) // batch_size
-                ),  # approximate total_batches
+                batch_idx_for_logging,
+                total_batches_for_logging,
                 model,
             )
             upserted_count += batch_upserted
             current_idx = end_idx  # Move to next batch on success
+            spill_retry_count = 0  # Reset after a successful batch
 
         except Exception as batch_error:  # noqa: BLE001
             failed_batches += 1
@@ -795,15 +804,26 @@ def _process_model_embeddings(
                     "Critical LanceDB spill error detected. "
                     "Consider reducing batch size by setting LANCEDB_BATCH_SIZE environment variable."
                 )
-                if batch_size > 50:  # Reduce to even smaller size
-                    new_batch_size = max(50, batch_size // 2)
-                    logger.info(
-                        "Reducing batch size from %d to %d and retrying",
-                        batch_size,
-                        new_batch_size,
-                    )
-                    batch_size = new_batch_size
-                    # Continue without advancing current_idx to retry with smaller batch size
+                spill_retry_count += 1
+                if spill_retry_count <= max_spill_retries:
+                    if batch_size > 50:  # Reduce to even smaller size
+                        new_batch_size = max(50, batch_size // 2)
+                        logger.info(
+                            "Reducing batch size from %d to %d and retrying (spill retry %d/%d)",
+                            batch_size,
+                            new_batch_size,
+                            spill_retry_count,
+                            max_spill_retries,
+                        )
+                        batch_size = new_batch_size
+                    else:
+                        logger.info(
+                            "Retrying batch with minimum batch_size=%d (spill retry %d/%d)",
+                            batch_size,
+                            spill_retry_count,
+                            max_spill_retries,
+                        )
+                    # Continue without advancing current_idx to retry
                     continue
 
             # Re-raise for other errors or if we can't reduce batch size further
@@ -814,7 +834,7 @@ def _process_model_embeddings(
         logger.warning(
             "Batch processing completed with %d failed batches out of %d total batches for model %s",
             failed_batches,
-            total_batches,
+            total_batches_for_logging,
             model,
         )
         if model_embeddings:
