@@ -20,6 +20,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.tools.core.RAG_tools.core.schemas import (
@@ -60,15 +61,10 @@ from ..config import (
     is_allowed_file,
     sanitize_path_component,
 )
-from ..kb_physical_sync import (
-    collection_physical_lock,
-    move_collection_dir_to_trash,
-)
+from ..kb_physical_sync import collection_physical_lock, move_collection_dir_to_trash
 from ..models.database import get_db
 from ..models.uploaded_file import UploadedFile
 from ..models.user import User
-from sqlalchemy import or_
-from sqlalchemy.orm import Session
 
 T = TypeVar("T", bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
@@ -254,7 +250,9 @@ async def ingest(
         )
     except (PermissionError, OSError) as e:
         logger.error("File system error saving file %s: %s", safe_filename, e)
-        raise HTTPException(status_code=403, detail="文件系统错误: {0}".format(str(e))) from e
+        raise HTTPException(
+            status_code=403, detail="文件系统错误: {0}".format(str(e))
+        ) from e
 
     # Register file in unified file management (file_id) for /api/files/list and file_id download/preview/delete
     storage_path_str = str(file_path)
@@ -265,9 +263,7 @@ async def ingest(
     )
     if existing:
         existing.file_size = len(content)  # type: ignore[assignment]
-        existing.mime_type = getattr(
-            file, "content_type", None
-        ) or existing.mime_type  # type: ignore[assignment]
+        existing.mime_type = getattr(file, "content_type", None) or existing.mime_type
         db.flush()
         file_record = existing
     else:
@@ -290,9 +286,7 @@ async def ingest(
     db.commit()
     db.refresh(file_record)
 
-    final_chunk_size = (
-        chunk_size if chunk_size is not None and chunk_size > 0 else 1000
-    )
+    final_chunk_size = chunk_size if chunk_size is not None and chunk_size > 0 else 1000
     final_chunk_overlap = (
         chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
     )
@@ -308,11 +302,7 @@ async def ingest(
     final_strategy = (
         chunk_strategy if chunk_strategy is not None else ChunkStrategy.RECURSIVE
     )
-    if (
-        separators
-        and separators.strip()
-        and final_strategy != ChunkStrategy.RECURSIVE
-    ):
+    if separators and separators.strip() and final_strategy != ChunkStrategy.RECURSIVE:
         logger.warning(
             "separators are only used when chunk_strategy is recursive; "
             "current strategy is %s, ignoring separators",
@@ -320,9 +310,7 @@ async def ingest(
         )
 
     config = IngestionConfig(
-        parse_method=parse_method
-        if parse_method is not None
-        else ParseMethod.DEFAULT,
+        parse_method=parse_method if parse_method is not None else ParseMethod.DEFAULT,
         chunk_strategy=final_strategy,
         chunk_size=final_chunk_size,
         chunk_overlap=final_chunk_overlap,
@@ -331,9 +319,7 @@ async def ingest(
         embedding_batch_size=embedding_batch_size
         if embedding_batch_size is not None and embedding_batch_size > 0
         else 10,
-        max_retries=max_retries
-        if max_retries is not None and max_retries >= 0
-        else 3,
+        max_retries=max_retries if max_retries is not None and max_retries >= 0 else 3,
         retry_delay=retry_delay
         if retry_delay is not None and retry_delay >= 0
         else 1.0,
@@ -692,9 +678,7 @@ async def ingest_web(
             chunk_overlap if chunk_overlap is not None and chunk_overlap >= 0 else 200
         )
         if final_chunk_overlap >= final_chunk_size:
-            final_chunk_overlap = min(
-                int(final_chunk_size * 0.2), final_chunk_size - 1
-            )
+            final_chunk_overlap = min(int(final_chunk_size * 0.2), final_chunk_size - 1)
             logger.warning(
                 "Auto-adjusting chunk_overlap from %s to %s to ensure it's less than chunk_size (%s)",
                 chunk_overlap,
@@ -911,9 +895,7 @@ async def delete_collection_api(
             physical_cleanup_status = "error"
             physical_cleanup_error = f"Path resolution error: {str(e)}"
 
-        result = delete_collection(
-            collection_name, int(_user.id), bool(_user.is_admin)
-        )
+        result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
 
         # Remove UploadedFile records for this collection path
         if collection_dir is not None:
@@ -1451,9 +1433,7 @@ async def rename_collection_api(
         and old_collection_dir is not None
         and new_collection_dir is not None
     ):
-        rename_info = (
-            f"Physical directory renamed: {old_collection_dir.name} -> {new_collection_dir.name}"
-        )
+        rename_info = f"Physical directory renamed: {old_collection_dir.name} -> {new_collection_dir.name}"
         warnings.append(rename_info)
         rename_info_message = f" {rename_info}."
     elif physical_rename_status == "not_found":
@@ -1481,9 +1461,7 @@ async def rename_collection_api(
 
     # Step 5: Build final message
     base_message = f"Collection renamed from '{collection_name}' to '{new_name}'"
-    if warnings and len(warnings) > (
-        1 if physical_rename_status != "not_found" else 0
-    ):
+    if warnings and len(warnings) > (1 if physical_rename_status != "not_found" else 0):
         final_message = f"{base_message} with some warnings"
     else:
         final_message = base_message

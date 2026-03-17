@@ -25,9 +25,7 @@ from xagent.core.tools.adapters.vibe.document_search import (
     get_list_knowledge_bases_tool,
 )
 from xagent.core.tools.core.RAG_tools.chunk.chunk_document import chunk_document
-from xagent.core.tools.core.RAG_tools.core.schemas import (
-    ChunkEmbeddingData,
-)
+from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
 from xagent.core.tools.core.RAG_tools.file.register_document import register_document
 from xagent.core.tools.core.RAG_tools.management.collections import (
     delete_collection,
