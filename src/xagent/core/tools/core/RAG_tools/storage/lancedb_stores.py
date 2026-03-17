@@ -101,7 +101,12 @@ class LanceDBVectorIndexStore(VectorIndexStore):
     """LanceDB implementation for vector/data-plane operations."""
 
     def __init__(self) -> None:
-        self._conn: DBConnection = get_connection_from_env()
+        self._conn: Optional[DBConnection] = None
+
+    def _get_connection(self) -> DBConnection:
+        if self._conn is None:
+            self._conn = get_connection_from_env()
+        return self._conn
 
     def list_document_records(
         self,
@@ -110,8 +115,9 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
     ) -> List[DocumentRecord]:
-        ensure_documents_table(self._conn)
-        table = self._conn.open_table("documents")
+        conn = self._get_connection()
+        ensure_documents_table(conn)
+        table = conn.open_table("documents")
         base_filter = build_lancedb_filter_expression({"collection": collection_name})
         user_filter = UserPermissions.get_user_filter(user_id, is_admin)
         if user_filter and base_filter:
@@ -147,6 +153,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
     ) -> List[str]:
         warnings: List[str] = []
         safe_old_name = escape_lancedb_string(collection_name)
+        conn = self._get_connection()
         for table_name in self.list_table_names():
             if table_name not in {
                 "documents",
@@ -155,7 +162,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             } and not table_name.startswith("embeddings_"):
                 continue
             try:
-                table = self._conn.open_table(table_name)
+                table = conn.open_table(table_name)
                 table.update(
                     f"collection = '{safe_old_name}'",
                     {"collection": new_name},
@@ -167,7 +174,8 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         return warnings
 
     def list_table_names(self) -> Sequence[str]:
-        table_names_fn = getattr(self._conn, "table_names", None)
+        conn = self._get_connection()
+        table_names_fn = getattr(conn, "table_names", None)
         if table_names_fn is None:
             return []
         try:
@@ -177,4 +185,4 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             return []
 
     def get_raw_connection(self) -> DBConnection:
-        return self._conn
+        return self._get_connection()
