@@ -46,12 +46,21 @@ logger = logging.getLogger(__name__)
 
 
 def _is_non_recoverable_merge_error(error: Exception) -> bool:
-    """Best-effort classification for merge_insert failures.
+    """Classify merge_insert failures as recoverable or non-recoverable.
 
-    Prefer LanceDB-specific exception types when available; otherwise fall back
-    to keyword matching on error message.
+    Non-recoverable errors (schema/type/dimension issues) should re-raise
+    immediately without fallback to add(). Recoverable errors (transient issues)
+    should attempt fallback.
+
+    Returns:
+        True if error is non-recoverable (should re-raise), False otherwise.
     """
-    # Prefer explicit LanceDB exception types (if installed / exposed).
+    # First, check for built-in Python exceptions that indicate non-recoverable issues
+    # These are definitive regardless of LanceDB version
+    if isinstance(error, (AttributeError, TypeError, ValueError)):
+        return True
+
+    # Then check for explicit LanceDB exception types when available.
     try:  # pragma: no cover - depends on installed lancedb version
         from lancedb.exceptions import (  # type: ignore[import-not-found]
             LanceDBSchemaError,
@@ -60,13 +69,17 @@ def _is_non_recoverable_merge_error(error: Exception) -> bool:
 
         if isinstance(error, (LanceDBSchemaError, LanceDBValidationError)):
             return True
+        # Known LanceDB exception type but not schema/validation -> recoverable
+        return False
     except Exception:  # noqa: BLE001
-        # Fall back to string matching below.
+        # LanceDB exception types not available - use string matching
         pass
 
+    # String matching fallback for cases where LanceDB exceptions aren't available
     error_str = str(error).lower()
 
-    # Keep this list intentionally narrow to reduce false positives.
+    # Narrow keyword list for cases where LanceDB exceptions aren't available.
+    # This is a best-effort fallback for older LanceDB versions.
     non_recoverable_keywords = (
         "schema",
         "type mismatch",
@@ -75,9 +88,27 @@ def _is_non_recoverable_merge_error(error: Exception) -> bool:
         "dimension",
         "field",
         "column",
-        "attributeerror",
     )
-    return any(keyword in error_str for keyword in non_recoverable_keywords)
+    is_non_recoverable = any(
+        keyword in error_str for keyword in non_recoverable_keywords
+    )
+
+    # Log warning about uncertain classification when using string matching
+    if is_non_recoverable:
+        logger.warning(
+            "Error classified as non-recoverable via string matching. "
+            "Upgrade LanceDB to get accurate exception-based classification. "
+            "Error: %s",
+            error,
+        )
+    else:
+        logger.debug(
+            "Error classified as recoverable via string matching (no schema keywords found). "
+            "Attempting fallback to add() method. Error: %s",
+            error,
+        )
+
+    return is_non_recoverable
 
 
 def _should_reindex(
@@ -665,7 +696,9 @@ def _process_batch(
     )
 
     # Optional delay between batches to reduce I/O pressure (default: disabled)
-    batch_delay_ms = DEFAULT_LANCEDB_BATCH_DELAY_MS
+    batch_delay_ms = int(
+        os.getenv("LANCEDB_BATCH_DELAY_MS", str(DEFAULT_LANCEDB_BATCH_DELAY_MS))
+    )
     if batch_delay_ms > 0 and batch_idx < total_batches - 1:  # No delay after last
         time.sleep(batch_delay_ms / 1000.0)
 
