@@ -1486,6 +1486,8 @@ Build when you need.`
       title: "Knowledge Base Management",
       description: "Manage document collections and search indices",
       new: "New Knowledge Base",
+      collectionCount: "{count} total",
+      collectionCountFiltered: "{filtered} matched / {total} total",
     },
     search: {
       placeholder: "Search knowledge base...",

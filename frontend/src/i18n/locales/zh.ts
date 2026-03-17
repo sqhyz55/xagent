@@ -1486,6 +1486,8 @@ Build when you need.`
       title: "知识库管理",
       description: "管理文档集合和搜索索引",
       new: "新建知识库",
+      collectionCount: "共 {count} 个",
+      collectionCountFiltered: "匹配 {filtered} / 共 {total} 个",
     },
     search: {
       placeholder: "搜索知识库...",

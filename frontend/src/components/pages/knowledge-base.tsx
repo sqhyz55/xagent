@@ -251,34 +251,44 @@ export function KnowledgeBasePage() {
       {/* Header */}
       <div className="flex justify-between items-start w-full p-8">
         <div>
-          <h1 className="text-3xl font-bold mb-1">{t("kb.header.title")}</h1>
+          <div className="flex items-center gap-3 mb-1 flex-wrap">
+            <h1 className="text-3xl font-bold">{t("kb.header.title")}</h1>
+            <Badge variant="secondary" className="font-normal">
+              {searchQuery
+                ? t("kb.header.collectionCountFiltered", {
+                    filtered: filteredCollections.length,
+                    total: collections.length,
+                  })
+                : t("kb.header.collectionCount", { count: collections.length })}
+            </Badge>
+          </div>
           <p className="text-muted-foreground">{t("kb.header.description")}</p>
         </div>
 
-          <div className="flex items-center gap-4">
-            <SearchInput
-              placeholder={t("kb.search.placeholder")}
-              value={searchQuery}
-              onChange={setSearchQuery}
-              containerClassName="w-64"
-            />
-            <Button
-              variant={isManageMode ? "secondary" : "outline"}
-              onClick={() => {
-                setIsManageMode((m) => !m)
-                setSelectedNames(new Set())
-              }}
-              className="flex items-center gap-2"
-            >
-              {isManageMode ? <X size={16} className="mr-2" /> : <Settings2 size={16} className="mr-2" />}
-              {isManageMode ? t("kb.manage.exit") : t("kb.manage.enter")}
-            </Button>
-            <Button onClick={() => { setIsCreateDialogOpen(true) }} className="flex items-center gap-2">
-              <Plus size={16} className="mr-2" />
-              {t("kb.header.new")}
-            </Button>
-          </div>
+        <div className="flex items-center gap-4">
+          <SearchInput
+            placeholder={t("kb.search.placeholder")}
+            value={searchQuery}
+            onChange={setSearchQuery}
+            containerClassName="w-64"
+          />
+          <Button
+            variant={isManageMode ? "secondary" : "outline"}
+            onClick={() => {
+              setIsManageMode((m) => !m)
+              setSelectedNames(new Set())
+            }}
+            className="flex items-center gap-2"
+          >
+            {isManageMode ? <X size={16} className="mr-2" /> : <Settings2 size={16} className="mr-2" />}
+            {isManageMode ? t("kb.manage.exit") : t("kb.manage.enter")}
+          </Button>
+          <Button onClick={() => { setIsCreateDialogOpen(true) }} className="flex items-center gap-2">
+            <Plus size={16} className="mr-2" />
+            {t("kb.header.new")}
+          </Button>
         </div>
+      </div>
 
       {/* Collections Grid */}
       <div className="flex-1 overflow-y-auto w-full px-8 pb-8">
