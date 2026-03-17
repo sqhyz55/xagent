@@ -274,6 +274,8 @@ async def ingest(
         future = executor.submit(_run_ingestion)
         result: IngestionResult = future.result()
 
+    if result.status == "error":
+        return JSONResponse(status_code=500, content=result.model_dump())
     return result
 
 
@@ -651,6 +653,8 @@ async def ingest_web(
         ),
     )
 
+    if result.status == "error":
+        return JSONResponse(status_code=500, content=result.model_dump())
     return result
 
 
