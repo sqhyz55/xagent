@@ -275,6 +275,13 @@ async def ingest(
         result: IngestionResult = future.result()
 
     if result.status == "error":
+        logger.error(
+            "KB ingest failed (collection=%s, filename=%s, file_path=%s, user_id=%s)",
+            collection,
+            safe_filename,
+            file_path,
+            _user.id,
+        )
         return JSONResponse(status_code=500, content=result.model_dump())
     return result
 
@@ -654,6 +661,12 @@ async def ingest_web(
     )
 
     if result.status == "error":
+        logger.error(
+            "KB web ingest failed (collection=%s, start_url=%s, user_id=%s)",
+            collection,
+            start_url,
+            _user.id,
+        )
         return JSONResponse(status_code=500, content=result.model_dump())
     return result
 
