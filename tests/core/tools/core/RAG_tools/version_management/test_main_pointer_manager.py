@@ -169,6 +169,12 @@ class TestMainPointerManager:
         assert deleted is True
         table.delete.assert_called_once()
 
+        # Verify delete filter expression includes NULL check (backward compatibility)
+        call_args = table.delete.call_args
+        filter_used = call_args[0][0] if call_args[0] else call_args[1].get("where")
+        assert filter_used is not None
+        assert "model_tag IS NULL" in filter_used
+
     @patch(
         "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
     )

@@ -24,6 +24,27 @@ def _normalize_model_tag(model_tag: Optional[str]) -> str:
     return model_tag if model_tag is not None else ""
 
 
+def _build_base_filter_expression(collection: str, doc_id: str, step_type: str) -> str:
+    """Build the base LanceDB filter expression for a main pointer row.
+
+    This helper escapes all string values to avoid malformed expressions and
+    injection-like issues.
+
+    Args:
+        collection: Collection name.
+        doc_id: Document ID.
+        step_type: Processing stage type (parse, chunk, embed).
+
+    Returns:
+        A filter expression covering collection/doc_id/step_type.
+    """
+    return (
+        f"collection == '{escape_lancedb_string(collection)}' AND "
+        f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
+        f"step_type == '{escape_lancedb_string(step_type)}'"
+    )
+
+
 def get_main_pointer(
     collection: str, doc_id: str, step_type: str, model_tag: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
@@ -51,11 +72,7 @@ def get_main_pointer(
         normalized_tag = _normalize_model_tag(model_tag)
 
         # Base filters for collection, doc_id, and step_type
-        base_expr = (
-            f"collection == '{escape_lancedb_string(collection)}' AND "
-            f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
-            f"step_type == '{escape_lancedb_string(step_type)}'"
-        )
+        base_expr = _build_base_filter_expression(collection, doc_id, step_type)
 
         # Handle model_tag: check for both normalized empty string AND NULL for backward compatibility
         if normalized_tag == "":
@@ -134,11 +151,7 @@ def set_main_pointer(
 
             # Fix-up: normalize NULL model_tag to "" in DB before merge_insert to avoid duplicates
             if normalized_tag == "":
-                base_expr = (
-                    f"collection == '{escape_lancedb_string(collection)}' AND "
-                    f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
-                    f"step_type == '{escape_lancedb_string(step_type)}'"
-                )
+                base_expr = _build_base_filter_expression(collection, doc_id, step_type)
                 null_filter = f"{base_expr} AND model_tag IS NULL"
                 try:
                     table.update(where=null_filter, values={"model_tag": ""})
@@ -241,6 +254,10 @@ def delete_main_pointer(
 ) -> bool:
     """Delete a main pointer.
 
+    Behavior note (backward compatibility):
+        When ``model_tag`` is ``None`` (normalized to empty string), this function deletes
+        pointers whose ``model_tag`` is either ``''`` OR ``NULL``.
+
     Args:
         collection: Collection name
         doc_id: Document ID
@@ -261,11 +278,7 @@ def delete_main_pointer(
 
         # Build safe filter conditions
         normalized_tag = _normalize_model_tag(model_tag)
-        base_expr = (
-            f"collection == '{escape_lancedb_string(collection)}' AND "
-            f"doc_id == '{escape_lancedb_string(doc_id)}' AND "
-            f"step_type == '{escape_lancedb_string(step_type)}'"
-        )
+        base_expr = _build_base_filter_expression(collection, doc_id, step_type)
 
         if normalized_tag == "":
             filter_expr = f"{base_expr} AND (model_tag == '' OR model_tag IS NULL)"
