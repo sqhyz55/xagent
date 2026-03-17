@@ -1490,6 +1490,19 @@ Build when you need.`
     search: {
       placeholder: "Search knowledge base...",
     },
+    manage: {
+      enter: "Manage",
+      exit: "Done",
+      selectAll: "Select all",
+      deselectAll: "Deselect all",
+      deleteSelected: "Delete selected ({count})",
+    },
+    batchDelete: {
+      confirm: "Delete {count} selected knowledge bases? This cannot be undone.",
+      success: "Deleted {count} knowledge base(s)",
+      partialFailure: "{count} deletion(s) failed",
+      failed: "Batch delete failed",
+    },
     card: {
       documentsLabel: "Documents",
       chunksLabel: "Text Chunks",
@@ -1502,6 +1515,7 @@ Build when you need.`
       status: {
         active: "Active",
       },
+      ownerUsers: "Owners",
     },
     empty: {
       noKB: "No knowledge base",

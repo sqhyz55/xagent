@@ -1320,6 +1320,12 @@ class CollectionInfo(BaseModel):
         description="Minimal per-document metadata for UI actions like unambiguous delete",
     )
 
+    # 👥 Ownership (multi-tenant)
+    owners: List[int] = Field(
+        default_factory=list,
+        description="Distinct user IDs that have documents in this collection",
+    )
+
     # ⚙️ Configuration management
     collection_locked: bool = Field(
         default=False,
@@ -1390,6 +1396,9 @@ class CollectionInfo(BaseModel):
                 data["ingestion_config"] = json.loads(raw_ingestion_config)
             else:
                 data["ingestion_config"] = None
+        # Owners are not stored; they are derived at list time from user_id. Ignore stored value.
+        if "owners" in data:
+            data["owners"] = []
 
         # 2. Convert NaN values to None (LanceDB stores NULL as NaN for numeric fields)
         for key, value in data.items():
@@ -1413,7 +1422,12 @@ class CollectionInfo(BaseModel):
         return cls(**data)
 
     def to_storage(self) -> dict:
-        """Serialize for LanceDB storage."""
+        """Serialize for LanceDB storage.
+
+        Note: owners are not stored; they are derived at list time from
+        user_id on documents/parses. We write a placeholder '[]' for schema
+        compatibility only.
+        """
         import json
 
         data = self.model_dump(exclude={"document_metadata"})
@@ -1421,6 +1435,8 @@ class CollectionInfo(BaseModel):
         # Serialize complex types to JSON strings for LanceDB
         data["extra_metadata"] = json.dumps(data["extra_metadata"])
         data["document_names"] = json.dumps(data["document_names"])
+        # Do not persist owners; they are computed from user_id when listing
+        data["owners"] = "[]"
 
         # Serialize ingestion_config if present
         if data.get("ingestion_config"):

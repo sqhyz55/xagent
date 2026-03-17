@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
 import { getApiUrl } from "@/lib/utils"
 import { useI18n } from "@/contexts/i18n-context"
+import { useAuth } from "@/contexts/auth-context"
 import { apiRequest } from "@/lib/api-wrapper"
 import {
   Plus,
@@ -14,6 +15,8 @@ import {
   FolderOpen,
   HardDrive,
   Trash2,
+  Settings2,
+  X,
 } from "lucide-react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { KnowledgeBaseDetailContent } from "@/components/kb/knowledge-base-detail"
@@ -28,9 +31,16 @@ interface Collection {
   chunks: number
   embeddings: number
   document_names: string[]
+  owners?: number[]
+}
+
+interface AdminUser {
+  id: number
+  username: string
 }
 
 export function KnowledgeBasePage() {
+  const { user } = useAuth()
   const { t } = useI18n()
   const [collections, setCollections] = useState<Collection[]>([])
   const [loading, setLoading] = useState(true)
@@ -41,10 +51,39 @@ export function KnowledgeBasePage() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [collectionToDelete, setCollectionToDelete] = useState<string | null>(null)
   const [isDeletingCollection, setIsDeletingCollection] = useState(false)
+  const [adminUsers, setAdminUsers] = useState<Record<number, string>>({})
+  const [isManageMode, setIsManageMode] = useState(false)
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     fetchCollections()
   }, [])
+
+  useEffect(() => {
+    const fetchAdminUsers = async () => {
+      if (!user?.is_admin) return
+      try {
+        const params = new URLSearchParams({
+          page: "1",
+          size: "100",
+        })
+        const response = await apiRequest(`${getApiUrl()}/api/admin/users?${params.toString()}`)
+        if (!response.ok) {
+          return
+        }
+        const data = await response.json()
+        const users: AdminUser[] = data.users || []
+        const map: Record<number, string> = {}
+        for (const u of users) {
+          map[u.id] = u.username
+        }
+        setAdminUsers(map)
+      } catch (err) {
+        console.error("Failed to load admin user list for KB owners display:", err)
+      }
+    }
+    fetchAdminUsers()
+  }, [user?.is_admin])
 
   useEffect(() => {
     if (searchQuery) {
@@ -144,6 +183,58 @@ export function KnowledgeBasePage() {
     }
   }
 
+  const toggleSelect = (name: string) => {
+    setSelectedNames((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
+  const selectAll = () => {
+    if (selectedNames.size === filteredCollections.length) {
+      setSelectedNames(new Set())
+    } else {
+      setSelectedNames(new Set(filteredCollections.map((c) => c.name)))
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    const names = Array.from(selectedNames)
+    if (names.length === 0) return
+    const confirmed = window.confirm(t("kb.batchDelete.confirm", { count: names.length }))
+    if (!confirmed) return
+
+    try {
+      const response = await apiRequest(`${getApiUrl()}/api/kb/collections/batch-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collection_names: names }),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        throw new Error(
+          typeof err.detail === "string" ? err.detail : t("kb.batchDelete.failed"),
+        )
+      }
+      const data = await response.json()
+      const deleted = data.deleted?.length ?? 0
+      const failed = data.failed?.length ?? 0
+      if (deleted > 0) {
+        toast.success(t("kb.batchDelete.success", { count: deleted }))
+      }
+      if (failed > 0) {
+        toast.error(t("kb.batchDelete.partialFailure", { count: failed }))
+      }
+      setSelectedNames(new Set())
+      setIsManageMode(false)
+      await fetchCollections()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("kb.errors.deleteFailedGeneric"))
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
@@ -171,6 +262,17 @@ export function KnowledgeBasePage() {
               onChange={setSearchQuery}
               containerClassName="w-64"
             />
+            <Button
+              variant={isManageMode ? "secondary" : "outline"}
+              onClick={() => {
+                setIsManageMode((m) => !m)
+                setSelectedNames(new Set())
+              }}
+              className="flex items-center gap-2"
+            >
+              {isManageMode ? <X size={16} className="mr-2" /> : <Settings2 size={16} className="mr-2" />}
+              {isManageMode ? t("kb.manage.exit") : t("kb.manage.enter")}
+            </Button>
             <Button onClick={() => { setIsCreateDialogOpen(true) }} className="flex items-center gap-2">
               <Plus size={16} className="mr-2" />
               {t("kb.header.new")}
@@ -180,17 +282,57 @@ export function KnowledgeBasePage() {
 
       {/* Collections Grid */}
       <div className="flex-1 overflow-y-auto w-full px-8 pb-8">
+        {isManageMode && filteredCollections.length > 0 && (
+          <div className="flex items-center gap-4 mb-4 p-3 rounded-lg bg-muted/50 border">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selectedNames.size === filteredCollections.length && filteredCollections.length > 0}
+                onChange={selectAll}
+                className="h-4 w-4 rounded border-input"
+              />
+              <span className="text-sm font-medium">
+                {selectedNames.size === filteredCollections.length
+                  ? t("kb.manage.deselectAll")
+                  : t("kb.manage.selectAll")}
+              </span>
+            </label>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={selectedNames.size === 0}
+              onClick={handleBatchDelete}
+              className="flex items-center gap-2"
+            >
+              <Trash2 className="h-4 w-4" />
+              {t("kb.manage.deleteSelected", { count: selectedNames.size })}
+            </Button>
+          </div>
+        )}
         {filteredCollections.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredCollections.map((collection) => (
               <Card
                 key={collection.name}
-                className="py-0 hover:shadow-lg transition-shadow cursor-pointer overflow-hidden flex flex-col"
-                onClick={() => handleViewDetail(collection.name)}
+                className={`py-0 hover:shadow-lg transition-shadow overflow-hidden flex flex-col ${isManageMode ? "cursor-pointer" : "cursor-pointer"}`}
+                onClick={() => {
+                  if (isManageMode) toggleSelect(collection.name)
+                  else handleViewDetail(collection.name)
+                }}
               >
                 <div className="p-6 flex-1">
                   <div className="flex justify-between items-start mb-4">
                     <div className="flex gap-4 min-w-0 flex-1 mr-2">
+                      {isManageMode && (
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedNames.has(collection.name)}
+                            onChange={() => toggleSelect(collection.name)}
+                            className="h-4 w-4 rounded border-input mt-1"
+                          />
+                        </div>
+                      )}
                       <div className="h-10 w-10 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center flex-shrink-0">
                         <FolderOpen className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                       </div>
@@ -203,9 +345,32 @@ export function KnowledgeBasePage() {
                         </p>
                       </div>
                     </div>
-                    <Badge variant="outline" className="text-green-600 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-900 ml-2 whitespace-nowrap flex-shrink-0">
-                      {t("kb.card.status.active")}
-                    </Badge>
+                    {!isManageMode && (
+                      <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-green-600 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-900 whitespace-nowrap">
+                            {t("kb.card.status.active")}
+                          </Badge>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setCollectionToDelete(collection.name)
+                            }}
+                            title={t("common.delete")}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        {user?.is_admin && collection.owners && collection.owners.length > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            {t("kb.card.ownerUsers")}: {collection.owners.map((id) => adminUsers[id] ?? id).join(", ")}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

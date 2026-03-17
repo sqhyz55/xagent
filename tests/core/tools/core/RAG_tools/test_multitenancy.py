@@ -179,6 +179,10 @@ class TestMultiTenancyCollections:
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 15  # 5 docs per user * 3 users
 
+        # Owners field should include all non-null user_ids (1 and 2)
+        owners_sets = {tuple(c.owners) for c in result.collections}
+        assert (1, 2) in owners_sets
+
     @pytest.mark.asyncio
     async def test_list_collections_regular_user_sees_only_own(
         self, temp_lancedb_dir: str
@@ -194,12 +198,16 @@ class TestMultiTenancyCollections:
         assert result.status == "success"
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 5
+        # Owners should only contain the current user
+        assert all(c.owners == [1] for c in result.collections)
 
         # User 2 sees only user 2's data
         result = await list_collections(user_id=2, is_admin=False)
         assert result.status == "success"
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 5
+        # Owners should only contain the current user
+        assert all(c.owners == [2] for c in result.collections)
 
 
 class TestMultiTenancySearch:
@@ -797,6 +805,8 @@ class TestAPIMultiTenancy:
         assert result.status == "success"
         assert result.total_count == 0
 
+    @pytest.mark.asyncio
+    @patch("xagent.web.api.kb._check_can_delete_collection")
     @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
@@ -805,6 +815,7 @@ class TestAPIMultiTenancy:
         mock_delete_collection,
         mock_delete_collection_physical_dir,
         mock_get_vector_store,
+        mock_check_can_delete,
     ):
         """Test delete_collection_api passes user context and moves dir to trash."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -855,6 +866,7 @@ class TestAPIMultiTenancy:
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
+    @pytest.mark.asyncio
     @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")

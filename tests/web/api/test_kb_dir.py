@@ -1,7 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -672,11 +672,24 @@ def test_kb_delete_physical_cleanup_failure_aborts_operation(test_env, temp_uplo
 
     # Mock delete_collection to return success (database deletion would succeed)
     with (
+        patch(
+            "xagent.providers.vector_store.lancedb.get_connection_from_env"
+        ) as mock_get_conn,
+        patch(
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ) as mock_ensure_docs,
         patch("xagent.web.api.kb.delete_collection") as mock_delete,
         patch(
             "xagent.web.services.kb_collection_service.move_collection_dir_to_trash"
         ) as mock_move_to_trash,
     ):
+        mock_ensure_docs.return_value = None
+        mock_conn = MagicMock()
+        mock_table = MagicMock()
+        mock_table.count_rows.return_value = 0
+        mock_conn.open_table.return_value = mock_table
+        mock_get_conn.return_value = mock_conn
+
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )
@@ -717,8 +730,23 @@ def test_kb_delete_returns_physical_cleanup_status(test_env, temp_uploads):
     coll_dir.mkdir(parents=True, exist_ok=True)
     (coll_dir / "some_file.txt").write_text("data")
 
-    # Mock delete_collection
-    with patch("xagent.web.api.kb.delete_collection") as mock_delete:
+    # Mock delete_collection and LanceDB permission check (non-admin user)
+    with (
+        patch(
+            "xagent.providers.vector_store.lancedb.get_connection_from_env"
+        ) as mock_get_conn,
+        patch(
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ) as mock_ensure_docs,
+        patch("xagent.web.api.kb.delete_collection") as mock_delete,
+    ):
+        mock_ensure_docs.return_value = None
+        mock_conn = MagicMock()
+        mock_table = MagicMock()
+        mock_table.count_rows.return_value = 0
+        mock_conn.open_table.return_value = mock_table
+        mock_get_conn.return_value = mock_conn
+
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )

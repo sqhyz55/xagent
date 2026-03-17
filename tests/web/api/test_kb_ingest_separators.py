@@ -55,6 +55,27 @@ def app_with_kb(mock_user):
     return app
 
 
+@pytest.fixture
+def admin_user():
+    """Minimal admin user-like object for delete dependency."""
+    u = type("User", (), {"id": 1, "is_admin": True})()
+    return u
+
+
+@pytest.fixture
+def app_with_kb_admin(admin_user):
+    """FastAPI app with kb_router and mocked auth as admin."""
+    from xagent.web.api.kb import get_current_user
+
+    def override_get_current_user():
+        return admin_user
+
+    app = FastAPI()
+    app.include_router(kb_router)
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    return app
+
+
 def test_ingest_separators_valid_json_passed_to_config(app_with_kb, mock_user):
     """POST /api/kb/ingest with valid separators JSON passes list to IngestionConfig."""
     captured_config: list[IngestionConfig] = []
@@ -114,6 +135,175 @@ def test_ingest_separators_valid_json_passed_to_config(app_with_kb, mock_user):
     assert response.status_code == 200
     assert len(captured_config) == 1
     assert captured_config[0].separators == ["\n\n", "\n", "。"]
+
+
+def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
+    app_with_kb, mock_user
+):
+    """Non-admin user cannot delete collection that contains other users' documents."""
+    with (
+        patch(
+            "xagent.providers.vector_store.lancedb.get_connection_from_env"
+        ) as mock_get_conn,
+        patch(
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ) as mock_ensure_docs,
+        patch("xagent.web.api.kb.delete_collection") as mock_delete_collection,
+    ):
+        mock_ensure_docs.return_value = None
+
+        mock_conn = MagicMock()
+        mock_table = MagicMock()
+        mock_conn.open_table.return_value = mock_table
+        mock_get_conn.return_value = mock_conn
+
+        # Simulate collection having documents from current user (id=1) and others
+        def count_rows_side_effect(filter_expr=None):
+            # own_filter includes user_id == '1'
+            if filter_expr and "user_id" in str(filter_expr):
+                return 3  # own docs
+            return 5  # total docs in collection
+
+        mock_table.count_rows.side_effect = count_rows_side_effect
+
+        client = TestClient(app_with_kb)
+        resp = client.delete("/api/kb/collections/test_collection")
+
+    assert resp.status_code == 403
+    body = resp.json()
+    assert "admin users" in body["detail"]
+    # Backend should not call delete_collection when permission denied
+    mock_delete_collection.assert_not_called()
+
+
+def test_delete_collection_allowed_for_admin_with_other_users_docs(
+    app_with_kb_admin, admin_user
+):
+    """Admin user can delete collections even when they contain other users' docs."""
+    with (
+        patch(
+            "xagent.providers.vector_store.lancedb.get_connection_from_env"
+        ) as mock_get_conn,
+        patch(
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ) as mock_ensure_docs,
+        patch("xagent.web.api.kb.delete_collection") as mock_delete_collection,
+    ):
+        mock_ensure_docs.return_value = None
+
+        mock_conn = MagicMock()
+        mock_table = MagicMock()
+        mock_conn.open_table.return_value = mock_table
+        mock_get_conn.return_value = mock_conn
+
+        # Admin path: delete_collection_api will not use count_rows for permission,
+        # but we still provide a default implementation to avoid errors if called.
+        mock_table.count_rows.return_value = 5
+
+        # Simulate successful delete_collection
+        from xagent.core.tools.core.RAG_tools.core.schemas import (
+            CollectionOperationResult,
+        )
+
+        mock_delete_collection.return_value = CollectionOperationResult(
+            status="success",
+            collection="test_collection",
+            message="deleted",
+            affected_documents=[],
+            deleted_counts={},
+        )
+
+        client = TestClient(app_with_kb_admin)
+        resp = client.delete("/api/kb/collections/test_collection")
+
+    assert resp.status_code == 200
+    mock_delete_collection.assert_called_once()
+
+
+def test_delete_document_forbidden_for_non_admin_other_users_doc(
+    app_with_kb, mock_user
+):
+    """Non-admin user should not be able to delete documents they don't own."""
+    with (
+        patch(
+            "xagent.providers.vector_store.lancedb.get_connection_from_env"
+        ) as mock_get_conn,
+        patch(
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ) as mock_ensure_docs,
+        patch(
+            "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.query_to_list"
+        ) as mock_query_to_list,
+        patch(
+            "xagent.core.tools.core.RAG_tools.management.collections.delete_document"
+        ) as mock_delete_document,
+    ):
+        mock_ensure_docs.return_value = None
+
+        # We don't care about the actual connection, open_table, or filter expression here,
+        # because query_to_list receives the already-filtered search object.
+        mock_conn = MagicMock()
+        mock_table = MagicMock()
+        mock_conn.open_table.return_value = mock_table
+        mock_get_conn.return_value = mock_conn
+
+        # Simulate that, after applying user filter, there are no matching records
+        mock_query_to_list.return_value = []
+
+        client = TestClient(app_with_kb)
+        resp = client.delete(
+            "/api/kb/collections/test_collection/documents/doc.txt",
+        )
+
+    # No accessible document -> 404 from delete_document_api, and delete_document must not be called
+    assert resp.status_code == 404
+    body = resp.json()
+    assert "Document not found" in body.get("detail", "")
+    mock_delete_document.assert_not_called()
+
+
+def test_delete_document_allowed_for_admin_any_doc(app_with_kb_admin, admin_user):
+    """Admin user can delete documents regardless of owner."""
+    with (
+        patch(
+            "xagent.providers.vector_store.lancedb.get_connection_from_env"
+        ) as mock_get_conn,
+        patch(
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ) as mock_ensure_docs,
+        patch(
+            "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.query_to_list"
+        ) as mock_query_to_list,
+        patch(
+            "xagent.core.tools.core.RAG_tools.management.collections.delete_document"
+        ) as mock_delete_document,
+    ):
+        mock_ensure_docs.return_value = None
+
+        mock_conn = MagicMock()
+        mock_table = MagicMock()
+        mock_conn.open_table.return_value = mock_table
+        mock_get_conn.return_value = mock_conn
+
+        # For admin, query_to_list should return all matching records
+        mock_query_to_list.return_value = [
+            {
+                "doc_id": "doc_123",
+                "source_path": "/tmp/doc.txt",
+            }
+        ]
+
+        client = TestClient(app_with_kb_admin)
+        resp = client.delete(
+            "/api/kb/collections/test_collection/documents/doc.txt",
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "success"
+    assert body["deleted_doc_ids"] == ["doc_123"]
+    # delete_document should be invoked once with the resolved doc_id
+    mock_delete_document.assert_called_once()
 
 
 def test_ingest_separators_missing_uses_none(app_with_kb, mock_user):

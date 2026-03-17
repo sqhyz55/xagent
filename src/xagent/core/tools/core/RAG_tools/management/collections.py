@@ -526,6 +526,7 @@ async def list_collections(
         )
 
         document_names: Dict[str, Set[str]] = defaultdict(set)
+        owners: Dict[str, Set[int]] = defaultdict(set)
         document_metadata: Dict[str, List[CollectionDocumentMetadata]] = defaultdict(
             list
         )
@@ -576,7 +577,13 @@ async def list_collections(
         def _collect_document_names() -> None:
             for batch in vector_store.iter_batches(
                 table_name="documents",
-                columns=["collection", "source_path", "doc_id", "file_id"],
+                columns=[
+                    "collection",
+                    "source_path",
+                    "doc_id",
+                    "file_id",
+                    "user_id",
+                ],
                 user_id=user_id,
                 is_admin=is_admin,
             ):
@@ -584,6 +591,7 @@ async def list_collections(
                 source_idx = batch.schema.get_field_index("source_path")
                 doc_id_idx = batch.schema.get_field_index("doc_id")
                 file_id_idx = batch.schema.get_field_index("file_id")
+                user_idx = batch.schema.get_field_index("user_id")
                 if collection_idx == -1:
                     continue
                 collection_array = batch.column(collection_idx)
@@ -602,6 +610,11 @@ async def list_collections(
                     if file_id_idx != -1
                     else pa.array([None] * batch.num_rows)
                 )
+                user_array = (
+                    batch.column(user_idx)
+                    if user_idx != -1
+                    else pa.array([None] * batch.num_rows)
+                )
                 for idx in range(batch.num_rows):
                     collection_raw = collection_array[idx].as_py()
                     if not collection_raw:
@@ -613,6 +626,12 @@ async def list_collections(
                         doc_id_array[idx].as_py(),
                         file_id_array[idx].as_py(),
                     )
+                    user_val = user_array[idx].as_py()
+                    if user_val is not None:
+                        try:
+                            owners[collection_key].add(int(user_val))
+                        except (TypeError, ValueError):
+                            pass
 
         _collect_document_names()
 
@@ -660,6 +679,7 @@ async def list_collections(
                     ),
                 ),
                 ingestion_config=collection_configs.get(collection),
+                owners=sorted(owners.get(collection, set())),
             )
             for collection in collection_keys
         ]

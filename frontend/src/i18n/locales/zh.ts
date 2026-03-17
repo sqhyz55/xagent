@@ -1490,6 +1490,19 @@ Build when you need.`
     search: {
       placeholder: "搜索知识库...",
     },
+    manage: {
+      enter: "管理",
+      exit: "取消管理",
+      selectAll: "全选",
+      deselectAll: "取消全选",
+      deleteSelected: "删除所选 ({count})",
+    },
+    batchDelete: {
+      confirm: "确定要删除选中的 {count} 个知识库吗？此操作不可撤销。",
+      success: "已删除 {count} 个知识库",
+      partialFailure: "{count} 个删除失败",
+      failed: "批量删除失败",
+    },
     card: {
       documentsLabel: "文档",
       chunksLabel: "文本块",
@@ -1502,6 +1515,7 @@ Build when you need.`
       status: {
         active: "活跃",
       },
+      ownerUsers: "归属用户",
     },
     empty: {
       noKB: "暂无知识库",
