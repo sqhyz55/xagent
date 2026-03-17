@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "LanceDBConnectionManager",
     "LanceDBVectorStore",
+    "clear_connection_cache",
     "get_connection",
     "get_connection_from_env",
 ]
@@ -37,6 +38,16 @@ _cache_lock = RLock()
 
 # Connection TTL (seconds), default 5 minutes
 CONNECTION_TTL = int(os.getenv("LANCEDB_CONNECTION_TTL", "300"))
+
+
+def clear_connection_cache() -> None:
+    """Clear the global LanceDB connection cache.
+
+    This is primarily intended for test isolation to avoid reusing cached
+    connections across different `LANCEDB_DIR` values.
+    """
+    with _cache_lock:
+        _connection_cache.clear()
 
 
 class LanceDBConnectionManager:

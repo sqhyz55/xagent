@@ -23,6 +23,7 @@ from openai.types.chat.chat_completion_message_tool_call import (
 from xagent.core.model import ChatModelConfig, EmbeddingModelConfig, RerankModelConfig
 from xagent.core.observability.langfuse_tracer import init_tracer, reset_tracer
 from xagent.core.tools.core.RAG_tools.storage import reset_kb_write_coordinator
+from xagent.providers.vector_store.lancedb import clear_connection_cache
 
 # YAML entrypoint has been removed, commenting out these imports
 # from xagent.entrypoint.yaml.parser import MigrationManager
@@ -98,6 +99,27 @@ def reset_kb_storage_singleton():
     reset_kb_write_coordinator()
     yield
     reset_kb_write_coordinator()
+
+
+@pytest.fixture(autouse=True, scope="function")
+def isolate_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Isolate LanceDB directory for every test by default.
+
+    If a test explicitly sets `LANCEDB_DIR`, this fixture respects it.
+    Otherwise, it forces `LANCEDB_DIR` to a per-test temporary directory to
+    prevent polluting the default on-disk LanceDB location.
+    """
+    original = os.environ.get("LANCEDB_DIR")
+    if original is None:
+        lancedb_dir = tmp_path / "lancedb"
+        lancedb_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("LANCEDB_DIR", str(lancedb_dir))
+
+    clear_connection_cache()
+    reset_kb_write_coordinator()
+    yield
+    reset_kb_write_coordinator()
+    clear_connection_cache()
 
 
 @pytest.fixture
