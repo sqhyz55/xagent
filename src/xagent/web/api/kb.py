@@ -31,6 +31,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
+from ...core.tools.core.RAG_tools.core.parser_registry import (
+    get_supported_parsers,
+    validate_parser_compatibility,
+)
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
     CollectionDocumentMetadata,
@@ -1130,6 +1134,45 @@ async def ingest(
             status_code=422,
             detail=f"File type {Path(safe_filename).suffix.lower()} not supported",
         )
+
+    file_ext = Path(safe_filename).suffix.lower()
+    effective_parse_method = _normalize_parse_method_for_filename(
+        parse_method, safe_filename
+    )
+    if effective_parse_method == ParseMethod.DEFAULT:
+        supported = get_supported_parsers(file_ext)
+        if not supported:
+            logger.warning(
+                "KB ingest rejected: no parser supports extension=%s filename=%s user_id=%s",
+                file_ext,
+                safe_filename,
+                getattr(_user, "id", None),
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unsupported file type '{file_ext}' for ingestion. "
+                    "No available parser supports this format."
+                ),
+            )
+    else:
+        if not validate_parser_compatibility(file_ext, str(effective_parse_method)):
+            supported = get_supported_parsers(file_ext)
+            logger.warning(
+                "KB ingest rejected: parser=%s not compatible with extension=%s filename=%s supported=%s",
+                str(effective_parse_method),
+                file_ext,
+                safe_filename,
+                supported,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Parser '{str(effective_parse_method)}' is not compatible with "
+                    f"file type '{file_ext}'. "
+                    f"Supported parsers for this type: {supported}"
+                ),
+            )
 
     if not collection or not collection.strip():
         collection = Path(safe_filename).stem

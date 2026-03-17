@@ -53,6 +53,7 @@ class UnstructuredParser(
         ".md",
         ".json",
         ".html",
+        ".htm",
     ]
 
     async def _parse_impl(self, file_path: str, **kwargs: Any) -> ParseResult:
@@ -134,6 +135,10 @@ async def extract_text_with_unstructured(file_path: str, **kwargs: Any) -> Parse
             from unstructured.partition.pdf import partition_pdf
 
             elements = partition_pdf(filename=file_path)
+        elif file_ext in (".html", ".htm"):
+            from unstructured.partition.html import partition_html
+
+            elements = partition_html(filename=file_path)
         elif file_ext == ".docx":
             from unstructured.partition.docx import partition_docx
 
