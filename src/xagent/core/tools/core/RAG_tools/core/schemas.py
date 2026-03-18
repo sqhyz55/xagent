@@ -1291,6 +1291,12 @@ class CollectionInfo(BaseModel):
     # Basic identifier
     name: str = Field(..., description="Collection identifier")
 
+    # 👥 Ownership / access control (stored as JSON string in LanceDB)
+    owners: List[str] = Field(
+        default_factory=list,
+        description="Collection owners. Stored as JSON string in LanceDB for compatibility.",
+    )
+
     # 🎯 Core binding: Embedding configuration (lazy initialization)
     embedding_model_id: Optional[str] = Field(
         default=None,  # None indicates not initialized
@@ -1767,6 +1773,24 @@ class WebCrawlConfig(BaseModel):
     respect_robots_txt: bool = Field(
         default=True,
         description="Whether to respect robots.txt rules",
+    )
+
+    # JavaScript rendering (Playwright)
+    render_js: bool = Field(
+        default=False,
+        description=(
+            "Whether to render pages with a real browser (Playwright) to support SPA/JS-heavy sites. "
+            "When enabled, crawling fetches the post-rendered DOM instead of raw HTML."
+        ),
+    )
+    render_wait_until: Literal["load", "domcontentloaded", "networkidle"] = Field(
+        default="networkidle",
+        description="Playwright navigation wait strategy when render_js=True",
+    )
+    render_timeout_ms: int = Field(
+        default=30000,
+        ge=1,
+        description="Playwright navigation timeout in milliseconds when render_js=True",
     )
 
 

@@ -109,6 +109,8 @@ def _migrate_0_0_0_to_1_0_0(
         "schema_version": "1.0.0",
         # Basic fields (preserve existing or set defaults)
         "name": collection_name,
+        # Owners (default empty for legacy data)
+        "owners": data.get("owners", []),
         # Embedding config (inferred from existing data or None for lazy init)
         "embedding_model_id": embedding_model_id,
         "embedding_dimension": embedding_dimension,
