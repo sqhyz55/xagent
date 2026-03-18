@@ -55,7 +55,21 @@ def test_ingest_web_rejects_invalid_start_url(app_with_kb, start_url: str) -> No
 
     assert resp.status_code == 422
     body = resp.json()
-    assert "Invalid start_url" in body.get("detail", "")
+    detail = body.get("detail", "")
+
+    # Different FastAPI/Starlette versions may treat empty form fields as missing
+    # ("Field required") or pass through as empty string (our custom validator).
+    # Accept either behavior for blank inputs.
+    if not start_url.strip():
+        if isinstance(detail, list):
+            assert any(
+                (isinstance(item, dict) and item.get("msg") == "Field required")
+                for item in detail
+            )
+        else:
+            assert "Invalid start_url" in str(detail)
+    else:
+        assert "Invalid start_url" in str(detail)
 
 
 def test_ingest_web_accepts_stripped_url(app_with_kb) -> None:
