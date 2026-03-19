@@ -5,13 +5,26 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 from xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner import (
+    cascade_delete,
     cleanup_chunk_cascade,
     cleanup_document_cascade,
     cleanup_embed_cascade,
     cleanup_parse_cascade,
 )
+
+
+@pytest.fixture(autouse=True)
+def _patch_ensure_tables(mocker) -> None:
+    """Avoid schema-manager side effects in unit tests (focus on filter logic)."""
+    base = "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner"
+    mocker.patch(f"{base}.ensure_documents_table", return_value=None)
+    mocker.patch(f"{base}.ensure_parses_table", return_value=None)
+    mocker.patch(f"{base}.ensure_chunks_table", return_value=None)
+    mocker.patch(f"{base}.ensure_main_pointers_table", return_value=None)
+    mocker.patch(f"{base}.ensure_ingestion_runs_table", return_value=None)
 
 
 def _create_mock_table_with_schema() -> MagicMock:
@@ -34,6 +47,17 @@ def _create_mock_table_with_schema() -> MagicMock:
     doc_id_field.name = "doc_id"
     # Set schema as a list of field objects (mimicking PyArrow schema structure)
     table.schema = [collection_field, doc_id_field, metadata_field]
+    return table
+
+
+def _create_mock_table_with_columns(columns: list[str]) -> MagicMock:
+    """Create a mock table with schema.names for column-aware filtering tests."""
+    table = MagicMock()
+    schema = MagicMock()
+    schema.names = columns
+    table.schema = schema
+    table.count_rows.return_value = 1
+    table.delete = MagicMock()
     return table
 
 
@@ -61,34 +85,37 @@ def test_cleanup_document_preview_then_confirm(mock_get_conn: MagicMock) -> None
         # Include filter columns so where(...) matches and counts are non-zero
         return pd.DataFrame([{"collection": "c", "doc_id": "d"}] * n)
 
-    # preview: counts only
-    table = _create_mock_table_with_schema()
-    table.count_rows.side_effect = [
-        2,  # embeddings
-        1,  # chunks
-        1,  # parses
-        1,  # pointers
-        1,  # documents
-    ]
-    conn.open_table.return_value = table
+    table_map = {
+        "embeddings_m1": _create_mock_table_with_columns(
+            ["collection", "doc_id", "parse_hash", "user_id"]
+        ),
+        "chunks": _create_mock_table_with_columns(
+            ["collection", "doc_id", "parse_hash", "metadata", "user_id"]
+        ),
+        "parses": _create_mock_table_with_columns(
+            ["collection", "doc_id", "parse_hash", "user_id"]
+        ),
+        "main_pointers": _create_mock_table_with_columns(["collection", "doc_id"]),
+        "documents": _create_mock_table_with_columns(
+            ["collection", "doc_id", "user_id"]
+        ),
+        "ingestion_runs": _create_mock_table_with_columns(
+            ["collection", "doc_id", "status", "user_id"]
+        ),
+    }
+    table_map["embeddings_m1"].count_rows.return_value = 2
+    for t in ["chunks", "parses", "main_pointers", "documents"]:
+        table_map[t].count_rows.return_value = 1
+    conn.open_table.side_effect = lambda name: table_map[name]
     mock_get_conn.return_value = conn
 
     res = cleanup_document_cascade("c", "d", preview_only=True, confirm=False)
     assert res["embeddings"] == 2 and res["chunks"] == 1
 
     # confirm: delete paths
-    table = _create_mock_table_with_schema()
-    table.count_rows.side_effect = [
-        2,
-        1,
-        1,
-        1,
-        1,
-    ]
-    conn.open_table.return_value = table
     res2 = cleanup_document_cascade("c", "d", preview_only=False, confirm=True)
     assert res2["documents"] == 1
-    assert table.delete.call_count >= 1
+    assert table_map["documents"].delete.call_count >= 1
 
 
 @patch(
@@ -177,6 +204,7 @@ def test_cleanup_handles_missing_tables(mock_get_conn: MagicMock) -> None:
         "chunks": 0,
         "parses": 0,
         "main_pointers": 0,
+        "ingestion_runs": 0,
         "documents": 0,
     }
 
@@ -470,3 +498,159 @@ def test_cleanup_document_preview_respects_model_tag(mock_get_conn: MagicMock) -
     assert "embeddings_model_b" not in embeddings_tables_queried, (
         "Preview mode should respect model_tag filter and not query other models' tables"
     )
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+)
+def test_cascade_delete_collection_with_user_id_column_applies_user_filter(
+    mock_get_conn: MagicMock,
+) -> None:
+    """Non-admin collection delete should include user_id when table has the column."""
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    cascade_delete(
+        target="collection",
+        collection="c1",
+        user_id=7,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+
+    assert table.delete.call_count == 1
+    filt = table.delete.call_args[0][0]
+    assert "collection == 'c1'" in filt
+    assert "user_id == '7'" in filt
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+)
+def test_cascade_delete_document_with_user_id_column_applies_user_filter(
+    mock_get_conn: MagicMock,
+) -> None:
+    """Non-admin document delete should include user_id when table has the column."""
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    cascade_delete(
+        target="document",
+        collection="c1",
+        doc_id="d1",
+        user_id=9,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+
+    assert table.delete.call_count == 1
+    filt = table.delete.call_args[0][0]
+    assert "collection == 'c1'" in filt
+    assert "doc_id == 'd1'" in filt
+    assert "user_id == '9'" in filt
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+)
+def test_cascade_delete_collection_without_user_id_column_compatible(
+    mock_get_conn: MagicMock,
+) -> None:
+    """Non-admin collection delete should not inject user_id for legacy schemas."""
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id"])
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    cascade_delete(
+        target="collection",
+        collection="c_legacy",
+        user_id=11,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+
+    filt = table.delete.call_args[0][0]
+    assert "collection == 'c_legacy'" in filt
+    assert "user_id ==" not in filt
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+)
+def test_cascade_delete_document_without_user_id_column_compatible(
+    mock_get_conn: MagicMock,
+) -> None:
+    """Non-admin document delete should stay compatible for legacy schemas."""
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id"])
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    cascade_delete(
+        target="document",
+        collection="c_legacy",
+        doc_id="d_legacy",
+        user_id=12,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+
+    filt = table.delete.call_args[0][0]
+    assert "collection == 'c_legacy'" in filt
+    assert "doc_id == 'd_legacy'" in filt
+    assert "user_id ==" not in filt
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+)
+def test_cascade_delete_admin_vs_non_admin_user_filter_behavior(
+    mock_get_conn: MagicMock,
+) -> None:
+    """Admin should not be filtered by user_id; non-admin should be filtered."""
+    conn = MagicMock()
+    conn.table_names.return_value = ["documents"]
+    table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
+    conn.open_table.return_value = table
+    mock_get_conn.return_value = conn
+
+    # Admin (even with user_id passed) should not have user_id predicate
+    cascade_delete(
+        target="collection",
+        collection="c_admin",
+        user_id=1,
+        is_admin=True,
+        preview_only=False,
+        confirm=True,
+    )
+    admin_filter = table.delete.call_args[0][0]
+    assert "collection == 'c_admin'" in admin_filter
+    assert "user_id ==" not in admin_filter
+
+    table.delete.reset_mock()
+
+    # Non-admin should include user_id predicate
+    cascade_delete(
+        target="collection",
+        collection="c_user",
+        user_id=1,
+        is_admin=False,
+        preview_only=False,
+        confirm=True,
+    )
+    user_filter = table.delete.call_args[0][0]
+    assert "collection == 'c_user'" in user_filter
+    assert "user_id == '1'" in user_filter

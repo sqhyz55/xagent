@@ -9,10 +9,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from typing_extensions import Literal
+
 from ..core.exceptions import CascadeCleanupError
 from ..LanceDB.schema_manager import (
     ensure_chunks_table,
     ensure_documents_table,
+    ensure_ingestion_runs_table,
     ensure_main_pointers_table,
     ensure_parses_table,
 )
@@ -21,6 +24,104 @@ from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb
 from .main_pointer_manager import get_main_pointer
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_count_rows(table: Any, filt: str) -> int:
+    """Count rows, returning 0 on filter/schema errors."""
+    try:
+        return int(table.count_rows(filt))
+    except Exception:
+        return 0
+
+
+def _table_has_column(table: Any, column: str) -> bool:
+    try:
+        schema = getattr(table, "schema", None)
+        if schema is None:
+            return False
+        names = getattr(schema, "names", None)
+        if not isinstance(names, list):
+            return False
+        return column in names
+    except Exception:
+        return False
+
+
+def _build_collection_filter(
+    *,
+    conn: Any,
+    table_name: str,
+    collection: str,
+    user_id: Optional[int],
+    is_admin: bool,
+) -> str:
+    """Build a safe filter for collection-scoped deletion.
+
+    Adds user_id filtering only when the target table contains a user_id column.
+    """
+    base: Dict[str, str] = {"collection": collection}
+    try:
+        table = conn.open_table(table_name)
+        if not is_admin and user_id is not None and _table_has_column(table, "user_id"):
+            base["user_id"] = str(user_id)
+    except Exception:
+        # If we cannot open the table here, fall back to base filter.
+        pass
+    return build_lancedb_filter_expression(base)
+
+
+def _build_document_filter(
+    *,
+    conn: Any,
+    table_name: str,
+    collection: str,
+    doc_id: str,
+    user_id: Optional[int],
+    is_admin: bool,
+) -> str:
+    """Build a safe filter for document-scoped deletion."""
+    base: Dict[str, str] = {"collection": collection, "doc_id": doc_id}
+    try:
+        table = conn.open_table(table_name)
+        if not is_admin and user_id is not None and _table_has_column(table, "user_id"):
+            base["user_id"] = str(user_id)
+    except Exception:
+        pass
+    return build_lancedb_filter_expression(base)
+
+
+def _append_user_filter_if_needed(
+    *,
+    conn: Any,
+    table_name: str,
+    base_expr: str,
+    user_id: Optional[int],
+    is_admin: bool,
+) -> str:
+    """Append user_id filter when non-admin and table contains user_id."""
+    if is_admin or user_id is None:
+        return base_expr
+    try:
+        table = conn.open_table(table_name)
+        if _table_has_column(table, "user_id"):
+            return f"{base_expr} AND user_id == {int(user_id)}"
+    except Exception:
+        return base_expr
+    return base_expr
+
+
+def _get_table_names(conn: Any) -> list[str]:
+    """Get table names from LanceDB connection with mypy-safe access."""
+    table_names_fn = getattr(conn, "table_names", None)
+    if table_names_fn is None:
+        return []
+    try:
+        names = table_names_fn()
+    except Exception:
+        return []
+    if not names:
+        return []
+    return [str(name) for name in names]
 
 
 def _plan_by_predicates(
@@ -38,7 +139,14 @@ def _plan_by_predicates(
         Mapping of table name -> matched row count
     """
     counts: Dict[str, int] = {}
-    table_names = conn.table_names()
+    table_names = _get_table_names(conn)
+
+    # If predicates explicitly include embeddings tables, plan them first.
+    for t in table_names:
+        if t.startswith("embeddings_") and t in table_to_filter:
+            table = conn.open_table(t)
+            counts[t] = _safe_count_rows(table, table_to_filter[t])
+
     for table_name, filt in table_to_filter.items():
         # Special fan-out handling for embeddings preview like deleter
         if table_name == "__embeddings__":
@@ -80,7 +188,19 @@ def _delete_by_predicates(
                    only the embeddings table matching this model will be processed.
     """
     deleted: Dict[str, int] = {}
-    table_names = conn.table_names()
+    table_names = _get_table_names(conn)
+
+    # If predicates explicitly include embeddings tables, delete them first.
+    for t in table_names:
+        if not t.startswith("embeddings_") or t not in table_to_filter:
+            continue
+        filt = table_to_filter[t]
+        table = conn.open_table(t)
+        cnt = _safe_count_rows(table, filt)
+        if cnt > 0:
+            table.delete(filt)
+            logger.info(f"Cascade cleanup: deleted {cnt} rows from {t}")
+        deleted[t] = cnt
 
     order = [
         # embeddings handled specially below (fan-out across many tables)
@@ -88,6 +208,7 @@ def _delete_by_predicates(
         "chunks",
         "parses",
         "main_pointers",
+        "ingestion_runs",
         "documents",
     ]
 
@@ -128,7 +249,14 @@ def _delete_by_predicates(
 
     # Finally, handle any remaining custom tables once
     for name, filt in table_to_filter.items():
-        if name in ("__embeddings__", "chunks", "parses", "main_pointers", "documents"):
+        if name in (
+            "__embeddings__",
+            "chunks",
+            "parses",
+            "main_pointers",
+            "ingestion_runs",
+            "documents",
+        ):
             continue
         if name not in table_names:
             deleted[name] = 0
@@ -143,6 +271,101 @@ def _delete_by_predicates(
     return deleted
 
 
+def cascade_delete(
+    *,
+    target: Literal["collection", "document"],
+    collection: str,
+    doc_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+    model_tag: Optional[str] = None,
+    preview_only: bool = True,
+    confirm: bool = False,
+) -> Dict[str, int]:
+    """Unified cascade delete for collection or document targets.
+
+    This is intended for user-facing destructive operations (e.g. KB delete)
+    and is separate from version promotion cleanup scopes.
+
+    Args:
+        target: "collection" or "document".
+        collection: Collection name.
+        doc_id: Required when target == "document".
+        user_id: Optional user ID for multi-tenancy filtering.
+        is_admin: Whether the caller is an admin (no user_id filtering).
+        model_tag: Optional embeddings model tag limiter.
+        preview_only: If True, only plan counts.
+        confirm: If True, execute deletions.
+
+    Returns:
+        Mapping of table name -> deleted (or planned) row count.
+    """
+    if target == "document" and not doc_id:
+        raise CascadeCleanupError("doc_id is required for document cascade delete")
+
+    conn = get_vector_store_raw_connection()
+    ensure_documents_table(conn)
+    ensure_parses_table(conn)
+    ensure_chunks_table(conn)
+    ensure_main_pointers_table(conn)
+    ensure_ingestion_runs_table(conn)
+
+    table_names = _get_table_names(conn)
+    predicates: Dict[str, str] = {}
+
+    # Core known tables
+    core_tables = ["documents", "parses", "chunks", "main_pointers", "ingestion_runs"]
+    for t in core_tables:
+        if t not in table_names:
+            continue
+        if target == "collection":
+            predicates[t] = _build_collection_filter(
+                conn=conn,
+                table_name=t,
+                collection=collection,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        else:
+            predicates[t] = _build_document_filter(
+                conn=conn,
+                table_name=t,
+                collection=collection,
+                doc_id=str(doc_id),
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+
+    # Embeddings tables: expand explicitly so we can safely include user_id filter
+    for t in table_names:
+        if not t.startswith("embeddings_"):
+            continue
+        if model_tag is not None and t != f"embeddings_{model_tag}":
+            continue
+        if target == "collection":
+            predicates[t] = _build_collection_filter(
+                conn=conn,
+                table_name=t,
+                collection=collection,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        else:
+            predicates[t] = _build_document_filter(
+                conn=conn,
+                table_name=t,
+                collection=collection,
+                doc_id=str(doc_id),
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+
+    if preview_only and not confirm:
+        return _plan_by_predicates(conn, predicates, model_tag=None)
+
+    return _delete_by_predicates(conn, predicates, model_tag=None)
+
+
 def cleanup_cascade(
     collection: str,
     doc_id: str,
@@ -150,6 +373,8 @@ def cleanup_cascade(
     new_parse_hash: Optional[str] = None,
     old_parse_hash: Optional[str] = None,
     model_tag: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = True,
     preview_only: bool = True,
     confirm: bool = False,
 ) -> Dict[str, int]:
@@ -162,6 +387,8 @@ def cleanup_cascade(
         new_parse_hash: New main parse hash for parse/chunk scopes
         old_parse_hash: Optional old main parse hash (auto-filled from pointers if None)
         model_tag: Optional embed model tag limiter
+        user_id: Optional user ID for tenant scoping
+        is_admin: Whether caller is admin (no user_id filter)
         preview_only: If True, only plan counts
         confirm: If True, execute deletions
 
@@ -174,20 +401,32 @@ def cleanup_cascade(
     ensure_chunks_table(conn)
     ensure_main_pointers_table(conn)
 
+    if scope == "document":
+        raw = cascade_delete(
+            target="document",
+            collection=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+            model_tag=model_tag,
+            preview_only=preview_only,
+            confirm=confirm,
+        )
+        embeddings_total = sum(
+            int(v) for k, v in raw.items() if str(k).startswith("embeddings_")
+        )
+        return {
+            "embeddings": embeddings_total,
+            "chunks": int(raw.get("chunks", 0)),
+            "parses": int(raw.get("parses", 0)),
+            "main_pointers": int(raw.get("main_pointers", 0)),
+            "documents": int(raw.get("documents", 0)),
+            "ingestion_runs": int(raw.get("ingestion_runs", 0)),
+        }
+
     predicates: Dict[str, str] = {}
 
-    if scope == "document":
-        filt = build_lancedb_filter_expression(
-            {"collection": collection, "doc_id": doc_id}
-        )
-        predicates = {
-            "__embeddings__": filt,
-            "chunks": filt,
-            "parses": filt,
-            "main_pointers": filt,
-            "documents": filt,
-        }
-    elif scope == "parse":
+    if scope == "parse":
         # Fill old from pointer if needed
         if old_parse_hash is None:
             pointer = get_main_pointer(collection, doc_id, "parse")
@@ -201,17 +440,47 @@ def cleanup_cascade(
                 "parse_hash": old_parse_hash,
             }
             base = build_lancedb_filter_expression(base_filters)
-            predicates["__embeddings__"] = base
-            predicates["chunks"] = base
+            predicates["__embeddings__"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="documents",
+                base_expr=base,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            predicates["chunks"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="chunks",
+                base_expr=base,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
         if new_parse_hash:
             # Build safe filter expression for new parse hash (using != operator)
             escaped_collection = escape_lancedb_string(collection)
             escaped_doc_id = escape_lancedb_string(doc_id)
             escaped_new_parse_hash = escape_lancedb_string(new_parse_hash)
             other = f"collection == '{escaped_collection}' AND doc_id == '{escaped_doc_id}' AND parse_hash != '{escaped_new_parse_hash}'"
-            predicates["__embeddings__"] = other
-            predicates["chunks"] = other
-            predicates["parses"] = other
+            predicates["__embeddings__"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="documents",
+                base_expr=other,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            predicates["chunks"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="chunks",
+                base_expr=other,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            predicates["parses"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="parses",
+                base_expr=other,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
     elif scope == "chunk":
         if old_parse_hash is None:
             pointer = get_main_pointer(collection, doc_id, "chunk")
@@ -224,7 +493,13 @@ def cleanup_cascade(
                 "parse_hash": old_parse_hash,
             }
             base = build_lancedb_filter_expression(base_filters)
-            predicates["__embeddings__"] = base
+            predicates["__embeddings__"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="documents",
+                base_expr=base,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
         if new_parse_hash:
             # Note: For != operator, we need to manually construct the filter
             # as build_lancedb_filter_expression only supports == operator
@@ -232,17 +507,45 @@ def cleanup_cascade(
             escaped_doc_id = escape_lancedb_string(doc_id)
             escaped_parse_hash = escape_lancedb_string(new_parse_hash)
             other = f"collection == '{escaped_collection}' AND doc_id == '{escaped_doc_id}' AND parse_hash != '{escaped_parse_hash}'"
-            predicates["__embeddings__"] = other
-            predicates["chunks"] = other
+            predicates["__embeddings__"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="documents",
+                base_expr=other,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            predicates["chunks"] = _append_user_filter_if_needed(
+                conn=conn,
+                table_name="chunks",
+                base_expr=other,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
     elif scope == "embeddings":
-        # Currently generic deleter applies to all embeddings tables
-        filt = build_lancedb_filter_expression(
-            {"collection": collection, "doc_id": doc_id}
-        )
-        predicates["__embeddings__"] = filt
+        # Build per-embeddings-table predicates so user_id filtering is based on
+        # each embeddings table's own schema (forward/backward compatible).
+        table_names = _get_table_names(conn)
+        for t in table_names:
+            if not t.startswith("embeddings_"):
+                continue
+            if model_tag is not None and t != f"embeddings_{model_tag}":
+                continue
+            predicates[t] = _build_document_filter(
+                conn=conn,
+                table_name=t,
+                collection=collection,
+                doc_id=doc_id,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
     elif scope == "pointers":
-        filt = build_lancedb_filter_expression(
-            {"collection": collection, "doc_id": doc_id}
+        filt = _build_document_filter(
+            conn=conn,
+            table_name="main_pointers",
+            collection=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
         )
         predicates["main_pointers"] = filt
     else:
@@ -250,18 +553,28 @@ def cleanup_cascade(
 
     if preview_only and not confirm:
         planned = _plan_by_predicates(conn, predicates, model_tag=model_tag)
-        # normalize internal fan-out key for embeddings
         if "__embeddings__" in planned:
             planned["embeddings"] = planned.pop("__embeddings__")
+        elif scope == "embeddings":
+            planned["embeddings"] = sum(
+                int(v) for k, v in planned.items() if str(k).startswith("embeddings_")
+            )
         return planned
 
-    return _delete_by_predicates(conn, predicates, model_tag=model_tag)
+    deleted = _delete_by_predicates(conn, predicates, model_tag=model_tag)
+    if scope == "embeddings" and "__embeddings__" not in predicates:
+        deleted["embeddings"] = sum(
+            int(v) for k, v in deleted.items() if str(k).startswith("embeddings_")
+        )
+    return deleted
 
 
 def cleanup_document_cascade(
     collection: str,
     doc_id: str,
     model_tag: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = True,
     preview_only: bool = True,
     confirm: bool = False,
 ) -> Dict[str, int]:
@@ -284,6 +597,8 @@ def cleanup_document_cascade(
             doc_id=doc_id,
             scope="document",
             model_tag=model_tag,
+            user_id=user_id,
+            is_admin=is_admin,
             preview_only=preview_only,
             confirm=confirm,
         )
@@ -297,6 +612,8 @@ def cleanup_parse_cascade(
     doc_id: str,
     old_parse_hash: Optional[str] = None,
     new_parse_hash: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = True,
     preview_only: bool = True,
     confirm: bool = False,
 ) -> Dict[str, int]:
@@ -325,6 +642,8 @@ def cleanup_parse_cascade(
             scope="parse",
             new_parse_hash=new_parse_hash,
             old_parse_hash=old_parse_hash,
+            user_id=user_id,
+            is_admin=is_admin,
             preview_only=preview_only,
             confirm=confirm,
         )
@@ -338,6 +657,8 @@ def cleanup_chunk_cascade(
     doc_id: str,
     old_parse_hash: Optional[str] = None,
     new_parse_hash: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = True,
     preview_only: bool = True,
     confirm: bool = False,
 ) -> Dict[str, int]:
@@ -366,6 +687,8 @@ def cleanup_chunk_cascade(
             scope="chunk",
             new_parse_hash=new_parse_hash,
             old_parse_hash=old_parse_hash,
+            user_id=user_id,
+            is_admin=is_admin,
             preview_only=preview_only,
             confirm=confirm,
         )
@@ -380,6 +703,8 @@ def cleanup_embed_cascade(
     model_tag: Optional[str] = None,
     old_technical_id: Optional[str] = None,
     new_technical_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = True,
     preview_only: bool = True,
     confirm: bool = False,
 ) -> Dict[str, int]:
@@ -408,6 +733,8 @@ def cleanup_embed_cascade(
             doc_id=doc_id,
             scope="embeddings",
             model_tag=model_tag,
+            user_id=user_id,
+            is_admin=is_admin,
             preview_only=preview_only,
             confirm=confirm,
         )

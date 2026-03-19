@@ -1121,6 +1121,8 @@ def delete_document(
         counts = cleanup_document_cascade(
             collection=collection,
             doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
             preview_only=False,
             confirm=True,
         )

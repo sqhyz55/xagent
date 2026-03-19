@@ -142,9 +142,7 @@ def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
 ):
     """Non-admin user cannot delete collection that contains other users' documents."""
     with (
-        patch(
-            "xagent.providers.vector_store.lancedb.get_connection_from_env"
-        ) as mock_get_conn,
+        patch("xagent.web.api.kb.get_connection_from_env") as mock_get_conn,
         patch(
             "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
         ) as mock_ensure_docs,
@@ -181,9 +179,7 @@ def test_delete_collection_allowed_for_admin_with_other_users_docs(
 ):
     """Admin user can delete collections even when they contain other users' docs."""
     with (
-        patch(
-            "xagent.providers.vector_store.lancedb.get_connection_from_env"
-        ) as mock_get_conn,
+        patch("xagent.web.api.kb.get_connection_from_env") as mock_get_conn,
         patch(
             "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
         ) as mock_ensure_docs,
