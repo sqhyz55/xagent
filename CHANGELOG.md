@@ -13,6 +13,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **Knowledge Base embedding model binding (breaking / migration)**
+  The Knowledge Base now treats the **Model Hub ID** as the single source of truth for embedding model identity:
+  - `collection_metadata.embedding_model_id` stores the Hub ID (trimmed; no other normalization).
+  - Embeddings tables are named by Hub ID: `embeddings_{to_model_tag(hub_id)}`.
+  - The `model` field stored alongside each embedding vector is the Hub ID.
+
+  **Migration / backward compatibility:** Older deployments may have created embeddings tables using the provider `model_name`
+  (e.g. `embeddings_text-embedding-v4`). During search and embedding reads, the system will **try the new Hub-ID table first**
+  and automatically **fall back to the legacy table name** derived from the resolved `model_name` when the new table is missing.
+  Rebuild/inference helpers were updated to prefer Hub IDs when they can be resolved from Model Hub metadata.
+
 - **Knowledge Base upload: default parse method (breaking)**
   The default parse method on the KB detail upload form is now `"default"` instead of `"pypdf"`. The backend chooses the parser by file type (e.g. .docx, .pdf). If you rely on the previous default (always use PyPDF), select `"pypdf"` explicitly in the parse method dropdown when uploading.
 

@@ -208,7 +208,8 @@ async def _compute_embeddings_async(
                         doc_id=chunk.doc_id,
                         chunk_id=chunk.chunk_id,
                         parse_hash=chunk.parse_hash,
-                        model=embedding_config.model_name,
+                        # IMPORTANT: Use Hub model ID as the single source of truth.
+                        model=embedding_config.id,
                         vector=vector,
                         text=chunk.text,
                         chunk_hash=chunk.chunk_hash,
@@ -458,7 +459,9 @@ def process_document(
         # Note: Parameters passed to _resolve_embedding_adapter have priority over environment variables
         resolve_start = time.time()
         embedding_config, embedding_adapter = _resolve_embedding_adapter(cfg)
-        selected_model_id = cfg.embedding_model_id or embedding_config.id
+        selected_model_id = (
+            cfg.embedding_model_id or embedding_config.id or ""
+        ).strip()
 
         provider = getattr(embedding_config, "model_provider", None)
         logger.info(
@@ -696,7 +699,7 @@ def process_document(
                 "collection": collection,
                 "doc_id": doc_id,
                 "parse_hash": parse_hash,
-                "embedding_model": embedding_config.model_name,
+                "embedding_model": selected_model_id,
             },
         )
         read_start = time.time()
@@ -704,7 +707,7 @@ def process_document(
             collection=collection,
             doc_id=doc_id,
             parse_hash=parse_hash,
-            model=embedding_config.model_name,
+            model=selected_model_id,
             user_id=user_id,
             is_admin=is_admin,
         )
@@ -877,7 +880,8 @@ def process_document(
                         doc_id=chunk.doc_id,
                         chunk_id=chunk.chunk_id,
                         parse_hash=chunk.parse_hash,
-                        model=embedding_config.model_name,
+                        # IMPORTANT: Use Hub model ID as the single source of truth.
+                        model=embedding_config.id,
                         vector=vector,
                         text=chunk.text,
                         chunk_hash=chunk.chunk_hash,

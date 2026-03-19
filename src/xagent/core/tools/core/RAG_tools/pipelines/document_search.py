@@ -568,7 +568,9 @@ def search_documents(
             base_url=None,
             timeout_sec=None,
         )
-        model_tag = embedding_config.model_name
+        # IMPORTANT: We use the Hub model ID as the single source of truth.
+        # It is used for embedding table naming and persisted collection binding.
+        embedding_model_id = (cfg.embedding_model_id or "").strip()
         current_step = "post_resolve_embedding"
         actual_type = requested_type
         results: List[SearchResult] = []
@@ -580,7 +582,7 @@ def search_documents(
                 pass
             current_step = "search_sparse"
             results, status, sparse_warnings, message = _execute_sparse_search(
-                collection, query_text, cfg, model_tag, user_id, is_admin
+                collection, query_text, cfg, embedding_model_id, user_id, is_admin
             )
             warnings.extend(sparse_warnings)
         else:
@@ -600,7 +602,7 @@ def search_documents(
                         "Hybrid search embedding failed; fallback to sparse."
                     )
                     results, status, sparse_warnings, message = _execute_sparse_search(
-                        collection, query_text, cfg, model_tag
+                        collection, query_text, cfg, embedding_model_id
                     )
                     warnings.extend(sparse_warnings)
                     actual_type = SearchType.SPARSE
@@ -612,7 +614,7 @@ def search_documents(
                         pass
                     dense_response: DenseSearchResponse = search_dense(
                         collection=collection,
-                        model_tag=model_tag,
+                        model_tag=embedding_model_id,
                         query_vector=query_vector,
                         top_k=fetch_top_k,
                         filters=cfg.filters,
@@ -635,7 +637,7 @@ def search_documents(
                             pass
                         hybrid_response: HybridSearchResponse = search_hybrid(
                             collection=collection,
-                            model_tag=model_tag,
+                            model_tag=embedding_model_id,
                             query_text=query_text,
                             query_vector=query_vector,
                             top_k=fetch_top_k,
@@ -658,7 +660,7 @@ def search_documents(
                             )
                             results, status, sparse_warnings, message = (
                                 _execute_sparse_search(
-                                    collection, query_text, cfg, model_tag
+                                    collection, query_text, cfg, embedding_model_id
                                 )
                             )
                             warnings.extend(sparse_warnings)
