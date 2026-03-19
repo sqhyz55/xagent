@@ -1324,10 +1324,13 @@ class CollectionInfo(BaseModel):
                 data[key] = None
 
         # 3. Check version and migrate if needed
-        current_version = "1.0.0"
         data_version = data.get("schema_version", "0.0.0")
-
-        if data_version < current_version:
+        normalized_data_version = str(data_version).strip()
+        # Accept legacy compact forms as current version to avoid false migration loops:
+        # "1", "1.0", "1.0.0" are treated as equivalent.
+        if normalized_data_version in {"1", "1.0", "1.0.0"}:
+            data["schema_version"] = "1.0.0"
+        elif normalized_data_version.startswith("0") or not normalized_data_version:
             data = migrate_collection_metadata(data)
             # Note: In LanceDB, we don't auto-save migrated data here
             # It will be saved when the collection is next updated

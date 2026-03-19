@@ -1408,6 +1408,34 @@ class TestCollectionInfo:
         assert collection.embedding_dimension is None
         assert collection.is_initialized is False
 
+    def test_collection_info_from_storage_compact_v1_versions(self):
+        """Compact v1 schema versions should be accepted as current."""
+        for version in ("1", "1.0", "1.0.0"):
+            storage_data = {
+                "name": "test_collection",
+                "schema_version": version,
+                "embedding_model_id": "text-embedding-ada-002",
+                "embedding_dimension": 1536,
+                "documents": 1,
+                "processed_documents": 1,
+                "parses": 1,
+                "chunks": 2,
+                "embeddings": 2,
+                "document_names": '["doc1.pdf"]',
+                "collection_locked": False,
+                "allow_mixed_parse_methods": False,
+                "skip_config_validation": False,
+                "created_at": "2024-01-01T00:00:00",
+                "updated_at": "2024-01-02T00:00:00",
+                "last_accessed_at": "2024-01-02T00:00:00",
+                "extra_metadata": "{}",
+            }
+
+            collection = CollectionInfo.from_storage(storage_data)
+            assert collection.schema_version == "1.0.0"
+            assert collection.embedding_model_id == "text-embedding-ada-002"
+            assert collection.embedding_dimension == 1536
+
     def test_collection_info_to_storage(self):
         """Test serializing CollectionInfo to storage format."""
         collection = CollectionInfo(

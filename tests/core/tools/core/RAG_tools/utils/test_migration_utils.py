@@ -53,6 +53,27 @@ class TestMigrateCollectionMetadata:
     @patch(
         "xagent.core.tools.core.RAG_tools.utils.migration_utils._infer_embedding_config_from_collection"
     )
+    def test_migrate_compact_v1_versions_should_not_reinfer(self, mock_infer):
+        """Compact v1 versions (1/1.0) should be treated as up-to-date."""
+        mock_infer.return_value = ("should-not-be-used", 999)
+
+        for version in ("1", "1.0", "1.0.0"):
+            data = {
+                "schema_version": version,
+                "name": "test_collection",
+                "embedding_model_id": "text-embedding-ada-002",
+                "embedding_dimension": 1536,
+            }
+            result = migrate_collection_metadata(data)
+            assert result["schema_version"] == "1.0.0"
+            assert result["embedding_model_id"] == "text-embedding-ada-002"
+            assert result["embedding_dimension"] == 1536
+
+        mock_infer.assert_not_called()
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.utils.migration_utils._infer_embedding_config_from_collection"
+    )
     def test_migrate_with_embedding_inference(self, mock_infer):
         """Test migration with embedding config inference."""
         mock_infer.return_value = ("text-embedding-ada-002", 1536)

@@ -10,6 +10,33 @@ from .string_utils import escape_lancedb_string
 logger = logging.getLogger(__name__)
 
 
+def _normalize_schema_version(version: Any) -> str:
+    """Normalize schema version to ``major.minor.patch`` string.
+
+    Examples:
+        1 -> "1.0.0"
+        "1.0" -> "1.0.0"
+        "1.0.0" -> "1.0.0"
+    """
+    raw = str(version).strip() if version is not None else "0.0.0"
+    if not raw:
+        return "0.0.0"
+    parts = raw.split(".")
+    numeric_parts: list[str] = []
+    for part in parts[:3]:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        numeric_parts.append(digits or "0")
+    while len(numeric_parts) < 3:
+        numeric_parts.append("0")
+    return ".".join(numeric_parts[:3])
+
+
+def _version_tuple(version: str) -> Tuple[int, int, int]:
+    """Convert normalized version string to tuple for comparison."""
+    major, minor, patch = _normalize_schema_version(version).split(".")
+    return int(major), int(minor), int(patch)
+
+
 def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
     """Migrate legacy collection metadata to current schema version.
 
@@ -21,10 +48,11 @@ def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     data = legacy_data.copy()
     current_version = "1.0.0"
-    data_version = data.get("schema_version", "0.0.0")
+    data_version = _normalize_schema_version(data.get("schema_version", "0.0.0"))
+    data["schema_version"] = data_version
     collection_name = data.get("name", "unknown")
 
-    logger.info(
+    logger.debug(
         f"[MIGRATION_START] Collection: {collection_name}, From: {data_version}, To: {current_version}"
     )
     logger.debug(
@@ -33,17 +61,26 @@ def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         # Apply migrations sequentially
-        while data_version < current_version:
+        while _version_tuple(data_version) < _version_tuple(current_version):
             previous_version = data_version
             if data_version == "0.0.0":
                 data = _migrate_0_0_0_to_1_0_0(data)
                 data_version = "1.0.0"
 
-            logger.info(
+            # Safety guard: avoid infinite loops if a migration step does not advance version.
+            if data_version == previous_version:
+                logger.warning(
+                    "[MIGRATION_NO_PROGRESS] Collection '%s' migration stopped at %s",
+                    collection_name,
+                    data_version,
+                )
+                break
+
+            logger.debug(
                 f"[MIGRATION_STEP] {collection_name}: {previous_version} -> {data_version} completed."
             )
 
-        logger.info(
+        logger.debug(
             f"[MIGRATION_SUCCESS] Collection '{collection_name}' is now at version {data_version}"
         )
         return data
@@ -66,7 +103,7 @@ def _migrate_0_0_0_to_1_0_0(data: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if embedding_model_id:
-        logger.info(
+        logger.debug(
             f"[MIGRATION_INFERENCE] Inferred embedding model '{embedding_model_id}' "
             f"(dimension: {embedding_dimension}) for collection '{collection_name}'"
         )
@@ -130,13 +167,13 @@ def _infer_embedding_config_from_collection(
         # Get all table names that contain embeddings
         table_names_fn = getattr(conn, "table_names", None)
         if table_names_fn is None:
-            logger.info(
+            logger.debug(
                 f"LanceDB connection missing table_names() for collection '{collection_name}' - will use lazy initialization"
             )
             return None, None
         all_table_names = table_names_fn()
         if all_table_names is None:
-            logger.info(
+            logger.debug(
                 f"No table names returned for collection '{collection_name}' - will use lazy initialization"
             )
             return None, None
@@ -146,7 +183,7 @@ def _infer_embedding_config_from_collection(
         logger.debug(f"Found {len(table_names)} embedding tables: {table_names}")
 
         if not table_names:
-            logger.info(
+            logger.debug(
                 f"No embedding tables found for collection '{collection_name}' - will use lazy initialization"
             )
             return None, None
@@ -221,12 +258,12 @@ def _infer_embedding_config_from_collection(
                 continue
 
         if not model_stats:
-            logger.info(
+            logger.debug(
                 f"No vectors found for collection '{collection_name}' in any embedding table - will use lazy initialization"
             )
             return None, None
 
-        logger.info(
+        logger.debug(
             f"Found vectors from {len(model_stats)} different models for collection '{collection_name}': {list(model_stats.keys())}"
         )
 
@@ -240,7 +277,7 @@ def _infer_embedding_config_from_collection(
         embedding_model_id = _model_tag_to_model_id(model_tag)
         embedding_dimension = stats["dimension"]
 
-        logger.info(
+        logger.debug(
             f"Selected embedding model '{embedding_model_id}' (dimension: {embedding_dimension}) "
             f"for collection '{collection_name}' based on {stats['count']} vectors"
         )
