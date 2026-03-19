@@ -905,11 +905,16 @@ async def delete_collection_api(
             deleted = (
                 db.query(UploadedFile)
                 .filter(
+                    # IMPORTANT:
+                    # Constrain by user_id first, then match by storage_path.
+                    # Otherwise, top-level OR would delete other users' files
+                    # in the same collection and/or delete all files belonging
+                    # to the user regardless of collection scope.
+                    UploadedFile.user_id == int(_user.id),
                     or_(
-                        UploadedFile.user_id == int(_user.id),
                         UploadedFile.storage_path.startswith(prefix),
                         UploadedFile.storage_path == dir_str,
-                    )
+                    ),
                 )
                 .delete(synchronize_session=False)
             )
