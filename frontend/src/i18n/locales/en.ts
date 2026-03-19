@@ -1473,11 +1473,14 @@ Build when you need.`
       webIngestFailed: "Website import failed",
       deleteFailed: "Failed to delete knowledge base: {name}",
       deleteFailedGeneric: "Failed to delete knowledge base",
+      batchDeleteFailed: "Failed to batch delete knowledge bases",
       unsupportedFileType: "Some file formats are not supported and have been skipped",
       failedAtStep: "Failed at step: {step}",
     },
     actions: {
       deleteConfirm: "Are you sure you want to delete knowledge base {name}? This action cannot be undone.",
+      deleteConfirmWithName: "Are you sure you want to delete knowledge base \"{name}\"? This action cannot be undone.",
+      batchDeleteConfirm: "Are you sure you want to delete {count} selected knowledge bases? This action cannot be undone.",
     },
     loading: {
       loadingKB: "Loading knowledge base...",
@@ -1486,8 +1489,8 @@ Build when you need.`
       title: "Knowledge Base Management",
       description: "Manage document collections and search indices",
       new: "New Knowledge Base",
-      collectionCount: "{count} total",
-      collectionCountFiltered: "{filtered} matched / {total} total",
+      totalCount: "Total {total}",
+      matchCount: "Matched {matched} / Total {total}",
     },
     search: {
       placeholder: "Search knowledge base...",
@@ -1499,11 +1502,10 @@ Build when you need.`
       deselectAll: "Deselect all",
       deleteSelected: "Delete selected ({count})",
     },
-    batchDelete: {
-      confirm: "Delete {count} selected knowledge bases? This cannot be undone.",
-      success: "Deleted {count} knowledge base(s)",
-      partialFailure: "{count} deletion(s) failed",
-      failed: "Batch delete failed",
+    messages: {
+      deleteSuccess: "Knowledge base deleted",
+      batchDeleteSuccess: "Deleted {count} knowledge bases",
+      batchDeleteFailedCount: "{count} failed to delete",
     },
     card: {
       documentsLabel: "Documents",
@@ -1511,13 +1513,14 @@ Build when you need.`
       embeddingsLabel: "Vectors",
       parsesLabel: "Parses",
       noDescription: "No description",
+      ownerLabel: "Owners: {owners}",
       actions: {
         viewDetail: "View Details",
+        delete: "Delete knowledge base",
       },
       status: {
         active: "Active",
       },
-      ownerUsers: "Owners",
     },
     empty: {
       noKB: "No knowledge base",

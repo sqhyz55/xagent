@@ -39,6 +39,11 @@ interface AdminUser {
   username: string
 }
 
+interface AdminUserListResponse {
+  users?: AdminUser[]
+  pages?: number
+}
+
 export function KnowledgeBasePage() {
   const { user } = useAuth()
   const { t } = useI18n()
@@ -63,20 +68,40 @@ export function KnowledgeBasePage() {
     const fetchAdminUsers = async () => {
       if (!user?.is_admin) return
       try {
-        const params = new URLSearchParams({
-          page: "1",
-          size: "100",
-        })
-        const response = await apiRequest(`${getApiUrl()}/api/admin/users?${params.toString()}`)
-        if (!response.ok) {
-          return
-        }
-        const data = await response.json()
-        const users: AdminUser[] = data.users || []
         const map: Record<number, string> = {}
-        for (const u of users) {
-          map[u.id] = u.username
+
+        // API validation requires size <= 100; fetch all pages to avoid
+        // missing owner names when user count grows.
+        const pageSize = 100
+        const maxPagesToScan = 1000
+        let page = 1
+        let totalPages: number | null = null
+
+        while (page <= maxPagesToScan && (totalPages === null || page <= totalPages)) {
+          const params = new URLSearchParams({
+            page: page.toString(),
+            size: pageSize.toString(),
+          })
+          const response = await apiRequest(`${getApiUrl()}/api/admin/users?${params.toString()}`)
+          if (!response.ok) {
+            break
+          }
+
+          const data: AdminUserListResponse = await response.json()
+          const users: AdminUser[] = data.users || []
+          for (const u of users) {
+            map[u.id] = u.username
+          }
+
+          if (typeof data.pages === "number" && data.pages > 0) {
+            totalPages = data.pages
+          } else if (users.length < pageSize) {
+            break
+          }
+
+          page += 1
         }
+
         setAdminUsers(map)
       } catch (err) {
         console.error("Failed to load admin user list for KB owners display:", err)
@@ -168,6 +193,8 @@ export function KnowledgeBasePage() {
         throw new Error(warnings[0] || message || t("kb.errors.deleteFailed", { name: targetCollection }))
       }
 
+      toast.success(t("kb.messages.deleteSuccess"))
+
       setCollectionToDelete(null)
       setSelectedCollection(null)
       setIsDrawerOpen(false)
@@ -203,7 +230,9 @@ export function KnowledgeBasePage() {
   const handleBatchDelete = async () => {
     const names = Array.from(selectedNames)
     if (names.length === 0) return
-    const confirmed = window.confirm(t("kb.batchDelete.confirm", { count: names.length }))
+    const confirmed = window.confirm(
+      t("kb.actions.batchDeleteConfirm", { count: names.length }),
+    )
     if (!confirmed) return
 
     try {
@@ -215,17 +244,17 @@ export function KnowledgeBasePage() {
       if (!response.ok) {
         const err = await response.json().catch(() => ({}))
         throw new Error(
-          typeof err.detail === "string" ? err.detail : t("kb.batchDelete.failed"),
+          typeof err.detail === "string" ? err.detail : t("kb.errors.batchDeleteFailed"),
         )
       }
       const data = await response.json()
       const deleted = data.deleted?.length ?? 0
       const failed = data.failed?.length ?? 0
       if (deleted > 0) {
-        toast.success(t("kb.batchDelete.success", { count: deleted }))
+        toast.success(t("kb.messages.batchDeleteSuccess", { count: deleted }))
       }
       if (failed > 0) {
-        toast.error(t("kb.batchDelete.partialFailure", { count: failed }))
+        toast.error(t("kb.messages.batchDeleteFailedCount", { count: failed }))
       }
       setSelectedNames(new Set())
       setIsManageMode(false)
@@ -255,11 +284,11 @@ export function KnowledgeBasePage() {
             <h1 className="text-3xl font-bold">{t("kb.header.title")}</h1>
             <Badge variant="secondary" className="font-normal">
               {searchQuery
-                ? t("kb.header.collectionCountFiltered", {
-                    filtered: filteredCollections.length,
+                ? t("kb.header.matchCount", {
+                    matched: filteredCollections.length,
                     total: collections.length,
                   })
-                : t("kb.header.collectionCount", { count: collections.length })}
+                : t("kb.header.totalCount", { total: collections.length })}
             </Badge>
           </div>
           <p className="text-muted-foreground">{t("kb.header.description")}</p>
@@ -324,7 +353,7 @@ export function KnowledgeBasePage() {
             {filteredCollections.map((collection) => (
               <Card
                 key={collection.name}
-                className={`py-0 hover:shadow-lg transition-shadow overflow-hidden flex flex-col ${isManageMode ? "cursor-pointer" : "cursor-pointer"}`}
+                className="py-0 hover:shadow-lg transition-shadow overflow-hidden flex flex-col cursor-pointer"
                 onClick={() => {
                   if (isManageMode) toggleSelect(collection.name)
                   else handleViewDetail(collection.name)
@@ -369,14 +398,16 @@ export function KnowledgeBasePage() {
                               e.stopPropagation()
                               setCollectionToDelete(collection.name)
                             }}
-                            title={t("common.delete")}
+                            title={t("kb.card.actions.delete")}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                         {user?.is_admin && collection.owners && collection.owners.length > 0 && (
                           <p className="text-xs text-muted-foreground">
-                            {t("kb.card.ownerUsers")}: {collection.owners.map((id) => adminUsers[id] ?? id).join(", ")}
+                            {t("kb.card.ownerLabel", {
+                              owners: collection.owners.map((id) => adminUsers[id] ?? id).join(", "),
+                            })}
                           </p>
                         )}
                       </div>
