@@ -54,6 +54,10 @@ DEFAULT_LANCEDB_BATCH_DELAY_MS: Final[int] = 0
 
 Set to 0 to disable any artificial throttling.
 """
+
+DEFAULT_LANCEDB_BATCH_SIZE: Final[int] = 1000
+"""Default batch size for embedding writes to LanceDB (env: LANCEDB_BATCH_SIZE)."""
+
 DEFAULT_VECTOR_STORE_SCAN_LIMIT: Final[int] = 10_000
 """Default max rows scanned in vector-store document listing operations."""
 

@@ -19,9 +19,11 @@ from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
 
-from ......providers.vector_store.lancedb import get_connection_from_env
-from ..core.config import DEFAULT_LANCEDB_BATCH_DELAY_MS, IndexPolicy
-from ..core.config import IndexPolicy
+from ..core.config import (
+    DEFAULT_LANCEDB_BATCH_DELAY_MS,
+    DEFAULT_LANCEDB_BATCH_SIZE,
+    IndexPolicy,
+)
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
@@ -45,6 +47,11 @@ from ..utils.user_permissions import UserPermissions
 from .index_manager import get_index_manager
 
 logger = logging.getLogger(__name__)
+
+
+def get_connection_from_env() -> Any:
+    """Compatibility connection accessor for tests and legacy call sites."""
+    return get_vector_index_store().get_raw_connection()
 
 
 def _is_non_recoverable_merge_error(error: Exception) -> bool:
@@ -111,9 +118,122 @@ def _is_non_recoverable_merge_error(error: Exception) -> bool:
         )
 
     return is_non_recoverable
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
+
+
+def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
+    """Open an embeddings table for model_id with legacy fallback.
+
+    If only the legacy table exists, this function performs a forward migration:
+    it creates the Hub-ID-named table and copies legacy rows into it (rewriting
+    the per-row ``model`` field to the Hub model ID).
+
+    Returns:
+        (table, table_name_used)
+    """
+    cleaned = (model_id or "").strip()
+    if not cleaned:
+        raise VectorValidationError("model_id must be a non-empty string")
+
+    primary_table_name = f"embeddings_{to_model_tag(cleaned)}"
+
+    # 1) Fast path: primary exists
+    try:
+        return conn.open_table(primary_table_name), primary_table_name
+    except Exception as primary_exc:  # noqa: BLE001
+        last_error: Exception | None = primary_exc
+
+    # 2) Legacy fallback + forward migration
+    legacy_table_name: str | None = None
+    try:
+        from ..utils.model_resolver import resolve_embedding_adapter
+
+        cfg, _ = resolve_embedding_adapter(cleaned)
+        legacy_table_name = f"embeddings_{to_model_tag(cfg.model_name)}"
+    except Exception:
+        legacy_table_name = None
+
+    if legacy_table_name:
+        try:
+            legacy_table = conn.open_table(legacy_table_name)
+        except Exception as legacy_exc:  # noqa: BLE001
+            last_error = legacy_exc
+        else:
+            # Migrate legacy -> primary (best-effort, idempotent)
+            try:
+                vector_dim: int | None = None
+                try:
+                    vector_field = legacy_table.schema.field("vector")
+                    list_size = getattr(vector_field.type, "list_size", None)
+                    if list_size is not None:
+                        vector_dim = int(list_size)
+                except Exception:
+                    vector_dim = None
+
+                if vector_dim is None:
+                    sample = legacy_table.search().limit(1).to_pandas()
+                    if not sample.empty and "vector" in sample.columns:
+                        vector_dim = len(sample.iloc[0]["vector"])
+
+                ensure_embeddings_table(
+                    conn, to_model_tag(cleaned), vector_dim=vector_dim
+                )
+                primary_table = conn.open_table(primary_table_name)
+
+                # Copy all rows (small batches). Rewrite model -> Hub ID.
+                # NOTE: This is an automatic forward migration and should be safe to re-run.
+                batch_size = int(
+                    os.getenv("LANCEDB_BATCH_SIZE", str(DEFAULT_LANCEDB_BATCH_SIZE))
+                )
+                offset = 0
+                while True:
+                    df = (
+                        legacy_table.search()
+                        .limit(batch_size)
+                        .offset(offset)
+                        .to_pandas()
+                    )
+                    if df.empty:
+                        break
+                    df["model"] = cleaned
+                    (
+                        primary_table.merge_insert(
+                            on=[
+                                "collection",
+                                "doc_id",
+                                "chunk_id",
+                                "parse_hash",
+                                "model",
+                            ]
+                        )
+                        .when_matched_update_all()
+                        .when_not_matched_insert_all()
+                        .execute(df)
+                    )
+                    offset += len(df)
+
+                logger.info(
+                    "Forward-migrated embeddings table '%s' -> '%s' for hub_id=%s",
+                    legacy_table_name,
+                    primary_table_name,
+                    cleaned,
+                )
+                return primary_table, primary_table_name
+            except Exception as migrate_exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to forward-migrate legacy embeddings table '%s' -> '%s' (hub_id=%s): %s. "
+                    "Falling back to legacy table for this request.",
+                    legacy_table_name,
+                    primary_table_name,
+                    cleaned,
+                    migrate_exc,
+                )
+                return legacy_table, legacy_table_name
+
+    raise VectorValidationError(
+        f"Embeddings table for model '{cleaned}' does not exist or is inaccessible: {last_error}"
+    )
+
+
 def _should_reindex(
     table: Any,
     table_name: str,
@@ -270,20 +390,12 @@ def validate_embed_model(conn: Any, model_tag: str) -> None:
             f"Invalid model_tag format: {model_tag}. Only alphanumeric, underscore, and hyphen allowed."
         )
 
-    # Validate that the corresponding table exists
-    table_name = f"embeddings_{model_tag}"
+    # Validate that at least one candidate table exists (primary hub-id naming, legacy fallback).
     try:
-        conn.open_table(table_name)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "Embeddings table %s for model %s not found or inaccessible: %s",
-            table_name,
-            model_tag,
-            e,
-        )
-        raise VectorValidationError(
-            f"Embeddings table for model '{model_tag}' does not exist or is inaccessible: {str(e)}"
-        ) from e
+        _, used_name = _open_embeddings_table(conn, model_tag)
+        logger.debug("validate_embed_model resolved table: %s", used_name)
+    except VectorValidationError:
+        raise
 
 
 def get_stored_vector_dimension(
@@ -304,9 +416,7 @@ def get_stored_vector_dimension(
         Vector dimension if found, None otherwise
     """
     try:
-        normalized_model_tag = to_model_tag(model_tag)
-        table_name = f"embeddings_{normalized_model_tag}"
-        table = conn.open_table(table_name)
+        table, _ = _open_embeddings_table(conn, model_tag)
 
         # Apply user filter for multi-tenancy
         user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
@@ -422,8 +532,21 @@ def read_chunks_for_embedding(
                 embedding_config, _ = resolve_embedding_adapter(model)
                 vector_dim = embedding_config.dimension
 
+            # Ensure primary (Hub ID based) table exists for new writes/reads.
             ensure_embeddings_table(conn, model_tag, vector_dim=vector_dim)
-            embeddings_table = conn.open_table(embeddings_table_name)
+            try:
+                embeddings_table = conn.open_table(embeddings_table_name)
+            except Exception as exc:  # noqa: BLE001
+                # Legacy fallback: open table based on resolved provider model_name if present.
+                embeddings_table, embeddings_table_name = _open_embeddings_table(
+                    conn, model
+                )
+                logger.warning(
+                    "Primary embeddings table '%s' not found (%s); falling back to legacy table '%s'",
+                    f"embeddings_{model_tag}",
+                    exc,
+                    embeddings_table_name,
+                )
 
             # Get existing embeddings for these chunks
             # Only select chunk_id column to avoid loading unnecessary vector data
@@ -758,7 +881,9 @@ def _process_model_embeddings(
     )
 
     # Process embeddings in batches to prevent memory issues and LanceDB spills
-    original_batch_size = int(os.getenv("LANCEDB_BATCH_SIZE", "1000"))
+    original_batch_size = int(
+        os.getenv("LANCEDB_BATCH_SIZE", str(DEFAULT_LANCEDB_BATCH_SIZE))
+    )
     batch_size = original_batch_size
     total_batches_for_logging = (
         len(model_embeddings) + original_batch_size - 1

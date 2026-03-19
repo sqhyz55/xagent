@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, cast
 
+from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.factory import get_vector_index_store
 from .string_utils import escape_lancedb_string
 
@@ -241,8 +242,31 @@ def _infer_embedding_config_from_collection(
         )
         model_tag, stats = best_model
 
-        # Convert model tag back to model ID
-        embedding_model_id = _model_tag_to_model_id(model_tag)
+        # Resolve Hub embedding model ID from table tag (preferred).
+        embedding_model_id = None
+        try:
+            from xagent.core.model.model import EmbeddingModelConfig
+
+            from .model_resolver import _get_or_init_model_hub
+
+            hub = _get_or_init_model_hub()
+            if hub is not None:
+                models = list(hub.list().values())
+                for cfg in models:
+                    if not isinstance(cfg, EmbeddingModelConfig):
+                        continue
+                    if (
+                        to_model_tag(cfg.id) == model_tag
+                        or to_model_tag(cfg.model_name) == model_tag
+                    ):
+                        embedding_model_id = cfg.id
+                        break
+        except Exception:
+            embedding_model_id = None
+
+        # Fallback: best-effort reverse normalization (legacy behavior)
+        if not embedding_model_id:
+            embedding_model_id = _model_tag_to_model_id(model_tag)
         embedding_dimension = stats["dimension"]
 
         logger.info(

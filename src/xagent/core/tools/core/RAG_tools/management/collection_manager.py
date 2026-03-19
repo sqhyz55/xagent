@@ -534,6 +534,24 @@ def rebuild_collection_metadata() -> None:
     table_names = conn.table_names()  # type: ignore[attr-defined]
     embeddings_tables = [t for t in table_names if t.startswith("embeddings_")]
 
+    # Build lookup from legacy/new table tags to Hub model IDs.
+    hub_tag_to_id: dict[str, tuple[str, Optional[int]]] = {}
+    try:
+        from xagent.core.model.model import EmbeddingModelConfig
+
+        from ..LanceDB.model_tag_utils import to_model_tag
+        from ..utils.model_resolver import _get_or_init_model_hub
+
+        hub = _get_or_init_model_hub()
+        if hub is not None:
+            for cfg in hub.list().values():
+                if not isinstance(cfg, EmbeddingModelConfig):
+                    continue
+                hub_tag_to_id[to_model_tag(cfg.id)] = (cfg.id, cfg.dimension)
+                hub_tag_to_id[to_model_tag(cfg.model_name)] = (cfg.id, cfg.dimension)
+    except Exception:
+        hub_tag_to_id = {}
+
     # Save each collection to metadata table
     for collection in result.collections:
         try:
@@ -549,12 +567,15 @@ def rebuild_collection_metadata() -> None:
                         f"collection = '{escape_lancedb_string(collection.name)}'"
                     )
                     if count > 0:
-                        # Extract model name from table name
-                        # Table names use underscores (e.g., embeddings_text_embedding_v4)
-                        # Model IDs use hyphens (e.g., text-embedding-v4)
-                        embedding_model_id = table_name.replace(
-                            "embeddings_", ""
-                        ).replace("_", "-")
+                        suffix = table_name.replace("embeddings_", "", 1)
+                        # Prefer Hub ID mapping (single source of truth).
+                        if suffix in hub_tag_to_id:
+                            embedding_model_id, inferred_dim = hub_tag_to_id[suffix]
+                            if inferred_dim is not None:
+                                embedding_dimension = inferred_dim
+                        else:
+                            # Legacy fallback: best-effort reverse normalization.
+                            embedding_model_id = suffix.replace("_", "-")
 
                         # Get vector dimension from schema
                         schema = table.schema

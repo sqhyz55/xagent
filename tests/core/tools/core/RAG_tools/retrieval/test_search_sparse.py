@@ -356,13 +356,22 @@ class TestSearchSparse:
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
     )
-    def test_search_sparse_database_error(self, mock_get_conn: Mock) -> None:
+    @patch(
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.resolve_embedding_adapter"
+    )
+    def test_search_sparse_database_error(
+        self, mock_resolve: Mock, mock_get_conn: Mock
+    ) -> None:
         """Test error handling during database operation."""
         mock_conn = Mock()
         mock_get_conn.return_value = mock_conn
         # Simulate open_table failure
         db_exception_message = "DB connection failed"
         mock_conn.open_table.side_effect = Exception(db_exception_message)
+
+        mock_cfg = Mock()
+        mock_cfg.model_name = "legacy_model"
+        mock_resolve.return_value = (mock_cfg, object())
 
         response = search_sparse_module.search_sparse(
             collection="test_col",
@@ -384,7 +393,9 @@ class TestSearchSparse:
 
         # Verify calls
         mock_get_conn.assert_called_once()
-        mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+        assert mock_conn.open_table.call_count == 2
+        mock_conn.open_table.assert_any_call("embeddings_test_model")
+        mock_conn.open_table.assert_any_call("embeddings_legacy_model")
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"

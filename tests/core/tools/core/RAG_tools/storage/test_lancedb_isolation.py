@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import ensure_documents_table
+from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+    ensure_documents_table,
+)
 from xagent.core.tools.core.RAG_tools.storage import (
     get_vector_index_store,
     reset_kb_write_coordinator,
@@ -49,4 +50,3 @@ def test_tests_do_not_pollute_default_lancedb_dir(
 
     assert default_exists_after == default_exists_before
     assert default_listing_after == default_listing_before
-

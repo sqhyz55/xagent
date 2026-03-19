@@ -13,6 +13,7 @@ from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.factory import get_vector_index_store
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata
+from ..utils.model_resolver import resolve_embedding_adapter
 from ..utils.string_utils import build_lancedb_filter_expression
 from ..vector_storage.index_manager import get_index_manager
 
@@ -59,11 +60,26 @@ def search_dense_engine(
         # Get database connection
         conn = get_connection_from_env()
 
-        # Build table name
+        # Build primary table name (Hub model ID is the single source of truth)
         table_name = f"embeddings_{to_model_tag(model_tag)}"
 
-        # Open table
-        table = conn.open_table(table_name)
+        # Open table with legacy fallback (older deployments used provider model_name for naming)
+        try:
+            table = conn.open_table(table_name)
+        except Exception as primary_exc:  # noqa: BLE001
+            try:
+                cfg, _ = resolve_embedding_adapter(model_tag)
+                legacy_table_name = f"embeddings_{to_model_tag(cfg.model_name)}"
+                table = conn.open_table(legacy_table_name)
+                logger.warning(
+                    "Primary embeddings table '%s' not found (%s); falling back to legacy table '%s'",
+                    table_name,
+                    primary_exc,
+                    legacy_table_name,
+                )
+                table_name = legacy_table_name
+            except Exception:
+                raise
 
         # Check and create index if needed
         index_manager = get_index_manager()
