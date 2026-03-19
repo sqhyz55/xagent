@@ -1474,36 +1474,18 @@ def _check_can_delete_collection(
     user_id: int,
     is_admin: bool,
 ) -> None:
-    """Raise HTTPException if current user cannot delete this collection."""
-    if is_admin:
-        return
-    from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-        ensure_documents_table,
-    )
-    from ...core.tools.core.RAG_tools.utils.string_utils import (
-        build_lancedb_filter_expression,
-    )
-    from ...providers.vector_store.lancedb import get_connection_from_env
+    """Run lightweight validation before deletion.
 
-    conn = get_connection_from_env()
-    ensure_documents_table(conn)
-    table = conn.open_table("documents")
-    base_filter = build_lancedb_filter_expression({"collection": collection_name})
-    total_count = (
-        int(table.count_rows(base_filter)) if base_filter else int(table.count_rows())
-    )
-    own_filter = build_lancedb_filter_expression(
-        {"collection": collection_name, "user_id": str(user_id)}
-    )
-    own_count = int(table.count_rows(own_filter)) if own_filter else 0
-    if total_count > 0 and own_count < total_count:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Only admin users can delete collections containing documents "
-                "from other users."
-            ),
-        )
+    IMPORTANT:
+    We intentionally avoid pre-checking ownership using count comparisons
+    (total_count vs own_count) because that creates a TOCTTOU race window.
+    Authorization is enforced at delete execution time in delete_collection()
+    through tenant-aware predicates (user_id/is_admin).
+    """
+    _ = (user_id, is_admin)
+
+    if not collection_name or not collection_name.strip():
+        raise HTTPException(status_code=422, detail="Collection name cannot be empty")
 
 
 def _perform_kb_collection_delete(
@@ -1687,7 +1669,14 @@ async def batch_delete_collections_api(
     _user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> BatchDeleteCollectionsResponse:
-    """Delete multiple collections in one request."""
+    """Delete multiple collections in one request.
+
+    For each name, runs the same pipeline as single delete (permissions, physical
+    trash, LanceDB, ``UploadedFile`` cleanup). Per-item failures are collected in
+    ``failed``; they do not roll back earlier successful deletions in the batch.
+    LanceDB removal uses ``delete_collection`` with tenant-aware ``user_id`` and
+    ``is_admin`` filtering. Returns ``deleted`` and ``failed`` name lists.
+    """
     user_id = int(_user.id)
     is_admin = bool(_user.is_admin)
     deleted: List[str] = []

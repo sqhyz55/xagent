@@ -2,22 +2,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Protocol
+from typing import Any
 
 import pyarrow as pa  # type: ignore
+import pyarrow.compute as pc  # type: ignore
 from lancedb.db import DBConnection
-
-
-class DataTypeLike(Protocol):
-    """Structural type placeholder for pyarrow DataType-like values."""
-
-
-class FieldLike(Protocol):
-    """Structural field contract used by schema migration helpers."""
-
-    name: str
-    type: DataTypeLike
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +19,6 @@ __all__ = [
     "ensure_prompt_templates_table",
     "ensure_ingestion_runs_table",
     "ensure_collection_config_table",
-    "ensure_collection_metadata_table",
-    "check_table_needs_migration",
 ]
 
 
@@ -43,94 +30,161 @@ def _table_exists(conn: DBConnection, name: str) -> bool:
         return False
 
 
-def _is_table_already_exists_error(exc: Exception) -> bool:
-    """Best-effort check for table-already-exists errors across LanceDB versions."""
-    message = str(exc).lower()
-    return "already exists" in message and "table" in message
-
-
-def _get_sql_default_for_pa_type(pa_type: DataTypeLike) -> str:
-    """Map PyArrow type to LanceDB SQL default value expression."""
-    if pa.types.is_string(pa_type) or pa.types.is_large_string(pa_type):
-        return "''"
-    if pa.types.is_integer(pa_type):
-        return "0"
-    if pa.types.is_floating(pa_type):
-        return "0.0"
-    if pa.types.is_boolean(pa_type):
-        return "false"
-    if pa.types.is_timestamp(pa_type):
-        return "CAST(NULL AS TIMESTAMP)"
-    return "NULL"
-
-
-def _ensure_schema_fields(
-    conn: DBConnection, table_name: str, target_schema: Iterable[FieldLike]
+def _validate_schema_fields(
+    conn: DBConnection, table_name: str, required_fields: list[str]
 ) -> None:
-    """Ensure an existing table matches the target schema by adding missing columns.
+    """Validate that an existing table contains all required fields.
 
-    Only ADDS missing columns. Does not delete extra columns nor modify existing types.
+    Args:
+        conn: LanceDB connection
+        table_name: Name of the table to validate
+        required_fields: List of required field names
+
+    Raises:
+        ValueError: If the table exists but is missing required fields.
     """
-    if not _table_exists(conn, table_name):
-        return
-
-    table = conn.open_table(table_name)
-    existing_schema = table.schema
-    existing_field_names = {field.name for field in existing_schema}
-    missing_fields = [f for f in target_schema if f.name not in existing_field_names]
-
-    if not missing_fields:
-        return
-
-    logger.info(
-        "Auto-migrating schema for table '%s'. Adding missing fields: %s",
-        table_name,
-        [f.name for f in missing_fields],
-    )
-    new_cols = {}
-    for field in missing_fields:
-        default_expr = _get_sql_default_for_pa_type(field.type)
-        new_cols[field.name] = default_expr
-
-    try:
-        table.add_columns(new_cols)
-        logger.info("Successfully migrated schema for table '%s'", table_name)
-    except Exception as e:
-        logger.error("Failed to add columns to table '%s': %s", table_name, e)
-        raise
-
-
-def _create_table(
-    conn: DBConnection, name: str, schema: Iterable[FieldLike] | None = None
-) -> None:
-    # Avoid check-then-act race: attempt creation first.
-    try:
-        conn.create_table(name, schema=schema)
-    except Exception as exc:
-        if not _is_table_already_exists_error(exc):
-            raise
-
-    # Reconcile existing/new table schema after create attempt.
-    if schema:
-        _ensure_schema_fields(conn, name, schema)
-
-
-def _add_user_id_column(conn: DBConnection, table_name: str) -> None:
-    """Add missing `user_id` column with NULL default for migration correctness."""
     if not _table_exists(conn, table_name):
         return
 
     try:
         table = conn.open_table(table_name)
-        if "user_id" in table.schema.names:
-            return
-        logger.info("Migrating '%s' table: adding missing 'user_id' column", table_name)
-        # IMPORTANT: keep NULL default for migration correctness.
-        # Phase 1 backfill selects `user_id IS NULL`; using 0 or any sentinel
-        # here would make those legacy rows invisible to phase 1.
-        table.add_columns({"user_id": "cast(null as bigint)"})
+        existing_schema = table.schema
+        existing_field_names = {field.name for field in existing_schema}
+
+        missing_fields = [f for f in required_fields if f not in existing_field_names]
+
+        if missing_fields:
+            error_msg = (
+                f"Table '{table_name}' exists but is missing required fields: {missing_fields}. "
+                f"This is likely due to a schema upgrade. "
+                f"Please delete the existing table or manually add the missing fields. "
+                f"Note: During development, we do not provide automatic migration scripts. "
+                f"To upgrade, you can either:\n"
+                f"1. Delete the table (data will be lost): conn.drop_table('{table_name}')\n"
+                f"2. Manually add the missing fields using LanceDB's schema update capabilities"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+    except ValueError:
+        # Re-raise ValueError (our validation error)
+        raise
     except Exception as e:
-        logger.warning("Failed to check/migrate '%s' table schema: %s", table_name, e)
+        # Log other errors but don't fail - schema validation is best-effort
+        logger.warning(
+            f"Could not validate schema for table '{table_name}': {e}. "
+            f"Proceeding with table creation/usage."
+        )
+
+
+def _create_table(conn: DBConnection, name: str, schema: object | None = None) -> None:
+    if _table_exists(conn, name):
+        return
+    conn.create_table(name, schema=schema)
+
+
+def _validate_user_id_int64(table: object, table_name: str) -> None:
+    """Validate ``user_id`` column type and fail on non-int schema.
+
+    We require ``user_id`` to be Int64 for tenant-safe filtering. If an existing
+    table has ``user_id`` with a non-int type, automatic conversion is unsafe.
+    """
+    schema = getattr(table, "schema", None)
+    if schema is None:
+        return
+    names = getattr(schema, "names", None) or []
+    if "user_id" not in names:
+        return
+    try:
+        user_id_type = str(schema.field("user_id").type).lower()
+    except Exception:
+        return
+    if "int" not in user_id_type:
+        raise ValueError(
+            f"Table '{table_name}' has incompatible user_id type '{user_id_type}'. "
+            "Expected int64. Please back up data, recreate this table, and re-upload documents."
+        )
+
+
+def _build_schema_with_int64_user_id(existing_schema: Any) -> Any:
+    """Return a schema where ``user_id`` field is forced to ``int64``."""
+    fields: list[Any] = []
+    for field in existing_schema:
+        if field.name == "user_id":
+            fields.append(pa.field("user_id", pa.int64(), nullable=field.nullable))
+        else:
+            fields.append(field)
+    return pa.schema(fields)
+
+
+def _extract_invalid_user_id_examples(column: Any, limit: int = 5) -> list[str]:
+    """Extract sample invalid user_id values for error reporting."""
+    examples: list[str] = []
+    for chunk in column.chunks:
+        values = chunk.to_pylist()
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text == "":
+                examples.append("<empty>")
+                continue
+            try:
+                int(text)
+            except (TypeError, ValueError):
+                examples.append(repr(value))
+            if len(examples) >= limit:
+                return examples
+    return examples
+
+
+def _migrate_table_user_id_to_int64(conn: DBConnection, table_name: str) -> None:
+    """Physically migrate table ``user_id`` column to int64 with data conversion.
+
+    If conversion fails for any row, raise ``ValueError`` and ask user to re-upload.
+    """
+    table = conn.open_table(table_name)
+    schema = table.schema
+    if "user_id" not in schema.names:
+        return
+
+    user_id_type = str(schema.field("user_id").type).lower()
+    if "int" in user_id_type:
+        return
+
+    logger.info(
+        "Migrating table '%s': converting user_id from %s to int64",
+        table_name,
+        user_id_type,
+    )
+    arrow_table = table.to_arrow()
+    user_id_idx = arrow_table.schema.get_field_index("user_id")
+    user_id_col = arrow_table.column(user_id_idx)
+
+    try:
+        converted_user_id = pc.cast(user_id_col, pa.int64(), safe=True)
+    except Exception as exc:
+        invalid_examples = _extract_invalid_user_id_examples(user_id_col)
+        examples_text = ", ".join(invalid_examples) if invalid_examples else "N/A"
+        raise ValueError(
+            f"Failed to migrate table '{table_name}': user_id contains non-integer values. "
+            f"Examples: {examples_text}. Please re-upload documents."
+        ) from exc
+
+    migrated_table = arrow_table.set_column(
+        user_id_idx, pa.field("user_id", pa.int64()), converted_user_id
+    )
+    target_schema = _build_schema_with_int64_user_id(migrated_table.schema)
+    migrated_table = migrated_table.cast(target_schema, safe=False)
+
+    drop_table_fn = getattr(conn, "drop_table", None)
+    if drop_table_fn is None:
+        raise ValueError(
+            "Current LanceDB connection does not support drop_table; "
+            "cannot complete user_id schema migration safely. Please re-upload documents."
+        )
+    drop_table_fn(table_name)
+    conn.create_table(table_name, data=migrated_table)
+    _validate_user_id_int64(conn.open_table(table_name), table_name)
 
 
 def ensure_documents_table(conn: DBConnection) -> None:
@@ -138,7 +192,6 @@ def ensure_documents_table(conn: DBConnection) -> None:
         [
             pa.field("collection", pa.string()),
             pa.field("doc_id", pa.string()),
-            pa.field("file_id", pa.string()),
             pa.field("source_path", pa.string()),
             pa.field("file_type", pa.string()),
             pa.field("content_hash", pa.string()),
@@ -149,7 +202,23 @@ def ensure_documents_table(conn: DBConnection) -> None:
         ]
     )
 
-    _add_user_id_column(conn, "documents")
+    # Automatic migration for existing tables missing 'user_id'
+    if _table_exists(conn, "documents"):
+        try:
+            table = conn.open_table("documents")
+            if "user_id" not in table.schema.names:
+                logger.info(
+                    "Migrating 'documents' table: adding missing 'user_id' column"
+                )
+                # Add user_id column with null default, cast to bigint (int64)
+                table.add_columns({"user_id": "cast(null as bigint)"})
+            _migrate_table_user_id_to_int64(conn, "documents")
+            _validate_user_id_int64(conn.open_table("documents"), "documents")
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to check/migrate 'documents' table schema: {e}")
+
     _create_table(conn, "documents", schema=schema)
     # Note: backfill of file_id and user_id is now handled by standalone migration script:
     #   python -m xagent.migrations.lancedb.backfill_documents_file_id
@@ -170,16 +239,55 @@ def ensure_parses_table(conn: DBConnection) -> None:
         ]
     )
 
-    _add_user_id_column(conn, "parses")
+    # Automatic migration for existing tables missing 'user_id'
+    if _table_exists(conn, "parses"):
+        try:
+            table = conn.open_table("parses")
+            if "user_id" not in table.schema.names:
+                logger.info("Migrating 'parses' table: adding missing 'user_id' column")
+                table.add_columns({"user_id": "cast(null as bigint)"})
+            _migrate_table_user_id_to_int64(conn, "parses")
+            _validate_user_id_int64(conn.open_table("parses"), "parses")
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to check/migrate 'parses' table schema: {e}")
+
     _create_table(conn, "parses", schema=schema)
 
 
 def ensure_chunks_table(conn: DBConnection) -> None:
     """Ensure the chunks table exists with proper schema.
 
-    If the table already exists, we attempt best-effort schema evolution by
-    adding any missing columns (see _ensure_schema_fields).
+    This function creates the table if it doesn't exist, and validates that
+    existing tables contain all required fields (especially 'metadata').
+
+    Args:
+        conn: LanceDB connection
+
+    Raises:
+        ValueError: If the table exists but is missing required fields.
+            This typically happens when an old table schema doesn't include
+            the 'metadata' field. During development, we do not provide
+            automatic migration scripts. Users must either delete the table
+            or manually add the missing fields.
+
+    Note:
+        There's no upgrade path for existing chunks tables. Any deployment
+        with an existing table will hit schema-mismatch errors once the pipeline
+        starts writing a column that doesn't exist. If you encounter this error,
+        you need to either delete the existing table or manually add the missing
+        'metadata' field.
     """
+    # Required fields that must exist in the table (especially for schema validation)
+    required_fields = ["metadata"]
+
+    # Validate existing table schema before creating/using it
+    _validate_schema_fields(conn, "chunks", required_fields)
+    if _table_exists(conn, "chunks"):
+        _migrate_table_user_id_to_int64(conn, "chunks")
+        _validate_user_id_int64(conn.open_table("chunks"), "chunks")
+
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -199,8 +307,6 @@ def ensure_chunks_table(conn: DBConnection) -> None:
             pa.field("user_id", pa.int64()),
         ]
     )
-
-    _add_user_id_column(conn, "chunks")
     _create_table(conn, "chunks", schema=schema)
 
 
@@ -209,10 +315,38 @@ def ensure_embeddings_table(
 ) -> None:
     """Ensure the embeddings table exists with proper schema.
 
-    If the table already exists, we attempt best-effort schema evolution by
-    adding any missing columns (see _ensure_schema_fields).
+    This function creates the table if it doesn't exist, and validates that
+    existing tables contain all required fields (especially 'metadata').
+
+    Args:
+        conn: LanceDB connection
+        model_tag: Model tag used to construct the table name (e.g., 'bge_large')
+        vector_dim: Optional vector dimension for fixed-size vectors
+
+    Raises:
+        ValueError: If the table exists but is missing required fields.
+            This typically happens when an old table schema doesn't include
+            the 'metadata' field. During development, we do not provide
+            automatic migration scripts. Users must either delete the table
+            or manually add the missing fields.
+
+    Note:
+        There's no upgrade path for existing embeddings tables. Any deployment
+        with an existing table will hit schema-mismatch errors once the pipeline
+        starts writing a column that doesn't exist. If you encounter this error,
+        you need to either delete the existing table or manually add the missing
+        'metadata' field.
     """
     table_name = f"embeddings_{model_tag}"
+
+    # Required fields that must exist in the table (especially for schema validation)
+    required_fields = ["metadata"]
+
+    # Validate existing table schema before creating/using it
+    _validate_schema_fields(conn, table_name, required_fields)
+    if _table_exists(conn, table_name):
+        _migrate_table_user_id_to_int64(conn, table_name)
+        _validate_user_id_int64(conn.open_table(table_name), table_name)
 
     # Support dynamic vector dimension: if provided, create a FixedSizeList; otherwise allow variable-length
     vector_field_type = (
@@ -236,8 +370,6 @@ def ensure_embeddings_table(
             pa.field("user_id", pa.int64()),
         ]
     )
-
-    _add_user_id_column(conn, table_name)
     _create_table(
         conn,
         table_name,
@@ -246,7 +378,11 @@ def ensure_embeddings_table(
 
 
 def ensure_main_pointers_table(conn: DBConnection) -> None:
-    """Ensure the main_pointers table exists with proper schema."""
+    """Ensure the main_pointers table exists with proper schema.
+
+    Args:
+        conn: LanceDB connection
+    """
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -264,7 +400,11 @@ def ensure_main_pointers_table(conn: DBConnection) -> None:
 
 
 def ensure_prompt_templates_table(conn: DBConnection) -> None:
-    """Ensure the prompt_templates table exists with proper schema."""
+    """Ensure the prompt_templates table exists with proper schema.
+
+    Args:
+        conn: LanceDB connection
+    """
     table_name = "prompt_templates"
     schema = pa.schema(
         [
@@ -281,12 +421,33 @@ def ensure_prompt_templates_table(conn: DBConnection) -> None:
         ]
     )
 
-    _add_user_id_column(conn, table_name)
+    # Automatic migration for existing tables missing 'user_id'
+    if _table_exists(conn, table_name):
+        try:
+            table = conn.open_table(table_name)
+            if "user_id" not in table.schema.names:
+                logger.info(
+                    f"Migrating '{table_name}' table: adding missing 'user_id' column"
+                )
+                table.add_columns({"user_id": "cast(null as bigint)"})
+            _migrate_table_user_id_to_int64(conn, table_name)
+            _validate_user_id_int64(conn.open_table(table_name), table_name)
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to check/migrate '{table_name}' table schema: {e}")
+
     _create_table(conn, table_name, schema=schema)
 
 
 def ensure_ingestion_runs_table(conn: DBConnection) -> None:
-    """Ensure the ingestion_runs table exists with proper schema."""
+    """Ensure the ingestion_runs table exists with proper schema.
+
+    This table tracks the status of document ingestion processes.
+
+    Args:
+        conn: LanceDB connection
+    """
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -300,7 +461,24 @@ def ensure_ingestion_runs_table(conn: DBConnection) -> None:
         ]
     )
 
-    _add_user_id_column(conn, "ingestion_runs")
+    # Automatic migration for existing tables missing 'user_id'
+    if _table_exists(conn, "ingestion_runs"):
+        try:
+            table = conn.open_table("ingestion_runs")
+            if "user_id" not in table.schema.names:
+                logger.info(
+                    "Migrating 'ingestion_runs' table: adding missing 'user_id' column"
+                )
+                table.add_columns({"user_id": "cast(null as bigint)"})
+            _migrate_table_user_id_to_int64(conn, "ingestion_runs")
+            _validate_user_id_int64(conn.open_table("ingestion_runs"), "ingestion_runs")
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.warning(
+                f"Failed to check/migrate 'ingestion_runs' table schema: {e}"
+            )
+
     _create_table(conn, "ingestion_runs", schema=schema)
 
 
@@ -323,70 +501,3 @@ def ensure_collection_config_table(conn: DBConnection) -> None:
     )
 
     _create_table(conn, table_name, schema=schema)
-
-
-def ensure_collection_metadata_table(conn: DBConnection) -> None:
-    """Ensure the collection_metadata table exists with proper schema.
-
-    This table stores collection metadata including embedding configuration,
-    statistics, and configuration settings.
-
-    Args:
-        conn: LanceDB connection
-    """
-    schema = pa.schema(
-        [
-            pa.field("name", pa.string()),
-            pa.field("schema_version", pa.string()),
-            pa.field("embedding_model_id", pa.string()),
-            pa.field("embedding_dimension", pa.int32()),
-            pa.field("documents", pa.int32()),
-            pa.field("processed_documents", pa.int32()),
-            pa.field("parses", pa.int32()),
-            pa.field("chunks", pa.int32()),
-            pa.field("embeddings", pa.int32()),
-            pa.field("document_names", pa.string()),
-            pa.field("collection_locked", pa.bool_()),
-            pa.field("allow_mixed_parse_methods", pa.bool_()),
-            pa.field("skip_config_validation", pa.bool_()),
-            pa.field("ingestion_config", pa.string()),
-            pa.field("created_at", pa.timestamp("us")),
-            pa.field("updated_at", pa.timestamp("us")),
-            pa.field("last_accessed_at", pa.timestamp("us")),
-            pa.field("extra_metadata", pa.string()),
-        ]
-    )
-    _create_table(conn, "collection_metadata", schema=schema)
-
-
-def check_table_needs_migration(conn: DBConnection, table_name: str) -> bool:
-    """Check if a table exists and needs migration (missing user_id field).
-
-    This function checks if a table exists and is missing the 'user_id' field,
-    which indicates it needs migration for multi-tenancy support.
-
-    Args:
-        conn: LanceDB connection
-        table_name: Name of the table to check
-
-    Returns:
-        True if the table exists and is missing 'user_id' field, False otherwise
-    """
-    if not _table_exists(conn, table_name):
-        return False
-
-    try:
-        table = conn.open_table(table_name)
-        existing_schema = table.schema
-        existing_field_names = {field.name for field in existing_schema}
-
-        # Check if user_id field is missing
-        return "user_id" not in existing_field_names
-    except Exception as e:
-        # If we can't check the schema, assume no migration needed
-        logger.warning(
-            "Could not check schema for table '%s': %s. Assuming no migration needed.",
-            table_name,
-            e,
-        )
-        return False

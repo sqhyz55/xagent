@@ -1514,6 +1514,7 @@ Build when you need.`
       parsesLabel: "解析",
       noDescription: "暂无描述",
       ownerLabel: "归属用户: {owners}",
+      ownerFallbackLabel: "归属用户（名称加载失败，显示ID）: {owners}",
       actions: {
         viewDetail: "查看详情",
         delete: "删除知识库",

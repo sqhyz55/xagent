@@ -525,7 +525,7 @@ def test_cascade_delete_collection_with_user_id_column_applies_user_filter(
     assert table.delete.call_count == 1
     filt = table.delete.call_args[0][0]
     assert "collection == 'c1'" in filt
-    assert "user_id == '7'" in filt
+    assert "user_id == 7" in filt
 
 
 @patch(
@@ -555,7 +555,7 @@ def test_cascade_delete_document_with_user_id_column_applies_user_filter(
     filt = table.delete.call_args[0][0]
     assert "collection == 'c1'" in filt
     assert "doc_id == 'd1'" in filt
-    assert "user_id == '9'" in filt
+    assert "user_id == 9" in filt
 
 
 @patch(
@@ -653,4 +653,4 @@ def test_cascade_delete_admin_vs_non_admin_user_filter_behavior(
     )
     user_filter = table.delete.call_args[0][0]
     assert "collection == 'c_user'" in user_filter
-    assert "user_id == '1'" in user_filter
+    assert "user_id == 1" in user_filter

@@ -57,6 +57,7 @@ export function KnowledgeBasePage() {
   const [collectionToDelete, setCollectionToDelete] = useState<string | null>(null)
   const [isDeletingCollection, setIsDeletingCollection] = useState(false)
   const [adminUsers, setAdminUsers] = useState<Record<number, string>>({})
+  const [adminUsersLoadFailed, setAdminUsersLoadFailed] = useState(false)
   const [isManageMode, setIsManageMode] = useState(false)
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set())
 
@@ -68,7 +69,9 @@ export function KnowledgeBasePage() {
     const fetchAdminUsers = async () => {
       if (!user?.is_admin) return
       try {
+        setAdminUsersLoadFailed(false)
         const map: Record<number, string> = {}
+        let hasRequestError = false
 
         // API validation requires size <= 100; fetch all pages to avoid
         // missing owner names when user count grows.
@@ -84,6 +87,7 @@ export function KnowledgeBasePage() {
           })
           const response = await apiRequest(`${getApiUrl()}/api/admin/users?${params.toString()}`)
           if (!response.ok) {
+            hasRequestError = true
             break
           }
 
@@ -103,7 +107,11 @@ export function KnowledgeBasePage() {
         }
 
         setAdminUsers(map)
+        if (hasRequestError && Object.keys(map).length === 0) {
+          setAdminUsersLoadFailed(true)
+        }
       } catch (err) {
+        setAdminUsersLoadFailed(true)
         console.error("Failed to load admin user list for KB owners display:", err)
       }
     }
@@ -121,6 +129,13 @@ export function KnowledgeBasePage() {
       setFilteredCollections(collections)
     }
   }, [searchQuery, collections])
+
+  // Keep selection scoped to the current view to avoid hidden-item side effects.
+  useEffect(() => {
+    if (isManageMode) {
+      setSelectedNames(new Set())
+    }
+  }, [searchQuery, isManageMode])
 
   const fetchCollections = async () => {
     try {
@@ -219,12 +234,27 @@ export function KnowledgeBasePage() {
     })
   }
 
+  const visibleNames = filteredCollections.map((c) => c.name)
+  const visibleSelectedCount = visibleNames.reduce(
+    (count, name) => count + (selectedNames.has(name) ? 1 : 0),
+    0
+  )
+  const allVisibleSelected = visibleNames.length > 0 && visibleSelectedCount === visibleNames.length
+
   const selectAll = () => {
-    if (selectedNames.size === filteredCollections.length) {
-      setSelectedNames(new Set())
-    } else {
-      setSelectedNames(new Set(filteredCollections.map((c) => c.name)))
-    }
+    setSelectedNames((prev) => {
+      const next = new Set(prev)
+      if (allVisibleSelected) {
+        for (const name of visibleNames) {
+          next.delete(name)
+        }
+      } else {
+        for (const name of visibleNames) {
+          next.add(name)
+        }
+      }
+      return next
+    })
   }
 
   const handleBatchDelete = async () => {
@@ -326,14 +356,12 @@ export function KnowledgeBasePage() {
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
-                checked={selectedNames.size === filteredCollections.length && filteredCollections.length > 0}
+                checked={allVisibleSelected}
                 onChange={selectAll}
                 className="h-4 w-4 rounded border-input"
               />
               <span className="text-sm font-medium">
-                {selectedNames.size === filteredCollections.length
-                  ? t("kb.manage.deselectAll")
-                  : t("kb.manage.selectAll")}
+                {allVisibleSelected ? t("kb.manage.deselectAll") : t("kb.manage.selectAll")}
               </span>
             </label>
             <Button
@@ -405,9 +433,11 @@ export function KnowledgeBasePage() {
                         </div>
                         {user?.is_admin && collection.owners && collection.owners.length > 0 && (
                           <p className="text-xs text-muted-foreground">
-                            {t("kb.card.ownerLabel", {
-                              owners: collection.owners.map((id) => adminUsers[id] ?? id).join(", "),
-                            })}
+                            {adminUsersLoadFailed
+                              ? t("kb.card.ownerFallbackLabel", { owners: collection.owners.join(", ") })
+                              : t("kb.card.ownerLabel", {
+                                  owners: collection.owners.map((id) => adminUsers[id] ?? id).join(", "),
+                                })}
                           </p>
                         )}
                       </div>

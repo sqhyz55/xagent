@@ -41,6 +41,7 @@ from ..management.status import (
     write_ingestion_status,
 )
 from ..storage.factory import get_metadata_store, get_vector_index_store
+from ..utils.lancedb_query_utils import _safe_count_rows
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from ..version_management.cascade_cleaner import cleanup_document_cascade
@@ -168,7 +169,7 @@ def _iter_batches(
                 arrow_table = arrow_table.filter(mask)
             elif "user_id ==" in user_filter:
                 # Filter for specific user_id
-                match = re.search(r"user_id == (-?\d+)", user_filter)
+                match = re.search(r"user_id == '?(-?\d+)'?", user_filter)
                 if match:
                     user_val = int(match.group(1))
                     mask = pa.compute.equal(
@@ -236,9 +237,7 @@ def _count_rows(
     filter_expr = build_lancedb_filter_expression(filters)
 
     try:
-        if filter_expr:
-            return int(table.count_rows(filter_expr))
-        return int(table.count_rows())
+        return _safe_count_rows(table, filter_expr if filter_expr else None)
     except Exception as exc:  # noqa: BLE001 - convert to warning
         message = f"Failed to count rows in '{table_name}': {exc}"
         logger.warning(message)

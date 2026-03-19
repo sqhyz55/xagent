@@ -140,7 +140,7 @@ def test_ingest_separators_valid_json_passed_to_config(app_with_kb, mock_user):
 def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
     app_with_kb, mock_user
 ):
-    """Non-admin user cannot delete collection that contains other users' documents."""
+    """Non-admin delete relies on delete_collection layer for ownership checks."""
     with (
         patch("xagent.web.api.kb.get_connection_from_env") as mock_get_conn,
         patch(
@@ -163,15 +163,27 @@ def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
             return 5  # total docs in collection
 
         mock_table.count_rows.side_effect = count_rows_side_effect
+        from xagent.core.tools.core.RAG_tools.core.schemas import (
+            CollectionOperationResult,
+        )
+
+        mock_delete_collection.return_value = CollectionOperationResult(
+            status="failed",
+            collection="test_collection",
+            message="Collection has documents owned by other users",
+            warnings=[],
+            affected_documents=[],
+            deleted_counts={},
+        )
 
         client = TestClient(app_with_kb)
         resp = client.delete("/api/kb/collections/test_collection")
 
-    assert resp.status_code == 403
+    assert resp.status_code == 200
     body = resp.json()
-    assert "admin users" in body["detail"]
-    # Backend should not call delete_collection when permission denied
-    mock_delete_collection.assert_not_called()
+    assert body["status"] == "failed"
+    assert "other users" in body["message"]
+    mock_delete_collection.assert_called_once()
 
 
 def test_delete_collection_allowed_for_admin_with_other_users_docs(

@@ -1514,6 +1514,7 @@ Build when you need.`
       parsesLabel: "Parses",
       noDescription: "No description",
       ownerLabel: "Owners: {owners}",
+      ownerFallbackLabel: "Owners (name load failed, showing IDs): {owners}",
       actions: {
         viewDetail: "View Details",
         delete: "Delete knowledge base",

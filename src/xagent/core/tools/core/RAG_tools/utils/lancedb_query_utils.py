@@ -6,12 +6,31 @@ implementing a three-tier fallback pattern for maximum compatibility.
 
 import logging
 from collections.abc import Callable, Iterable
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import pyarrow as pa  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_count_rows(table: Any, filter_expr: Optional[str] = None) -> int:
+    """Count rows safely and return 0 on query/count failures.
+
+    Args:
+        table: LanceDB table or query object that exposes ``count_rows``.
+        filter_expr: Optional LanceDB filter expression.
+
+    Returns:
+        Row count as int. Returns 0 when count operation fails.
+    """
+    try:
+        if filter_expr is None:
+            return int(table.count_rows())
+        return int(table.count_rows(filter_expr))
+    except Exception as exc:
+        logger.debug("count_rows failed, fallback to 0: %s", exc)
+        return 0
 
 
 def query_to_list(

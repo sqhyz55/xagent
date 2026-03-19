@@ -20,18 +20,15 @@ from ..LanceDB.schema_manager import (
     ensure_parses_table,
 )
 from ..storage.factory import get_vector_store_raw_connection
-from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
+from ..utils.lancedb_query_utils import _safe_count_rows
+from ..utils.string_utils import (
+    build_lancedb_filter_expression,
+    build_user_id_filter_for_table,
+    escape_lancedb_string,
+)
 from .main_pointer_manager import get_main_pointer
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_count_rows(table: Any, filt: str) -> int:
-    """Count rows, returning 0 on filter/schema errors."""
-    try:
-        return int(table.count_rows(filt))
-    except Exception:
-        return 0
 
 
 def _table_has_column(table: Any, column: str) -> bool:
@@ -62,8 +59,11 @@ def _build_collection_filter(
     base: Dict[str, str] = {"collection": collection}
     try:
         table = conn.open_table(table_name)
-        if not is_admin and user_id is not None and _table_has_column(table, "user_id"):
-            base["user_id"] = str(user_id)
+        if not is_admin and user_id is not None:
+            if _table_has_column(table, "user_id"):
+                base_expr = build_lancedb_filter_expression(base)
+                user_expr = build_user_id_filter_for_table(table, int(user_id))
+                return f"{base_expr} AND {user_expr}"
     except Exception:
         # If we cannot open the table here, fall back to base filter.
         pass
@@ -83,8 +83,11 @@ def _build_document_filter(
     base: Dict[str, str] = {"collection": collection, "doc_id": doc_id}
     try:
         table = conn.open_table(table_name)
-        if not is_admin and user_id is not None and _table_has_column(table, "user_id"):
-            base["user_id"] = str(user_id)
+        if not is_admin and user_id is not None:
+            if _table_has_column(table, "user_id"):
+                base_expr = build_lancedb_filter_expression(base)
+                user_expr = build_user_id_filter_for_table(table, int(user_id))
+                return f"{base_expr} AND {user_expr}"
     except Exception:
         pass
     return build_lancedb_filter_expression(base)
@@ -104,10 +107,38 @@ def _append_user_filter_if_needed(
     try:
         table = conn.open_table(table_name)
         if _table_has_column(table, "user_id"):
-            return f"{base_expr} AND user_id == {int(user_id)}"
+            return (
+                f"{base_expr} AND {build_user_id_filter_for_table(table, int(user_id))}"
+            )
     except Exception:
         return base_expr
     return base_expr
+
+
+def _append_user_filter_for_embeddings_if_needed(
+    *,
+    conn: Any,
+    base_expr: str,
+    user_id: Optional[int],
+    is_admin: bool,
+    model_tag: Optional[str] = None,
+) -> str:
+    """Append user filter for embeddings by inspecting embeddings table schema."""
+    if is_admin or user_id is None:
+        return base_expr
+    table_names = _get_table_names(conn)
+    target_tables = [t for t in table_names if t.startswith("embeddings_")]
+    if model_tag is not None:
+        target_tables = [t for t in target_tables if t == f"embeddings_{model_tag}"]
+    if not target_tables:
+        return base_expr
+    try:
+        table = conn.open_table(target_tables[0])
+        if not _table_has_column(table, "user_id"):
+            return base_expr
+        return f"{base_expr} AND {build_user_id_filter_for_table(table, int(user_id))}"
+    except Exception:
+        return base_expr
 
 
 def _get_table_names(conn: Any) -> list[str]:
@@ -159,7 +190,7 @@ def _plan_by_predicates(
                 ]
             for t in all_embed_tables:
                 table = conn.open_table(t)
-                count = table.count_rows(filt)
+                count = _safe_count_rows(table, filt)
                 total += count
             counts[table_name] = total
             continue
@@ -168,7 +199,7 @@ def _plan_by_predicates(
             counts[table_name] = 0
             continue
         table = conn.open_table(table_name)
-        count = table.count_rows(filt)
+        count = _safe_count_rows(table, filt)
         counts[table_name] = count
     return counts
 
@@ -228,7 +259,7 @@ def _delete_by_predicates(
 
         for t in target_tables:
             table = conn.open_table(t)
-            cnt = table.count_rows(filt)
+            cnt = _safe_count_rows(table, filt)
             if cnt > 0:
                 table.delete(filt)
             total += cnt
@@ -241,7 +272,7 @@ def _delete_by_predicates(
         if name in table_to_filter and name in table_names:
             filt = table_to_filter[name]
             table = conn.open_table(name)
-            cnt = table.count_rows(filt)
+            cnt = _safe_count_rows(table, filt)
             if cnt > 0:
                 table.delete(filt)
                 logger.info(f"Cascade cleanup: deleted {cnt} rows from {name}")
@@ -262,7 +293,7 @@ def _delete_by_predicates(
             deleted[name] = 0
             continue
         table = conn.open_table(name)
-        cnt = table.count_rows(filt)
+        cnt = _safe_count_rows(table, filt)
         if cnt > 0:
             table.delete(filt)
             logger.info(f"Cascade cleanup: deleted {cnt} rows from {name}")
@@ -440,12 +471,12 @@ def cleanup_cascade(
                 "parse_hash": old_parse_hash,
             }
             base = build_lancedb_filter_expression(base_filters)
-            predicates["__embeddings__"] = _append_user_filter_if_needed(
+            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
                 conn=conn,
-                table_name="documents",
                 base_expr=base,
                 user_id=user_id,
                 is_admin=is_admin,
+                model_tag=model_tag,
             )
             predicates["chunks"] = _append_user_filter_if_needed(
                 conn=conn,
@@ -460,12 +491,12 @@ def cleanup_cascade(
             escaped_doc_id = escape_lancedb_string(doc_id)
             escaped_new_parse_hash = escape_lancedb_string(new_parse_hash)
             other = f"collection == '{escaped_collection}' AND doc_id == '{escaped_doc_id}' AND parse_hash != '{escaped_new_parse_hash}'"
-            predicates["__embeddings__"] = _append_user_filter_if_needed(
+            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
                 conn=conn,
-                table_name="documents",
                 base_expr=other,
                 user_id=user_id,
                 is_admin=is_admin,
+                model_tag=model_tag,
             )
             predicates["chunks"] = _append_user_filter_if_needed(
                 conn=conn,
@@ -493,12 +524,12 @@ def cleanup_cascade(
                 "parse_hash": old_parse_hash,
             }
             base = build_lancedb_filter_expression(base_filters)
-            predicates["__embeddings__"] = _append_user_filter_if_needed(
+            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
                 conn=conn,
-                table_name="documents",
                 base_expr=base,
                 user_id=user_id,
                 is_admin=is_admin,
+                model_tag=model_tag,
             )
         if new_parse_hash:
             # Note: For != operator, we need to manually construct the filter
@@ -507,12 +538,12 @@ def cleanup_cascade(
             escaped_doc_id = escape_lancedb_string(doc_id)
             escaped_parse_hash = escape_lancedb_string(new_parse_hash)
             other = f"collection == '{escaped_collection}' AND doc_id == '{escaped_doc_id}' AND parse_hash != '{escaped_parse_hash}'"
-            predicates["__embeddings__"] = _append_user_filter_if_needed(
+            predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
                 conn=conn,
-                table_name="documents",
                 base_expr=other,
                 user_id=user_id,
                 is_admin=is_admin,
+                model_tag=model_tag,
             )
             predicates["chunks"] = _append_user_filter_if_needed(
                 conn=conn,

@@ -42,7 +42,7 @@ class UserPermissions:
         elif user_id is not None:
             # Regular users can ONLY see their own data
             # Legacy data (NULL user_id) is NOT visible to regular users
-            return f"user_id == {user_id}"
+            return f"user_id == {int(user_id)}"
         else:
             # Unauthenticated users cannot see any data
             return UserPermissions.get_no_access_filter()

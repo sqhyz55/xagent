@@ -89,6 +89,39 @@ def build_lancedb_filter_expression(
     return backend_filter or ""
 
 
+def build_user_id_filter_for_table(table: Any | None, user_id: int) -> str:
+    """Build a type-safe LanceDB filter expression for ``user_id``.
+
+    This inspects the target table schema and chooses the correct literal type.
+    In strict mode, unknown schemas also default to integer literals.
+
+    Args:
+        table: LanceDB table object with optional ``schema`` metadata.
+        user_id: User ID value used for filtering.
+
+    Returns:
+        A safe filter expression for the ``user_id`` column.
+    """
+    user_id_int = int(user_id)
+    try:
+        schema = getattr(table, "schema", None)
+        if schema is not None:
+            field = schema.field("user_id")
+            field_type = str(getattr(field, "type", "")).lower()
+            if "int" in field_type:
+                return f"user_id == {user_id_int}"
+            if "string" in field_type or "utf8" in field_type:
+                raise ValueError(
+                    f"Incompatible user_id type '{field_type}'. Expected int64 schema."
+                )
+    except ValueError:
+        raise
+    except Exception:
+        # Best-effort schema introspection. Use int literal by default.
+        pass
+    return f"user_id == {user_id_int}"
+
+
 def sanitize_for_doc_id(text: str, max_length: int = 64) -> str:
     """
     Sanitize text for safe use in document IDs.
