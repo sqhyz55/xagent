@@ -84,7 +84,7 @@ def handle_kb_exceptions(func: T) -> T:
             raise HTTPException(status_code=400, detail=f"数据格式错误: {str(e)}")
         except (PermissionError, OSError) as e:
             logger.error("File system error in %s: %s", func.__name__, e)
-            raise HTTPException(status_code=403, detail=f"文件系统错误: {str(e)}")
+            raise HTTPException(status_code=403, detail=f"File system error: {str(e)}")
         except Exception as e:
             logger.exception("Unexpected error in %s: %s", func.__name__, e)
             raise HTTPException(
@@ -209,38 +209,39 @@ async def ingest(
         logger.info("Using file name as collection: %s", collection)
 
     try:
-        # SECURITY: Validate collection name BEFORE reading file content
+        # SECURITY: Validate collection name at API boundary
         safe_collection = sanitize_path_component(collection, "collection")
+
+        file_path = get_upload_path(
+            safe_filename,
+            user_id=int(_user.id),
+            collection=safe_collection,
+            collection_is_sanitized=True,
+        )
     except ValueError as e:
         logger.warning("Invalid collection name rejected: %s - %s", collection, e)
         raise HTTPException(
             status_code=422, detail=f"Invalid collection name: {str(e)}"
         ) from e
 
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=422,
-            detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE // (1024 * 1024)}MB",
-        )
-
     try:
-        file_path = get_upload_path(
-            safe_filename, user_id=int(_user.id), collection=safe_collection
-        )
-    except ValueError as e:
-        logger.warning(
-            "Collection name validation failed in get_upload_path: %s - %s",
-            safe_collection,
-            e,
-        )
-        raise HTTPException(
-            status_code=422, detail=f"Invalid collection name: {str(e)}"
-        ) from e
-
-    try:
+        total_size = 0
+        chunk_size = 1024 * 1024  # 1MB
         with open(file_path, "wb") as buffer:
-            buffer.write(content)
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "File size exceeds maximum limit of "
+                            f"{MAX_FILE_SIZE // (1024 * 1024)}MB"
+                        ),
+                    )
+                buffer.write(chunk)
         logger.info(
             "File uploaded: %s -> %s (user: %s, collection: %s)",
             safe_filename,
@@ -251,8 +252,16 @@ async def ingest(
     except (PermissionError, OSError) as e:
         logger.error("File system error saving file %s: %s", safe_filename, e)
         raise HTTPException(
-            status_code=403, detail="文件系统错误: {0}".format(str(e))
+            status_code=403, detail=f"File system error: {str(e)}"
         ) from e
+    except HTTPException:
+        # Ensure partial file is removed on early abort (e.g., file too large)
+        try:
+            if file_path.exists():
+                file_path.unlink()
+        except OSError:
+            pass
+        raise
 
     # Register file in unified file management (file_id) for /api/files/list and file_id download/preview/delete
     storage_path_str = str(file_path)
@@ -262,7 +271,7 @@ async def ingest(
         .first()
     )
     if existing:
-        existing.file_size = len(content)  # type: ignore[assignment]
+        existing.file_size = int(total_size)  # type: ignore[assignment]
         existing.mime_type = getattr(file, "content_type", None) or existing.mime_type
         db.flush()
         file_record = existing
@@ -279,7 +288,7 @@ async def ingest(
             filename=safe_filename,
             storage_path=storage_path_str,
             mime_type=mime_type,
-            file_size=len(content),
+            file_size=int(total_size),
         )
         db.add(file_record)
         db.flush()
@@ -791,7 +800,8 @@ async def delete_collection_api(
             ) from e
 
         # Step 1: Move physical directory to trash (under lock) BEFORE database deletion.
-        # Rename is atomic; trash is cleaned by background task (see kb_physical_sync.cleanup_trash).
+        # Note: trash cleanup is NOT automatic; operators should run kb_physical_sync.cleanup_trash
+        # via cron/scheduler if they want periodic cleanup.
         physical_cleanup_status = "not_found"  # not_found, success, failed
         physical_cleanup_error = None
         collection_dir: Path | None = None
@@ -809,26 +819,6 @@ async def delete_collection_api(
                             UPLOADS_DIR,
                             int(_user.id),
                             safe_collection,
-                        )
-                    # Sync DB: remove UploadedFile records for files under this
-                    # collection so file list stays consistent with file_id design.
-                    collection_dir_str = str(collection_dir)
-                    deleted_count = (
-                        db.query(UploadedFile)
-                        .filter(
-                            UploadedFile.user_id == int(_user.id),
-                            UploadedFile.storage_path.startswith(
-                                collection_dir_str + "/"
-                            ),
-                        )
-                        .delete(synchronize_session=False)
-                    )
-                    db.commit()
-                    if deleted_count:
-                        logger.info(
-                            "Removed %d uploaded_files record(s) for collection %s",
-                            deleted_count,
-                            collection_name,
                         )
                     physical_cleanup_status = "success"
                     logger.info(
@@ -905,6 +895,7 @@ async def delete_collection_api(
                 db.query(UploadedFile)
                 .filter(
                     or_(
+                        UploadedFile.user_id == int(_user.id),
                         UploadedFile.storage_path.startswith(prefix),
                         UploadedFile.storage_path == dir_str,
                     )
@@ -927,7 +918,7 @@ async def delete_collection_api(
         if physical_cleanup_status == "success":
             cleanup_info = (
                 f"Physical directory moved to trash: {collection_dir} "
-                "(background task will clean .trash periodically)"
+                "(trash cleanup requires external scheduler/cron)"
             )
             cleanup_warnings.append(cleanup_info)
             cleanup_info_message = f" {cleanup_info}."
@@ -1274,8 +1265,7 @@ async def rename_collection_api(
 
             try:
                 with collection_physical_lock(old_collection_dir):
-                    old_collection_dir.rename(new_collection_dir)
-                    # Sync DB: update storage_path for UploadedFile so file_id resolution still finds the file
+                    # Sync DB first; if DB commit fails, do NOT touch the filesystem.
                     old_str = str(old_collection_dir)
                     new_str = str(new_collection_dir)
                     uploads_resolved = UPLOADS_DIR.resolve()
@@ -1283,10 +1273,14 @@ async def rename_collection_api(
                         db.query(UploadedFile)
                         .filter(
                             UploadedFile.user_id == int(_user.id),
-                            UploadedFile.storage_path.startswith(old_str + "/"),
+                            UploadedFile.storage_path.startswith(old_str + os.sep),
                         )
                         .all()
                     )
+                    previous_paths: dict[int, str] = {
+                        int(getattr(rec, "id")): str(getattr(rec, "storage_path"))
+                        for rec in records
+                    }
                     for rec in records:
                         suffix = rec.storage_path[len(old_str) :]
                         if ".." in suffix:
@@ -1305,7 +1299,7 @@ async def rename_collection_api(
                             )
                             continue
                         rec.storage_path = new_path  # type: ignore[assignment]
-                    db.commit()
+                    db.commit()  # Commit DB updates BEFORE physical move
                     if records:
                         logger.info(
                             "Updated %d uploaded_files record(s) for renamed collection %s -> %s",
@@ -1313,6 +1307,34 @@ async def rename_collection_api(
                             collection_name,
                             new_name,
                         )
+
+                    # Now do the physical move. shutil.move handles cross-device moves.
+                    import shutil
+
+                    try:
+                        shutil.move(str(old_collection_dir), str(new_collection_dir))
+                    except Exception as move_exc:
+                        # Best-effort rollback: revert DB paths if physical move fails.
+                        logger.error(
+                            "Physical collection move failed after DB update for %s -> %s: %s; rolling back DB paths",
+                            collection_name,
+                            new_name,
+                            move_exc,
+                        )
+                        for rec in records:
+                            prior = previous_paths.get(int(getattr(rec, "id")), None)
+                            if prior is not None:
+                                rec.storage_path = prior  # type: ignore[assignment]
+                        try:
+                            db.commit()
+                        except Exception as rollback_exc:
+                            logger.exception(
+                                "Rollback DB paths failed for collection rename %s -> %s: %s",
+                                collection_name,
+                                new_name,
+                                rollback_exc,
+                            )
+                        raise
                 physical_rename_status = "success"
                 logger.info(
                     "Physically renamed collection directory: %s -> %s",

@@ -546,16 +546,9 @@ def test_kb_rename_physical_rename_failure_aborts_operation(test_env, temp_uploa
         mock_db_conn.open_table.return_value = mock_table
         mock_conn.return_value = mock_db_conn
 
-        # Mock the directory path's rename method to fail
-        # We need to patch the specific Path instance, not the class
-        original_rename = Path.rename
-
-        def failing_rename(self, target):
-            if str(self) == str(old_coll_dir):
-                raise PermissionError("Permission denied")
-            return original_rename(self, target)
-
-        with patch.object(Path, "rename", side_effect=failing_rename, autospec=True):
+        # Physical rename uses shutil.move() to support cross-device moves.
+        # Patch it to fail to simulate a filesystem permission error.
+        with patch("shutil.move", side_effect=PermissionError("Permission denied")):
             # Attempt rename
             response = client.put(
                 f"/api/kb/collections/{old_collection_name}",

@@ -4,7 +4,7 @@ Provides:
 - File system lock around collection directory operations to avoid concurrent
   delete/rename conflicts.
 - Rename-to-trash instead of rmtree for delete: short inconsistent window
-  and recoverable before background cleanup.
+  and recoverable before cleanup via external scheduler (cron).
 """
 
 import logging
@@ -101,13 +101,17 @@ def move_collection_dir_to_trash(
     user_id: int,
     collection_name: str,
 ) -> Path:
-    """Rename collection directory to trash (same volume). Caller must hold lock.
+    """Move collection directory to trash. Caller must hold lock.
+
+    Prefer atomic rename when possible; fall back to cross-device move when needed.
 
     Returns:
         The trash path to which the directory was renamed.
     """
+    import shutil
+
     trash_path = get_trash_path(uploads_dir, user_id, collection_name)
-    collection_dir.rename(trash_path)
+    shutil.move(str(collection_dir), str(trash_path))
     logger.info(
         "Collection directory moved to trash: %s -> %s",
         collection_dir,

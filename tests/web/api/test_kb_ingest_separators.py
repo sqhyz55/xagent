@@ -27,7 +27,11 @@ def mock_user():
 
 
 def _make_mock_db():
-    """Session mock for ingest: query(...).filter(...).first() and add/flush/commit."""
+    """Create a minimal DB session mock used by ingest tests.
+
+    The tests explicitly configure only `query(...).filter(...).first()`; other session
+    methods (e.g. add/flush/commit) are left as MagicMock defaults.
+    """
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = None
     return db

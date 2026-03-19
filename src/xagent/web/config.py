@@ -174,6 +174,7 @@ def get_upload_path(
     user_id: Optional[int] = None,
     collection: Optional[str] = None,
     create_if_not_exists: bool = True,
+    collection_is_sanitized: bool = False,
 ) -> Path:
     """Get the full path for an uploaded file.
 
@@ -189,6 +190,8 @@ def get_upload_path(
         create_if_not_exists: If True, create directories if they don't exist.
             Set to False when you only need the path without creating directories
             (e.g., for checking if a directory exists before renaming).
+        collection_is_sanitized: If True, treat `collection` as already sanitized by
+            `sanitize_path_component(collection, "collection")` and skip sanitization.
 
     Returns:
         Path object for the file location
@@ -202,7 +205,11 @@ def get_upload_path(
 
         if collection:
             # SECURITY: Sanitize collection name to prevent path traversal attacks
-            safe_collection = sanitize_path_component(collection, "collection")
+            safe_collection = (
+                collection
+                if collection_is_sanitized
+                else sanitize_path_component(collection, "collection")
+            )
             # Create collection-specific directory under user directory
             collection_dir = user_dir / safe_collection
             if create_if_not_exists:
