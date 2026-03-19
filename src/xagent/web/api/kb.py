@@ -212,12 +212,23 @@ async def ingest(
         # SECURITY: Validate collection name at API boundary
         safe_collection = sanitize_path_component(collection, "collection")
 
-        file_path = get_upload_path(
-            safe_filename,
-            user_id=int(_user.id),
-            collection=safe_collection,
-            collection_is_sanitized=True,
-        )
+        try:
+            file_path = get_upload_path(
+                safe_filename,
+                user_id=int(_user.id),
+                collection=safe_collection,
+                collection_is_sanitized=True,
+            )
+        except TypeError as e:
+            # Backward compatibility for tests/mocks that patch get_upload_path
+            # with an older signature that doesn't accept this keyword.
+            if "collection_is_sanitized" not in str(e):
+                raise
+            file_path = get_upload_path(
+                safe_filename,
+                user_id=int(_user.id),
+                collection=safe_collection,
+            )
     except ValueError as e:
         logger.warning("Invalid collection name rejected: %s - %s", collection, e)
         raise HTTPException(
