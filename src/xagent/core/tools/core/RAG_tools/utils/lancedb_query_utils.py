@@ -6,7 +6,7 @@ implementing a three-tier fallback pattern for maximum compatibility.
 
 import logging
 from collections.abc import Callable, Iterable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import pandas as pd
 import pyarrow as pa  # type: ignore
@@ -14,21 +14,35 @@ import pyarrow as pa  # type: ignore
 logger = logging.getLogger(__name__)
 
 
-def _safe_count_rows(table: Any, filter_expr: Optional[str] = None) -> int:
-    """Count rows safely and return 0 on query/count failures.
+def _safe_count_rows(
+    table: Any,
+    filter_expr: Optional[str] = None,
+    *,
+    on_error: Literal["zero", "raise"] = "zero",
+) -> int:
+    """Count rows safely, with selectable behavior when ``count_rows`` fails.
 
     Args:
         table: LanceDB table or query object that exposes ``count_rows``.
         filter_expr: Optional LanceDB filter expression.
+        on_error: If ``\"zero\"`` (default), log at debug and return ``0`` (best-effort
+            planning or non-security paths). If ``\"raise\"``, log at error and re-raise
+            the exception (e.g. permission checks where treating failure as zero is unsafe).
 
     Returns:
-        Row count as int. Returns 0 when count operation fails.
+        Row count as int. Returns ``0`` on failure only when ``on_error=\"zero\"``.
+
+    Raises:
+        Exception: Re-raises the underlying error when ``on_error=\"raise\"``.
     """
     try:
         if filter_expr is None:
             return int(table.count_rows())
         return int(table.count_rows(filter_expr))
     except Exception as exc:
+        if on_error == "raise":
+            logger.error("count_rows failed: %s", exc, exc_info=True)
+            raise
         logger.debug("count_rows failed, fallback to 0: %s", exc)
         return 0
 
