@@ -45,10 +45,11 @@ def build_lancedb_filter_expression(
     This function uses the abstract filter layer internally for better backend
     compatibility, while maintaining the same interface for backward compatibility.
 
-    **Important:** Values are emitted as single-quoted string literals
-    (``column == 'value'``). Do not use this for integer columns such as
-    ``user_id`` (int64); for those use :func:`build_user_id_filter_for_table` or
-    ``UserPermissions.get_user_filter`` (integer literals, not quoted strings).
+    **Important:** Every value is emitted as a **single-quoted string literal**
+    (``column == 'value'``). Do **not** use this for Arrow/Lance columns whose
+    physical type is integer (notably ``user_id``, stored as int64 in this
+    codebase). For ``user_id`` filters, use :func:`build_user_id_filter_for_table` or
+    ``UserPermissions.get_user_filter`` (integer literal, not quoted).
 
     Args:
         filters: A dictionary where keys are column names and values are the filter values.
@@ -93,25 +94,42 @@ def build_lancedb_filter_expression(
     return backend_filter or ""
 
 
+# Columns that are integer-typed in Lance schemas here; ``build_lancedb_filter_expression``
+# always emits quoted string literals and must not be used for these keys.
+LANCEDB_INTEGER_FILTER_KEYS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "vector_dimension",
+        "index",
+        "page_number",
+    }
+)
+
+
 def split_lancedb_filters_for_string_equality(
     filters: Dict[str, Any],
-) -> Tuple[Dict[str, Any], bool]:
-    """Split ``filters`` so string equality applies only to safe columns.
+) -> Tuple[Dict[str, Any], frozenset[str]]:
+    """Return filters safe for :func:`build_lancedb_filter_expression` (string literals).
 
-    Drops ``user_id``: it is int64 in Lance tables here; quoted literals would be
-    invalid. Tenant scoping must use :func:`build_user_id_filter_for_table` or
-    ``UserPermissions.get_user_filter``.
+    Drops keys in :data:`LANCEDB_INTEGER_FILTER_KEYS`. For ``user_id``, tenant
+    scoping must use :func:`build_user_id_filter_for_table` or
+    ``UserPermissions.get_user_filter``; other dropped keys need typed literals
+    or a schema-aware builder, not this helper.
 
     Args:
         filters: Arbitrary column -> value map from a caller (e.g. search ``filters``).
 
     Returns:
-        ``(filters_without_user_id, had_user_id_key)``.
+        ``(safe_filters, dropped_integer_column_names)``. ``safe_filters`` is always a
+        new ``dict`` (never the input reference), even when nothing is dropped.
     """
-    if "user_id" not in filters:
-        return filters, False
-    stripped = {k: v for k, v in filters.items() if k != "user_id"}
-    return stripped, True
+    dropped = frozenset(k for k in filters if k in LANCEDB_INTEGER_FILTER_KEYS)
+    if not dropped:
+        return dict(filters), frozenset()
+    stripped = {
+        k: v for k, v in filters.items() if k not in LANCEDB_INTEGER_FILTER_KEYS
+    }
+    return stripped, dropped
 
 
 def build_user_id_filter_for_table(table: Any | None, user_id: int) -> str:
