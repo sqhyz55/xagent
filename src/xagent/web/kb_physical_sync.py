@@ -8,6 +8,7 @@ Provides:
 """
 
 import logging
+import os
 import time
 import uuid
 from contextlib import contextmanager
@@ -20,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 # Default lock timeout (seconds) when acquiring collection dir lock
 DEFAULT_LOCK_TIMEOUT = 15.0
+
+# Serialize long-running KB operations (delete vs ingest) on the same collection
+# directory. Short timeouts cause false 409s when another request holds the lock
+# for minutes (e.g. ingestion). Override via XAGENT_KB_COLLECTION_LOCK_TIMEOUT_SEC.
+# See https://github.com/xorbitsai/xagent/issues/135 (control-plane / vector split).
+DEFAULT_KB_COLLECTION_LOCK_TIMEOUT = float(
+    os.environ.get("XAGENT_KB_COLLECTION_LOCK_TIMEOUT_SEC", "3600")
+)
 
 # Trash directory name under uploads (same volume for atomic rename)
 TRASH_SUBDIR = ".trash"

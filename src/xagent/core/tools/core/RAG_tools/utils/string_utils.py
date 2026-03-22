@@ -6,7 +6,7 @@ import hashlib
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Pattern for sanitizing document IDs and filenames
 # Only allows: letters, numbers, underscore, hyphen
@@ -42,9 +42,13 @@ def build_lancedb_filter_expression(
     """
     Builds a safe LanceDB filter expression from a dictionary of filters.
 
-    This function now uses the abstract filter layer internally for better
-    backend compatibility, while maintaining the same interface for
-    backward compatibility.
+    This function uses the abstract filter layer internally for better backend
+    compatibility, while maintaining the same interface for backward compatibility.
+
+    **Important:** Values are emitted as single-quoted string literals
+    (``column == 'value'``). Do not use this for integer columns such as
+    ``user_id`` (int64); for those use :func:`build_user_id_filter_for_table` or
+    ``UserPermissions.get_user_filter`` (integer literals, not quoted strings).
 
     Args:
         filters: A dictionary where keys are column names and values are the filter values.
@@ -87,6 +91,27 @@ def build_lancedb_filter_expression(
     )
 
     return backend_filter or ""
+
+
+def split_lancedb_filters_for_string_equality(
+    filters: Dict[str, Any],
+) -> Tuple[Dict[str, Any], bool]:
+    """Split ``filters`` so string equality applies only to safe columns.
+
+    Drops ``user_id``: it is int64 in Lance tables here; quoted literals would be
+    invalid. Tenant scoping must use :func:`build_user_id_filter_for_table` or
+    ``UserPermissions.get_user_filter``.
+
+    Args:
+        filters: Arbitrary column -> value map from a caller (e.g. search ``filters``).
+
+    Returns:
+        ``(filters_without_user_id, had_user_id_key)``.
+    """
+    if "user_id" not in filters:
+        return filters, False
+    stripped = {k: v for k, v in filters.items() if k != "user_id"}
+    return stripped, True
 
 
 def build_user_id_filter_for_table(table: Any | None, user_id: int) -> str:

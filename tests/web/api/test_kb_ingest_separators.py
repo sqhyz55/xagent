@@ -19,6 +19,28 @@ from xagent.web.api.kb import kb_router
 from xagent.web.models.database import get_db
 
 
+def _ingest_test_get_upload_path_side_effect(tmpdir: str):
+    """Match ``get_upload_path`` behavior for ingest tests.
+
+    File uploads use a non-empty filename; collection lock uses ``filename == ""``.
+    """
+
+    base = Path(tmpdir)
+
+    def _side_effect(
+        filename: str,
+        user_id=None,
+        collection=None,
+        **kwargs,
+    ):
+        if not filename and user_id is not None and collection is not None:
+            return base / f"user_{user_id}" / collection
+        name = Path(filename).name if filename else "file.txt"
+        return base / name
+
+    return _side_effect
+
+
 @pytest.fixture
 def mock_user():
     """Minimal user-like object for ingest dependency."""
@@ -70,9 +92,13 @@ def app_with_kb_admin(admin_user):
     def override_get_current_user():
         return admin_user
 
+    def override_get_db():
+        yield _make_mock_db()
+
     app = FastAPI()
     app.include_router(kb_router)
     app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_db] = override_get_db
     return app
 
 
@@ -108,7 +134,7 @@ def test_ingest_separators_valid_json_passed_to_config(app_with_kb, mock_user):
             ),
             patch("xagent.web.api.kb.get_upload_path") as mock_path,
         ):
-            mock_path.return_value = str(Path(tmpdir) / "test.txt")
+            mock_path.side_effect = _ingest_test_get_upload_path_side_effect(tmpdir)
 
             payload = {
                 "file": ("test.txt", io.BytesIO(b"hello world"), "text/plain"),
@@ -140,7 +166,7 @@ def test_ingest_separators_valid_json_passed_to_config(app_with_kb, mock_user):
 def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
     app_with_kb, mock_user
 ):
-    """Non-admin delete relies on delete_collection layer for ownership checks."""
+    """Non-admin is rejected by _check_can_delete_collection before delete_collection."""
     with (
         patch("xagent.web.api.kb.get_connection_from_env") as mock_get_conn,
         patch(
@@ -163,27 +189,13 @@ def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
             return 5  # total docs in collection
 
         mock_table.count_rows.side_effect = count_rows_side_effect
-        from xagent.core.tools.core.RAG_tools.core.schemas import (
-            CollectionOperationResult,
-        )
-
-        mock_delete_collection.return_value = CollectionOperationResult(
-            status="failed",
-            collection="test_collection",
-            message="Collection has documents owned by other users",
-            warnings=[],
-            affected_documents=[],
-            deleted_counts={},
-        )
 
         client = TestClient(app_with_kb)
         resp = client.delete("/api/kb/collections/test_collection")
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "failed"
-    assert "other users" in body["message"]
-    mock_delete_collection.assert_called_once()
+    assert resp.status_code == 403
+    assert "admin users" in resp.json()["detail"]
+    mock_delete_collection.assert_not_called()
 
 
 def test_delete_collection_allowed_for_admin_with_other_users_docs(
@@ -346,7 +358,7 @@ def test_ingest_separators_missing_uses_none(app_with_kb, mock_user):
             ),
             patch("xagent.web.api.kb.get_upload_path") as mock_path,
         ):
-            mock_path.return_value = str(Path(tmpdir) / "test.txt")
+            mock_path.side_effect = _ingest_test_get_upload_path_side_effect(tmpdir)
 
             client = TestClient(app_with_kb)
             response = client.post(
@@ -399,7 +411,7 @@ def test_ingest_separators_invalid_json_request_succeeds_uses_default(
             ),
             patch("xagent.web.api.kb.get_upload_path") as mock_path,
         ):
-            mock_path.return_value = str(Path(tmpdir) / "test.txt")
+            mock_path.side_effect = _ingest_test_get_upload_path_side_effect(tmpdir)
 
             client = TestClient(app_with_kb)
             response = client.post(
@@ -451,7 +463,7 @@ def test_ingest_separators_empty_array_uses_none(app_with_kb, mock_user):
             ),
             patch("xagent.web.api.kb.get_upload_path") as mock_path,
         ):
-            mock_path.return_value = str(Path(tmpdir) / "test.txt")
+            mock_path.side_effect = _ingest_test_get_upload_path_side_effect(tmpdir)
 
             client = TestClient(app_with_kb)
             response = client.post(
