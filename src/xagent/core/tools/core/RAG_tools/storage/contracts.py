@@ -719,6 +719,30 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
+    def replace_chunks(
+        self,
+        records: List[Dict[str, Any]],
+        *,
+        replace_scope: Dict[str, Any],
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Replace chunk records within a scope (delete old + insert new).
+
+        Deletes all existing chunk rows matching *replace_scope* (and tenancy
+        filters), then inserts *records*. This guarantees that re-chunking with
+        different parameters does not leave stale rows from a previous
+        configuration (issue #199).
+
+        Args:
+            records: New chunk records to insert after deletion.
+            replace_scope: Filter dict (e.g. collection, doc_id, parse_hash)
+                identifying rows to delete before inserting.
+            user_id: Optional user ID for multi-tenancy scoped deletion.
+            is_admin: Whether the caller can operate across tenants.
+        """
+
+    @abstractmethod
     def upsert_embeddings(self, model_tag: str, records: List[Dict[str, Any]]) -> None:
         """Upsert embedding records (sync).
 

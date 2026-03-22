@@ -87,6 +87,13 @@ def chunk_document(
     """
     Chunk parsed paragraphs and write to chunks table.
 
+    Concurrency note:
+        This function uses **last-write-wins** semantics. If two concurrent
+        calls target the same (collection, doc_id, parse_hash) with different
+        parameters, the last one to reach ``_write_chunks_to_db`` will replace
+        the other's output. Callers requiring mutual exclusion should hold a
+        collection-level lock before invoking this function.
+
     Args:
         collection: Collection name for data isolation
         doc_id: Document ID whose parsed result to chunk
@@ -506,7 +513,12 @@ def _write_chunks_to_db(
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> bool:
-    """Write chunk records to database using abstraction layer."""
+    """Write chunk records to database using abstraction layer.
+
+    Replaces any existing rows for the same document parse (collection, doc_id,
+    parse_hash) and tenancy scope before inserting, so a new ``config_hash`` does
+    not leave stale chunks from a previous configuration (issue #199).
+    """
     try:
         rows = []
         for chunk in chunks:
@@ -535,9 +547,17 @@ def _write_chunks_to_db(
         if not rows:
             return False
 
-        # Use abstraction layer for upsert
         vector_store = get_vector_index_store()
-        vector_store.upsert_chunks(rows)
+        vector_store.replace_chunks(
+            rows,
+            replace_scope={
+                "collection": collection,
+                "doc_id": doc_id,
+                "parse_hash": parse_hash,
+            },
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
         logger.info(
             "Chunk records written to database: doc_id=%s, parse_hash=%s, config_hash=%s",

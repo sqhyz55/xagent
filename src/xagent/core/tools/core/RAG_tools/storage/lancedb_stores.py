@@ -1489,6 +1489,68 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             _safe_close_table(table)
         self.invalidate_table_cache("chunks")
 
+    _REPLACE_CHUNKS_ALLOWED_KEYS: frozenset = frozenset(
+        {"collection", "doc_id", "parse_hash"}
+    )
+
+    def replace_chunks(
+        self,
+        records: List[Dict[str, Any]],
+        *,
+        replace_scope: Dict[str, Any],
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Replace chunk records within a scope (delete old + insert new).
+
+        Safety: inserts new records first, then deletes rows that do NOT belong
+        to the new generation. This avoids data loss if the process crashes
+        between the two operations (worst case: brief duplicate data, not zero
+        data).
+        """
+        from ..LanceDB.schema_manager import _safe_close_table, ensure_chunks_table
+
+        for key in replace_scope:
+            if key not in self._REPLACE_CHUNKS_ALLOWED_KEYS:
+                raise ValueError(f"Invalid replace_scope column: {key}")
+
+        conn = self._get_connection()
+        ensure_chunks_table(conn)
+        table = conn.open_table("chunks")
+        try:
+            # Step 1: Insert new records (safe — idempotent add)
+            if records:
+                table.add(records)
+
+            # Step 2: Build delete filter targeting old generations
+            scope_parts = [
+                f"{k} == '{escape_lancedb_string(str(v))}'"
+                for k, v in replace_scope.items()
+            ]
+            base_filter = " AND ".join(scope_parts)
+
+            user_filter = UserPermissions.get_user_filter(user_id, is_admin)
+            if base_filter and user_filter:
+                delete_expr = f"({base_filter}) AND ({user_filter})"
+            elif user_filter:
+                delete_expr = user_filter
+            else:
+                delete_expr = base_filter
+
+            # Exclude newly inserted chunk_ids from deletion
+            if records and delete_expr:
+                new_ids = [r["chunk_id"] for r in records]
+                id_list = ", ".join(
+                    f"'{escape_lancedb_string(cid)}'" for cid in new_ids
+                )
+                delete_expr = f"({delete_expr}) AND chunk_id NOT IN ({id_list})"
+
+            if delete_expr:
+                table.delete(delete_expr)
+        finally:
+            _safe_close_table(table)
+        self.invalidate_table_cache("chunks")
+
     def upsert_embeddings(self, model_tag: str, records: List[Dict[str, Any]]) -> None:
         """Upsert embedding records to LanceDB with fallback pattern.
 
