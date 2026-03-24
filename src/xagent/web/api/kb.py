@@ -161,6 +161,9 @@ async def save_collection_config(
 
     def _save_config() -> None:
         conn = get_connection_from_env()
+        # TODO(refactor): keep collection_config as a compatibility store for
+        # per-user ingestion settings; unify this with metadata-backed storage
+        # once config ownership and migration strategy are finalized.
         ensure_collection_config_table(conn)
         table = conn.open_table("collection_config")
 

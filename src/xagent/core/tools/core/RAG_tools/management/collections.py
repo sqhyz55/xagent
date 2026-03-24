@@ -532,6 +532,9 @@ def list_collections(
         # Load configs for collections
         collection_configs = {}
         try:
+            # TODO(refactor): this still reads per-user config from
+            # collection_config for backward compatibility. Move to the unified
+            # metadata/config store after migration semantics are defined.
             ensure_collection_config_table(conn)
             table = conn.open_table("collection_config")
 
