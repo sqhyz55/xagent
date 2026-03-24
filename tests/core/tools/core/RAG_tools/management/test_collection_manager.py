@@ -1,6 +1,7 @@
 """Tests for collection manager functionality."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -110,6 +111,8 @@ class TestCollectionManager:
         mock_connection = Mock()
         mock_table = Mock()
         mock_connection.open_table.return_value = mock_table
+        # schema_manager._ensure_schema_fields expects iterable schema fields.
+        mock_table.schema = [SimpleNamespace(name="name")]
         mock_table.add = Mock()
 
         with patch.object(

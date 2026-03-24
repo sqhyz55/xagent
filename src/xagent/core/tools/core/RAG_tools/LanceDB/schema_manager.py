@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Iterable
+from typing import Protocol
 
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
+
+
+class DataTypeLike(Protocol):
+    """Structural type placeholder for pyarrow DataType-like values."""
+
+
+class FieldLike(Protocol):
+    """Structural field contract used by schema migration helpers."""
+
+    name: str
+    type: DataTypeLike
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +42,13 @@ def _table_exists(conn: DBConnection, name: str) -> bool:
         return False
 
 
-def _get_sql_default_for_pa_type(pa_type: Any) -> str:
+def _is_table_already_exists_error(exc: Exception) -> bool:
+    """Best-effort check for table-already-exists errors across LanceDB versions."""
+    message = str(exc).lower()
+    return "already exists" in message and "table" in message
+
+
+def _get_sql_default_for_pa_type(pa_type: DataTypeLike) -> str:
     """Map PyArrow type to LanceDB SQL default value expression."""
     if pa.types.is_string(pa_type) or pa.types.is_large_string(pa_type):
         return "''"
@@ -45,7 +64,7 @@ def _get_sql_default_for_pa_type(pa_type: Any) -> str:
 
 
 def _ensure_schema_fields(
-    conn: DBConnection, table_name: str, target_schema: Any
+    conn: DBConnection, table_name: str, target_schema: Iterable[FieldLike]
 ) -> None:
     """Ensure an existing table matches the target schema by adding missing columns.
 
@@ -54,43 +73,45 @@ def _ensure_schema_fields(
     if not _table_exists(conn, table_name):
         return
 
-    try:
-        table = conn.open_table(table_name)
-        existing_schema = table.schema
-        existing_field_names = {field.name for field in existing_schema}
-        missing_fields = [
-            f for f in target_schema if f.name not in existing_field_names
-        ]
+    table = conn.open_table(table_name)
+    existing_schema = table.schema
+    existing_field_names = {field.name for field in existing_schema}
+    missing_fields = [f for f in target_schema if f.name not in existing_field_names]
 
-        if missing_fields:
-            logger.info(
-                "Auto-migrating schema for table '%s'. Adding missing fields: %s",
-                table_name,
-                [f.name for f in missing_fields],
-            )
-            new_cols = {}
-            for field in missing_fields:
-                default_expr = _get_sql_default_for_pa_type(field.type)
-                new_cols[field.name] = default_expr
-            try:
-                table.add_columns(new_cols)
-                logger.info("Successfully migrated schema for table '%s'", table_name)
-            except Exception as e:
-                logger.error("Failed to add columns to table '%s': %s", table_name, e)
-    except Exception as e:
-        logger.warning(
-            "Could not validate or migrate schema for table '%s': %s",
-            table_name,
-            e,
-        )
-
-
-def _create_table(conn: DBConnection, name: str, schema: Any | None = None) -> None:
-    if _table_exists(conn, name):
-        if schema:
-            _ensure_schema_fields(conn, name, schema)
+    if not missing_fields:
         return
-    conn.create_table(name, schema=schema)
+
+    logger.info(
+        "Auto-migrating schema for table '%s'. Adding missing fields: %s",
+        table_name,
+        [f.name for f in missing_fields],
+    )
+    new_cols = {}
+    for field in missing_fields:
+        default_expr = _get_sql_default_for_pa_type(field.type)
+        new_cols[field.name] = default_expr
+
+    try:
+        table.add_columns(new_cols)
+        logger.info("Successfully migrated schema for table '%s'", table_name)
+    except Exception as e:
+        logger.error("Failed to add columns to table '%s': %s", table_name, e)
+        raise
+
+
+def _create_table(
+    conn: DBConnection, name: str, schema: Iterable[FieldLike] | None = None
+) -> None:
+    # Avoid check-then-act race: attempt creation first.
+    try:
+        conn.create_table(name, schema=schema)
+    except Exception as exc:
+        if not _is_table_already_exists_error(exc):
+            raise
+
+    # Reconcile existing/new table schema after create attempt.
+    if schema:
+        _ensure_schema_fields(conn, name, schema)
 
 
 def ensure_documents_table(conn: DBConnection) -> None:
@@ -219,6 +240,7 @@ def ensure_embeddings_table(
 
 
 def ensure_main_pointers_table(conn: DBConnection) -> None:
+    """Ensure the main_pointers table exists with proper schema."""
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -236,6 +258,7 @@ def ensure_main_pointers_table(conn: DBConnection) -> None:
 
 
 def ensure_prompt_templates_table(conn: DBConnection) -> None:
+    """Ensure the prompt_templates table exists with proper schema."""
     table_name = "prompt_templates"
     schema = pa.schema(
         [
@@ -268,6 +291,7 @@ def ensure_prompt_templates_table(conn: DBConnection) -> None:
 
 
 def ensure_ingestion_runs_table(conn: DBConnection) -> None:
+    """Ensure the ingestion_runs table exists with proper schema."""
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
