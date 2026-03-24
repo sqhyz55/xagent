@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
@@ -74,6 +74,7 @@ class LanceDBMetadataStore(MetadataStore):
                 ("collection_locked", pa.bool_()),
                 ("allow_mixed_parse_methods", pa.bool_()),
                 ("skip_config_validation", pa.bool_()),
+                ("ingestion_config", pa.string()),
                 ("created_at", pa.timestamp("us")),
                 ("updated_at", pa.timestamp("us")),
                 ("last_accessed_at", pa.timestamp("us")),
@@ -92,6 +93,66 @@ class LanceDBMetadataStore(MetadataStore):
                 conn.create_table("collection_metadata", schema=schema)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("collection_metadata create_table no-op/failure: %s", exc)
+
+    async def save_collection_config(
+        self,
+        collection: str,
+        config_json: str,
+        user_id: int,
+    ) -> None:
+        """Save collection ingestion configuration to LanceDB."""
+        from ..LanceDB.schema_manager import ensure_collection_config_table
+
+        conn = await self._get_connection()
+        ensure_collection_config_table(conn)
+
+        table = conn.open_table("collection_config")
+        safe_collection = escape_lancedb_string(collection)
+
+        # Delete existing config for this collection and user
+        try:
+            table.delete(f"collection = '{safe_collection}' AND user_id = {user_id}")
+        except Exception as exc:
+            logger.debug("Error deleting old config: %s", exc)
+
+        # Insert new config
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        data = [
+            {
+                "collection": collection,
+                "config_json": config_json,
+                "updated_at": now,
+                "user_id": user_id,
+            }
+        ]
+        table.add(data)
+
+    async def get_collection_config(
+        self,
+        collection: str,
+        user_id: int,
+    ) -> str | None:
+        """Get collection ingestion configuration from LanceDB."""
+        from ..LanceDB.schema_manager import ensure_collection_config_table
+
+        try:
+            conn = await self._get_connection()
+            ensure_collection_config_table(conn)
+
+            table = conn.open_table("collection_config")
+            safe_collection = escape_lancedb_string(collection)
+            result = (
+                table.search()
+                .where(f"collection = '{safe_collection}' AND user_id = {user_id}")
+                .to_pandas()
+            )
+
+            if result.empty:
+                return None
+            return str(result.iloc[0]["config_json"])
+        except Exception as exc:
+            logger.debug("Error reading collection config: %s", exc)
+            return None
 
     def get_raw_connection(self) -> DBConnection:
         return get_connection_from_env() if self._conn is None else self._conn
@@ -183,6 +244,159 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to list LanceDB tables: %s", exc)
             return []
+
+    def delete_collection_data(
+        self,
+        collection_name: str,
+    ) -> Dict[str, int]:
+        """Delete all data for a collection from vector-side tables."""
+        from ..LanceDB.schema_manager import (
+            ensure_chunks_table,
+            ensure_documents_table,
+            ensure_parses_table,
+        )
+
+        deleted_counts: Dict[str, int] = {}
+        conn = self._get_connection()
+        safe_collection = escape_lancedb_string(collection_name)
+
+        # Ensure tables exist before attempting deletion
+        ensure_documents_table(conn)
+        ensure_parses_table(conn)
+        ensure_chunks_table(conn)
+
+        # Delete from core tables
+        for table_name in ["documents", "parses", "chunks"]:
+            try:
+                table = conn.open_table(table_name)
+                original_count = table.count_rows()
+                table.delete(f"collection = '{safe_collection}'")
+                deleted_count = original_count - table.count_rows()
+                if deleted_count > 0:
+                    deleted_counts[table_name] = deleted_count
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to delete from '%s': %s", table_name, exc)
+
+        # Delete embeddings data
+        for table_name in self.list_table_names():
+            if not table_name.startswith("embeddings_"):
+                continue
+            try:
+                table = conn.open_table(table_name)
+                original_count = table.count_rows()
+                table.delete(f"collection = '{safe_collection}'")
+                deleted_count = original_count - table.count_rows()
+                if deleted_count > 0:
+                    deleted_counts[table_name] = deleted_count
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to delete from '%s': %s", table_name, exc)
+
+        return deleted_counts
+
+    def aggregate_collection_stats(
+        self,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, Dict[str, int]]:
+        """Aggregate statistics for all collections."""
+        from ..LanceDB.schema_manager import (
+            ensure_chunks_table,
+            ensure_documents_table,
+            ensure_parses_table,
+        )
+        from ..utils.lancedb_query_utils import query_to_list
+
+        stats: Dict[str, Dict[str, int]] = {}
+        conn = self._get_connection()
+
+        # Ensure tables exist
+        ensure_documents_table(conn)
+        ensure_parses_table(conn)
+        ensure_chunks_table(conn)
+
+        # Get user filter for multi-tenancy
+        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
+
+        def _count_table(table_name: str, stat_key: str) -> None:
+            try:
+                table = conn.open_table(table_name)
+                if user_filter:
+                    results = query_to_list(table.search().where(user_filter))
+                else:
+                    results = query_to_list(table.search())
+
+                for item in results:
+                    collection = str(item.get("collection", ""))
+                    if collection:
+                        if collection not in stats:
+                            stats[collection] = {
+                                "documents": 0,
+                                "parses": 0,
+                                "chunks": 0,
+                                "embeddings": 0,
+                            }
+                        stats[collection][stat_key] += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to count table '%s': %s", table_name, exc)
+
+        # Count documents
+        _count_table("documents", "documents")
+        _count_table("parses", "parses")
+        _count_table("chunks", "chunks")
+
+        # Count embeddings
+        for table_name in self.list_table_names():
+            if not table_name.startswith("embeddings_"):
+                continue
+            _count_table(table_name, "embeddings")
+
+        return stats
+
+    def aggregate_document_stats(
+        self,
+        collection_name: str,
+        doc_id: str,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, int]:
+        """Aggregate statistics for a single document."""
+        from ..LanceDB.schema_manager import (
+            ensure_chunks_table,
+            ensure_documents_table,
+            ensure_parses_table,
+        )
+
+        stats = {"documents": 0, "parses": 0, "chunks": 0, "embeddings": 0}
+        conn = self._get_connection()
+
+        # Ensure tables exist
+        ensure_documents_table(conn)
+        ensure_parses_table(conn)
+        ensure_chunks_table(conn)
+
+        safe_collection = escape_lancedb_string(collection_name)
+        safe_doc_id = escape_lancedb_string(doc_id)
+
+        base_filter = f"collection = '{safe_collection}' AND doc_id = '{safe_doc_id}'"
+
+        def _count_table(table_name: str) -> int:
+            try:
+                table = conn.open_table(table_name)
+                return int(table.count_rows(base_filter))
+            except Exception:  # noqa: BLE001
+                return 0
+
+        stats["documents"] = _count_table("documents")
+        stats["parses"] = _count_table("parses")
+        stats["chunks"] = _count_table("chunks")
+
+        # Count embeddings across all embeddings tables
+        for table_name in self.list_table_names():
+            if not table_name.startswith("embeddings_"):
+                continue
+            stats["embeddings"] += _count_table(table_name)
+
+        return stats
 
     def get_raw_connection(self) -> DBConnection:
         return self._get_connection()

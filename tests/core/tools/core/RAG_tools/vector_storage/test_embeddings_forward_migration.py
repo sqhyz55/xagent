@@ -7,7 +7,9 @@ import pandas as pd
 
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.LanceDB.model_tag_utils import to_model_tag
-from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import ensure_embeddings_table
+from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+    ensure_embeddings_table,
+)
 from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_index_store,
     reset_kb_write_coordinator,
@@ -89,4 +91,3 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
     rows = primary_table.search().to_pandas()
     assert len(rows) == 1
     assert rows.iloc[0]["model"] == hub_id
-

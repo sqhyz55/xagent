@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from lancedb.db import DBConnection
 
@@ -55,6 +55,37 @@ class MetadataStore(ABC):
         """Ensure control-plane metadata table exists."""
 
     @abstractmethod
+    async def save_collection_config(
+        self,
+        collection: str,
+        config_json: str,
+        user_id: int,
+    ) -> None:
+        """Save collection ingestion configuration.
+
+        Args:
+            collection: Collection name.
+            config_json: JSON string of IngestionConfig.
+            user_id: User ID for multi-tenancy.
+        """
+
+    @abstractmethod
+    async def get_collection_config(
+        self,
+        collection: str,
+        user_id: int,
+    ) -> str | None:
+        """Get collection ingestion configuration.
+
+        Args:
+            collection: Collection name.
+            user_id: User ID for multi-tenancy.
+
+        Returns:
+            Config JSON string if found, None otherwise.
+        """
+
+    @abstractmethod
     def get_raw_connection(self) -> DBConnection:
         """Return raw backend connection for legacy compatibility paths."""
 
@@ -82,6 +113,60 @@ class VectorIndexStore(ABC):
 
         Returns:
             Warning messages generated during best-effort updates.
+        """
+
+    @abstractmethod
+    def delete_collection_data(
+        self,
+        collection_name: str,
+    ) -> Dict[str, int]:
+        """Delete all data for a collection from vector-side tables.
+
+        Args:
+            collection_name: Name of the collection to delete.
+
+        Returns:
+            Dictionary mapping table names to deleted row counts.
+        """
+
+    @abstractmethod
+    def aggregate_collection_stats(
+        self,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, Dict[str, int]]:
+        """Aggregate statistics for all collections.
+
+        Returns:
+            Dictionary mapping collection names to their stats:
+            {
+                "collection_name": {
+                    "documents": int,
+                    "parses": int,
+                    "chunks": int,
+                    "embeddings": int,
+                }
+            }
+        """
+
+    @abstractmethod
+    def aggregate_document_stats(
+        self,
+        collection_name: str,
+        doc_id: str,
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, int]:
+        """Aggregate statistics for a single document.
+
+        Returns:
+            Dictionary with counts:
+            {
+                "documents": int,
+                "parses": int,
+                "chunks": int,
+                "embeddings": int,
+            }
         """
 
     @abstractmethod

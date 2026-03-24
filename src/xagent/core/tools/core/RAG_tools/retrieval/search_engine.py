@@ -79,7 +79,9 @@ def search_dense_engine(
                 )
                 table_name = legacy_table_name
             except Exception:
-                raise
+                # Keep the original open_table error for deterministic failure semantics
+                # (tests and callers rely on this message/class when storage is unavailable).
+                raise primary_exc
 
         # Check and create index if needed
         index_manager = get_index_manager()
