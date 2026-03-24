@@ -269,6 +269,26 @@ def test_ingest_separators_empty_array_uses_none(app_with_kb, mock_user):
     assert captured_config[0].separators == []
 
 
+def test_ingest_returns_403_when_file_save_fails(app_with_kb, mock_user):
+    """File system save errors should be normalized to HTTP 403 by decorator."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with (
+            patch("xagent.web.api.kb.get_upload_path") as mock_path,
+            patch("builtins.open", side_effect=PermissionError("disk denied")),
+        ):
+            mock_path.return_value = str(Path(tmpdir) / "test.txt")
+
+            client = TestClient(app_with_kb)
+            response = client.post(
+                "/api/kb/ingest",
+                data={"collection": "test_coll"},
+                files={"file": ("test.txt", io.BytesIO(b"hello"), "text/plain")},
+            )
+
+    assert response.status_code == 403
+    assert "File system error:" in str(response.json().get("detail", ""))
+
+
 async def _fake_run_web_ingestion(
     collection, crawl_config, *, ingestion_config, user_id, is_admin=False
 ):

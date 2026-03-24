@@ -342,11 +342,6 @@ async def ingest(
             _user.id,
             collection,
         )
-    except (PermissionError, OSError) as e:
-        logger.error("File system error saving file %s: %s", safe_filename, e)
-        raise HTTPException(
-            status_code=403, detail=f"File system error: {str(e)}"
-        ) from e
     except HTTPException:
         # Ensure partial file is removed on early abort (e.g., file too large)
         try:
