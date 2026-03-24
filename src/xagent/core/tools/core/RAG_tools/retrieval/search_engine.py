@@ -11,10 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..core.schemas import SearchResult
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.factory import get_vector_index_store
+from ..utils.filter_utils import parse_legacy_filters
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata
 from ..utils.model_resolver import resolve_embedding_adapter
-from ..utils.string_utils import build_lancedb_filter_expression
 from ..vector_storage.index_manager import get_index_manager
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,9 @@ def search_dense_engine(
                 )
                 table_name = legacy_table_name
             except Exception:
-                raise
+                # Keep the original open_table error for deterministic failure semantics
+                # (tests and callers rely on this message/class when storage is unavailable).
+                raise primary_exc
 
         # Check and create index if needed
         index_manager = get_index_manager()
@@ -93,34 +95,45 @@ def search_dense_engine(
             vector_column_name="vector",
         )
 
-        # Build filter expression combining collection scope, user permissions and custom filters
-        filter_clauses = []
+        # Build backend-specific filter via storage abstraction (Phase 1A contract).
+        vector_store = get_vector_index_store()
 
-        # Scope results to the requested collection (required for KB isolation)
-        if collection:
-            collection_filter = build_lancedb_filter_expression(
-                {"collection": collection}
+        # Convert API-facing dict filters into abstract FilterExpression
+        filter_expr = None
+        if collection or filters:
+            conditions = []
+
+            if collection:
+                from ..storage.contracts import FilterCondition, FilterOperator
+
+                conditions.append(
+                    FilterCondition(
+                        field="collection",
+                        operator=FilterOperator.EQ,
+                        value=collection,
+                    )
+                )
+
+            if filters:
+                parsed = parse_legacy_filters(filters) if isinstance(filters, dict) else None
+                if isinstance(parsed, tuple):
+                    conditions.extend(parsed)
+                elif parsed is not None:
+                    conditions.append(parsed)
+
+            if len(conditions) == 1:
+                filter_expr = conditions[0]
+            elif len(conditions) > 1:
+                filter_expr = tuple(conditions)
+
+        if filter_expr is not None:
+            backend_filter = vector_store.build_filter_expression(
+                filters=filter_expr,
+                user_id=user_id,
+                is_admin=is_admin,
             )
-            if collection_filter:
-                filter_clauses.append(collection_filter)
-
-        # Add user permission filter for multi-tenancy
-        from ..utils.user_permissions import UserPermissions
-
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-        if user_filter:
-            filter_clauses.append(user_filter)
-
-        # Add custom filters if provided
-        if filters:
-            custom_filter = build_lancedb_filter_expression(filters)
-            if custom_filter:
-                filter_clauses.append(custom_filter)
-
-        # Combine all filters with AND
-        if filter_clauses:
-            combined_filter = " and ".join(f"({clause})" for clause in filter_clauses)
-            search_query = search_query.where(combined_filter)
+            if backend_filter:
+                search_query = search_query.where(backend_filter)
 
         # Limit results
         search_query = search_query.limit(top_k)

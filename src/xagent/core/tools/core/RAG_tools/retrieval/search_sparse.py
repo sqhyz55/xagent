@@ -15,10 +15,9 @@ from ..core.schemas import (
 )
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.factory import get_vector_index_store
+from ..utils.filter_utils import parse_legacy_filters
 from ..utils.metadata_utils import deserialize_metadata
 from ..utils.model_resolver import resolve_embedding_adapter
-from ..utils.string_utils import build_lancedb_filter_expression
-from ..utils.user_permissions import UserPermissions
 from ..vector_storage.index_manager import get_index_manager
 
 logger = logging.getLogger(__name__)
@@ -93,32 +92,55 @@ def search_sparse(
 
         search_query = table.search(query_text, query_type="fts").limit(top_k)
 
-        # Build filter expression combining collection scope, user permissions and custom filters
-        filter_clauses = []
+        # Build filter expression using the abstract layer
+        vector_store = get_vector_index_store()
 
-        # Scope results to the requested collection (required for KB isolation)
-        if collection:
-            collection_filter = build_lancedb_filter_expression(
-                {"collection": collection}
+        # Convert legacy dict format to FilterExpression if needed
+        filter_expr = None
+        if collection or filters:
+            # Build filter conditions
+            conditions = []
+
+            # Add collection filter
+            if collection:
+                from ..storage.contracts import FilterCondition, FilterOperator
+
+                conditions.append(
+                    FilterCondition(field="collection", operator=FilterOperator.EQ, value=collection)
+                )
+
+            # Add custom filters
+            if filters:
+                if isinstance(filters, dict):
+                    # Legacy format: use parser
+                    parsed_filters = parse_legacy_filters(filters)
+                    # parsed_filters can be FilterCondition or tuple (AND combination)
+                    if isinstance(parsed_filters, tuple):
+                        conditions.extend(parsed_filters)
+                    elif parsed_filters:
+                        conditions.append(parsed_filters)
+                elif isinstance(filters, (tuple, list)):
+                    # Already FilterExpression
+                    conditions.extend(filters if isinstance(filters, tuple) else list(filters))
+                else:
+                    # Single FilterCondition
+                    conditions.append(filters)
+
+            # Combine conditions with AND
+            if len(conditions) == 1:
+                filter_expr = conditions[0]
+            elif len(conditions) > 1:
+                filter_expr = tuple(conditions)
+
+        # Use abstract filter builder to get backend-specific syntax
+        if filter_expr:
+            backend_filter = vector_store.build_filter_expression(
+                filters=filter_expr,
+                user_id=user_id,
+                is_admin=is_admin,
             )
-            if collection_filter:
-                filter_clauses.append(collection_filter)
-
-        # Add user permission filter for multi-tenancy
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-        if user_filter:
-            filter_clauses.append(user_filter)
-
-        # Add custom filters if provided
-        if filters:
-            custom_filter = build_lancedb_filter_expression(filters)
-            if custom_filter:
-                filter_clauses.append(custom_filter)
-
-        # Combine all filters with AND
-        if filter_clauses:
-            combined_filter = " and ".join(f"({clause})" for clause in filter_clauses)
-            search_query = search_query.where(combined_filter)
+            if backend_filter:
+                search_query = search_query.where(backend_filter)
 
         raw_results_df: pd.DataFrame = search_query.to_pandas()
 

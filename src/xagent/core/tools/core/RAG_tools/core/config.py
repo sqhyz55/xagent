@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Final, Mapping, Sequence
@@ -68,6 +69,24 @@ MIN_INT64: Final[int] = -(2**63)
 UNAUTHENTICATED_NO_ACCESS_FILTER: Final[str] = (
     "(user_id IS NULL and user_id IS NOT NULL)"
 )
+
+ENABLE_AUTO_EMBEDDINGS_MIGRATION: Final[bool] = (
+    os.getenv("ENABLE_AUTO_EMBEDDINGS_MIGRATION", "false").lower() == "true"
+)
+"""
+Enable automatic forward migration of legacy embeddings tables.
+
+When disabled (default), the system will not automatically migrate data from
+legacy table names (embeddings_{model_name}) to new Hub ID-based names
+(embeddings_{hub_id}). This prevents unexpected data movement and performance
+impact during normal operations.
+
+To enable automatic migration, set the environment variable:
+    ENABLE_AUTO_EMBEDDINGS_MIGRATION=true
+
+Automatic migration should only be enabled during controlled maintenance windows
+or when explicitly executing migration tools.
+"""
 
 # Parameters that affect parse hash
 PARSE_PARAM_WHITELIST: Final[Sequence[str]] = (

@@ -36,17 +36,43 @@ def build_lancedb_filter_expression(filters: Dict[str, Any]) -> str:
     """
     Builds a safe LanceDB filter expression from a dictionary of filters.
 
+    This function now uses the abstract filter layer internally for better
+    backend compatibility, while maintaining the same interface for
+    backward compatibility.
+
     Args:
         filters: A dictionary where keys are column names and values are the filter values.
 
     Returns:
         A string representing the safely constructed LanceDB filter expression.
     """
-    filter_parts = []
+    from ..storage.contracts import FilterCondition, FilterOperator
+    from ..storage.factory import get_vector_index_store
+
+    # Convert to FilterCondition list
+    conditions = []
     for key, value in filters.items():
-        escaped_value = escape_lancedb_string(value)
-        filter_parts.append(f"{key} == '{escaped_value}'")
-    return " AND ".join(filter_parts)
+        conditions.append(
+            FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
+        )
+
+    # Use abstract filter builder
+    vector_store = get_vector_index_store()
+
+    # Combine conditions with AND (tuple convention)
+    if len(conditions) == 1:
+        filter_expr = conditions[0]
+    else:
+        filter_expr = tuple(conditions)
+
+    # Get backend-specific syntax
+    backend_filter = vector_store.build_filter_expression(
+        filters=filter_expr,
+        user_id=None,
+        is_admin=False,
+    )
+
+    return backend_filter or ""
 
 
 def sanitize_for_doc_id(text: str, max_length: int = 64) -> str:

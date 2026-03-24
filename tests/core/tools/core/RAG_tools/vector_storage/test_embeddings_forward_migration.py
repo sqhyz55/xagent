@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from typing import Any
 from unittest.mock import patch
 
@@ -7,7 +8,9 @@ import pandas as pd
 
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.LanceDB.model_tag_utils import to_model_tag
-from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import ensure_embeddings_table
+from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+    ensure_embeddings_table,
+)
 from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_index_store,
     reset_kb_write_coordinator,
@@ -31,6 +34,16 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
     hub_id = "text-embedding-v4-openai-1"
     legacy_model_name = "text-embedding-v4"
     vector_dim = 3
+
+    # Enable auto-migration for this test
+    monkeypatch.setenv("ENABLE_AUTO_EMBEDDINGS_MIGRATION", "true")
+    # Reload config module to pick up the new environment variable
+    import sys
+    if "xagent.core.tools.core.RAG_tools.core.config" in sys.modules:
+        importlib.reload(sys.modules["xagent.core.tools.core.RAG_tools.core.config"])
+        # Reload vector_manager to pick up the new config value
+        if "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager" in sys.modules:
+            importlib.reload(sys.modules["xagent.core.tools.core.RAG_tools.vector_storage.vector_manager"])
 
     monkeypatch.setenv("LANCEDB_DIR", str(tmp_path / ".lancedb"))
     reset_kb_write_coordinator()
@@ -89,4 +102,3 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
     rows = primary_table.search().to_pandas()
     assert len(rows) == 1
     assert rows.iloc[0]["model"] == hub_id
-

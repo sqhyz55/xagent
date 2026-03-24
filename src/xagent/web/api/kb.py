@@ -171,45 +171,17 @@ async def save_collection_config(
     _user: User = Depends(get_current_user),
 ) -> CollectionOperationResult:
     """Save ingestion configuration for a specific collection."""
-    from datetime import datetime, timezone
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
 
-    from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-        ensure_collection_config_table,
-    )
-    from ...providers.vector_store.lancedb import get_connection_from_env
-
-    def _save_config() -> None:
-        conn = get_connection_from_env()
-        # TODO(refactor): keep collection_config as a compatibility store for
-        # per-user ingestion settings; unify this with metadata-backed storage
-        # once config ownership and migration strategy are finalized.
-        ensure_collection_config_table(conn)
-        table = conn.open_table("collection_config")
-
-        user_id_val = int(_user.id)
-        config_json = config.model_dump_json(exclude_unset=True)
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        try:
-            # Try to delete existing configuration for this collection and user
-            table.delete(f"collection = '{collection}' AND user_id = {user_id_val}")
-        except Exception as e:
-            logger.warning(f"Error deleting old config: {e}")
-
-        # Insert new config
-        data = [
-            {
-                "collection": collection,
-                "config_json": config_json,
-                "updated_at": now,
-                "user_id": user_id_val,
-            }
-        ]
-
-        table.add(data)
+    config_json = config.model_dump_json(exclude_unset=True)
 
     try:
-        await asyncio.to_thread(_save_config)
+        metadata_store = get_metadata_store()
+        await metadata_store.save_collection_config(
+            collection=collection,
+            config_json=config_json,
+            user_id=int(_user.id),
+        )
 
         return CollectionOperationResult(
             status="success",
@@ -671,7 +643,10 @@ async def search(
     ),
     filters: Optional[Dict[str, Any]] = Form(
         None,
-        description="Optional filters to apply during search (LanceDB format)",
+        description="Optional filters to apply during search. "
+        "Format: {field: value} for equality filters. "
+        "For advanced filters, use {field: {operator: str, value: Any}} "
+        "where operator can be: eq, ne, gt, gte, lt, lte, in, contains.",
     ),
     fusion_config: Optional[Dict[str, Any]] = Form(
         None,
@@ -1449,20 +1424,12 @@ async def rename_collection_api(
     Returns:
         Success message
     """
-    from ...core.tools.core.RAG_tools.management.collections import (
-        _list_table_names,
-    )
     from ...core.tools.core.RAG_tools.management.status import (
         clear_ingestion_status,
         load_ingestion_status,
         write_ingestion_status,
     )
-    from ...core.tools.core.RAG_tools.utils.string_utils import (
-        escape_lancedb_string,
-    )
-    from ...providers.vector_store.lancedb import get_connection_from_env
-
-    conn = get_connection_from_env()
+    from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 
     if not new_name or not new_name.strip():
         raise HTTPException(

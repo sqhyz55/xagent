@@ -158,6 +158,19 @@ def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
         except Exception as legacy_exc:  # noqa: BLE001
             last_error = legacy_exc
         else:
+            # Check if auto-migration is enabled
+            from ..core.config import ENABLE_AUTO_EMBEDDINGS_MIGRATION
+
+            if not ENABLE_AUTO_EMBEDDINGS_MIGRATION:
+                # Auto-migration disabled: use legacy table directly
+                logger.info(
+                    "Auto-migration disabled. Using legacy embeddings table '%s' for hub_id=%s. "
+                    "To enable automatic migration, set ENABLE_AUTO_EMBEDDINGS_MIGRATION=true",
+                    legacy_table_name,
+                    cleaned,
+                )
+                return legacy_table, legacy_table_name
+
             # Migrate legacy -> primary (best-effort, idempotent)
             try:
                 vector_dim: int | None = None
