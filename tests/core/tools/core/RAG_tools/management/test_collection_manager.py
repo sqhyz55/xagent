@@ -10,6 +10,7 @@ from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
 from xagent.core.tools.core.RAG_tools.management.collection_manager import (
     CollectionManager,
     get_collection_sync,
+    resolve_effective_embedding_model_sync,
     update_collection_stats_sync,
 )
 
@@ -286,3 +287,28 @@ class TestCollectionInfoProperties:
         # Complex types should be JSON strings
         assert isinstance(data["document_names"], str)
         assert isinstance(data["extra_metadata"], str)
+
+
+class TestResolveEffectiveEmbeddingModel:
+    """Test resolve_effective_embedding_model_sync edge cases."""
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.mark_collection_accessed_sync"
+    )
+    @patch(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.get_collection_sync"
+    )
+    def test_empty_bound_model_falls_back_to_config(
+        self, mock_get_collection: Mock, _mock_mark: Mock
+    ) -> None:
+        """Empty bound model ID should be treated as missing and use config fallback."""
+        mock_get_collection.return_value = CollectionInfo(
+            name="test_collection",
+            embedding_model_id="",
+            embedding_dimension=1536,
+        )
+
+        resolved = resolve_effective_embedding_model_sync(
+            "test_collection", config_model_id="text-embedding-v4"
+        )
+        assert resolved == "text-embedding-v4"

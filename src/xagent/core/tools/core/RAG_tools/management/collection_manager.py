@@ -555,23 +555,33 @@ def resolve_effective_embedding_model_sync(
     Raises:
         ValueError: If model cannot be resolved or collection not found.
     """
+    # Treat empty/whitespace-only model IDs as missing values.
+    config_model_id = (
+        config_model_id.strip()
+        if isinstance(config_model_id, str) and config_model_id.strip()
+        else None
+    )
     try:
         mark_collection_accessed_sync(collection_name)
         collection_info = get_collection_sync(collection_name)
 
-        if collection_info.is_initialized:
-            if (
-                config_model_id
-                and config_model_id != collection_info.embedding_model_id
-            ):
+        bound_model_id = (
+            collection_info.embedding_model_id.strip()
+            if isinstance(collection_info.embedding_model_id, str)
+            and collection_info.embedding_model_id.strip()
+            else None
+        )
+
+        if collection_info.is_initialized and bound_model_id:
+            if config_model_id and config_model_id != bound_model_id:
                 logger.warning(
                     "Config embedding_model_id '%s' overridden by "
                     "collection '%s' bound model '%s'",
                     config_model_id,
                     collection_name,
-                    collection_info.embedding_model_id,
+                    bound_model_id,
                 )
-            return collection_info.embedding_model_id or ""
+            return bound_model_id
 
         if config_model_id:
             logger.info(

@@ -11,6 +11,7 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     WebCrawlConfig,
 )
 from xagent.core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
+from xagent.core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
 
 
 class TestWebIngestionPipeline:
@@ -387,3 +388,20 @@ class TestWebIngestionPipeline:
 
         # Elapsed time should be tracked
         assert result.elapsed_time_ms >= 0
+
+
+def test_sanitize_for_doc_id_behavior() -> None:
+    """Test sanitize_for_doc_id behavior used by web ingestion."""
+    # Replaces spaces and dots with underscores.
+    assert sanitize_for_doc_id("report 2024.pdf") == "report_2024_pdf"
+
+    # Path traversal-like input is normalized to safe token.
+    assert sanitize_for_doc_id("../../etc/passwd") == "etc_passwd"
+
+    # Non-allowed symbols collapse into underscores and trim boundaries.
+    assert sanitize_for_doc_id("  .test.  ") == "test"
+
+    # Empty input falls back to generated short identifier.
+    fallback = sanitize_for_doc_id("")
+    assert len(fallback) == 8
+    assert fallback.isalnum()
