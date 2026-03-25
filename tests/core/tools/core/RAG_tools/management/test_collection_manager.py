@@ -44,7 +44,8 @@ class TestCollectionManager:
         mock_table = Mock()
         mock_result = Mock()
 
-        # Set up the mock chain
+        # Set up the mock chain - schema_manager._ensure_schema_fields expects iterable schema fields
+        mock_table.schema = [SimpleNamespace(name="name")]
         mock_connection.open_table.return_value = mock_table
         mock_table.search.return_value.where.return_value.to_pandas.return_value = (
             mock_result
@@ -86,7 +87,8 @@ class TestCollectionManager:
         mock_table = Mock()
         mock_result = Mock()
 
-        # Set up the mock chain
+        # Set up the mock chain - schema_manager._ensure_schema_fields expects iterable schema fields
+        mock_table.schema = [SimpleNamespace(name="name")]
         mock_connection.open_table.return_value = mock_table
         mock_table.search.return_value.where.return_value.to_pandas.return_value = (
             mock_result
@@ -137,6 +139,8 @@ class TestCollectionManager:
         mock_connection = Mock()
         mock_table = Mock()
         mock_result = Mock()
+        # schema_manager._ensure_schema_fields expects iterable schema fields
+        mock_table.schema = [SimpleNamespace(name="name")]
         mock_connection.open_table.return_value = mock_table
         mock_table.search.return_value.where.return_value.to_pandas.return_value = (
             mock_result
