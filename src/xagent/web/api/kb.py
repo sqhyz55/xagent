@@ -29,16 +29,30 @@ from sqlalchemy.orm import Session
 from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ...core.tools.core.RAG_tools.core.schemas import (
     ChunkStrategy,
+    CloneCollectionRequest,
+    CloneCollectionResponse,
     CollectionOperationResult,
+    DocumentStatusResponse,
     FusionConfig,
     IngestionConfig,
     IngestionResult,
     ListCollectionsResult,
+    ListSharedCollectionsResponse,
+    ListStagedDocumentsResponse,
     ParseMethod,
     ParseResultResponse,
+    ProcessDocumentsRequest,
+    ProcessDocumentsResponse,
+    RetryDocumentResponse,
     SearchConfig,
     SearchPipelineResult,
     SearchType,
+    ShareCollectionRequest,
+    ShareCollectionResponse,
+    StageDocumentRequest,
+    StageDocumentResponse,
+    UnshareCollectionRequest,
+    UnshareCollectionResponse,
     WebCrawlConfig,
     WebIngestionResult,
 )
@@ -1703,3 +1717,781 @@ async def get_parse_result_api(
         elements=paginated_elements,
         pagination=pagination_info,
     )
+
+
+# ==================== Phase 1B API Endpoints ====================
+# Collection sharing, document staging, and collection cloning
+
+
+@kb_router.post(
+    "/collections/{collection}/share",
+    response_model=ShareCollectionResponse,
+)
+async def share_collection(
+    collection: str,
+    request: ShareCollectionRequest,
+    _user: User = Depends(get_current_user),
+) -> ShareCollectionResponse:
+    """Share a collection with another user (read-only access).
+
+    Phase 1B: Only the collection owner can share with other users.
+    Shared users can read and search but cannot upload, delete, or process documents.
+    """
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+    from ...core.tools.core.RAG_tools.storage.rdb_models import (
+        KBCollectionShare,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+
+        # Verify current user is the owner
+        session_factory = getattr(metadata_store, "_session_factory", None)
+        if session_factory is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Collection sharing requires PostgreSQL metadata store",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+
+        # Check if share already exists
+        from sqlalchemy import select
+
+        session = session_factory()
+        try:
+            existing = session.execute(
+                select(KBCollectionShare).where(
+                    KBCollectionShare.collection == collection,
+                    KBCollectionShare.shared_with_user_id
+                    == request.shared_with_user_id,
+                )
+            ).scalar_one_or_none()
+
+            if existing:
+                return ShareCollectionResponse(
+                    status="success",
+                    collection=collection,
+                    shared_with_user_id=request.shared_with_user_id,
+                    message="Collection already shared with this user",
+                )
+
+            # Create new share
+            new_share = KBCollectionShare(
+                collection=collection,
+                shared_with_user_id=request.shared_with_user_id,
+                created_by=int(_user.id),
+            )
+            session.add(new_share)
+            session.commit()
+
+            logger.info(
+                "Collection '%s' shared with user %s by user %s",
+                collection,
+                request.shared_with_user_id,
+                _user.id,
+            )
+
+            return ShareCollectionResponse(
+                status="success",
+                collection=collection,
+                shared_with_user_id=request.shared_with_user_id,
+                message=f"Collection '{collection}' shared with user {request.shared_with_user_id}",
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to share collection '{collection}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.delete(
+    "/collections/{collection}/share",
+    response_model=UnshareCollectionResponse,
+)
+async def unshare_collection(
+    collection: str,
+    request: UnshareCollectionRequest,
+    _user: User = Depends(get_current_user),
+) -> UnshareCollectionResponse:
+    """Remove sharing for a collection.
+
+    Phase 1B: Only the collection owner can remove sharing.
+    """
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+    from ...core.tools.core.RAG_tools.storage.rdb_models import KBCollectionShare
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Collection sharing requires PostgreSQL metadata store",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+
+        from sqlalchemy import select
+
+        session = session_factory()
+        try:
+            # Find and delete the share
+            share = session.execute(
+                select(KBCollectionShare).where(
+                    KBCollectionShare.collection == collection,
+                    KBCollectionShare.shared_with_user_id
+                    == request.shared_with_user_id,
+                )
+            ).scalar_one_or_none()
+
+            if share is None:
+                return UnshareCollectionResponse(
+                    status="success",
+                    collection=collection,
+                    shared_with_user_id=request.shared_with_user_id,
+                    message="Share does not exist (already removed)",
+                )
+
+            session.delete(share)
+            session.commit()
+
+            logger.info(
+                "Collection '%s' unshared from user %s by user %s",
+                collection,
+                request.shared_with_user_id,
+                _user.id,
+            )
+
+            return UnshareCollectionResponse(
+                status="success",
+                collection=collection,
+                shared_with_user_id=request.shared_with_user_id,
+                message=f"User {request.shared_with_user_id} removed from collection '{collection}'",
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to unshare collection '{collection}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.get(
+    "/collections/shared-with-me",
+    response_model=ListSharedCollectionsResponse,
+)
+async def list_shared_collections(
+    _user: User = Depends(get_current_user),
+) -> ListSharedCollectionsResponse:
+    """List collections shared with the current user (Phase 1B).
+
+    Returns collections where the current user has read-only access.
+    """
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.rdb_models import (
+        KBCollectionMetadata,
+        KBCollectionShare,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            return ListSharedCollectionsResponse(
+                status="error",
+                collections=[],
+                total_count=0,
+                message="PostgreSQL metadata store not available",
+            )
+
+        from sqlalchemy import select
+
+        session = session_factory()
+        try:
+            # Get all shares for current user
+            shares = session.execute(
+                select(KBCollectionShare).where(
+                    KBCollectionShare.shared_with_user_id == int(_user.id)
+                )
+            ).scalars()
+
+            share_infos = []
+            for share in shares:
+                # Get collection name and created_by info
+                collection = session.execute(
+                    select(KBCollectionMetadata).where(
+                        KBCollectionMetadata.name == share.collection
+                    )
+                ).scalar_one_or_none()
+
+                if collection is None:
+                    continue
+
+                share_infos.append(
+                    {
+                        "collection": share.collection,
+                        "shared_with_user_id": share.shared_with_user_id,
+                        "shared_with_username": None,  # Could be populated from user table
+                        "created_at": share.created_at.isoformat(),
+                        "created_by": share.created_by,
+                    }
+                )
+
+            return ListSharedCollectionsResponse(
+                status="success",
+                collections=share_infos,
+                total_count=len(share_infos),
+                message=f"Found {len(share_infos)} shared collections",
+            )
+        finally:
+            session.close()
+
+    except Exception as e:
+        logger.error(f"Failed to list shared collections: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.post(
+    "/collections/{collection}/documents/register",
+    response_model=StageDocumentResponse,
+)
+async def register_document(
+    collection: str,
+    request: StageDocumentRequest,
+    _user: User = Depends(get_current_user),
+) -> StageDocumentResponse:
+    """Register a document in staging without processing (Phase 1B).
+
+    The document is registered with 'uploaded' status and can be processed later.
+    This supports decoupling file upload from processing.
+    """
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Document staging requires PostgreSQL metadata store",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+
+        # Generate doc_id if not provided
+        doc_id = request.doc_id or f"doc_{collection}_{request.file_id}_{int(_user.id)}"
+
+        # Create staging record
+        from datetime import datetime, timezone
+
+        from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
+
+        session = session_factory()
+        try:
+            staging = KBDocumentStaging(
+                collection=collection,
+                doc_id=doc_id,
+                file_id=request.file_id,
+                uploaded_by_user_id=int(_user.id),
+                status="uploaded",
+                uploaded_at=datetime.now(timezone.utc),
+            )
+            session.add(staging)
+            session.commit()
+
+            logger.info(
+                "Document '%s' registered in collection '%s' with file_id '%s' by user %s",
+                doc_id,
+                collection,
+                request.file_id,
+                _user.id,
+            )
+
+            return StageDocumentResponse(
+                status="success",
+                doc_id=doc_id,
+                file_id=request.file_id,
+                collection=collection,
+                staging_status="uploaded",
+                message=f"Document '{doc_id}' registered successfully. Process it to start ingestion.",
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to register document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.post(
+    "/collections/{collection}/process",
+    response_model=ProcessDocumentsResponse,
+)
+async def process_documents(
+    collection: str,
+    request: ProcessDocumentsRequest,
+    _user: User = Depends(get_current_user),
+) -> ProcessDocumentsResponse:
+    """Trigger processing for staged documents (Phase 1B).
+
+    Queues documents for processing. In production, this would trigger
+    Celery tasks. For now, returns the queued documents.
+    """
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Document processing requires PostgreSQL metadata store",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+
+        from sqlalchemy import select
+
+        from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
+
+        session = session_factory()
+        try:
+            # Build query to find documents to process
+            query = select(KBDocumentStaging).where(
+                KBDocumentStaging.collection == collection,
+                KBDocumentStaging.status == "uploaded",
+            )
+
+            if request.doc_ids:
+                query = query.where(KBDocumentStaging.doc_id.in_(request.doc_ids))
+
+            # Get documents
+            docs_to_process = session.execute(query).scalars().all()
+
+            if not docs_to_process:
+                return ProcessDocumentsResponse(
+                    status="success",
+                    collection=collection,
+                    queued_count=0,
+                    message="No documents to process (all may already be processing or complete)",
+                )
+
+            # Update status to queued
+            for doc in docs_to_process:
+                doc.status = "queued"
+                doc.processing_started_at = None  # Will be set when processing starts
+
+            session.commit()
+
+            queued_count = len(docs_to_process)
+
+            # TODO: Trigger Celery task here for async processing
+            # For now, documents are just marked as queued
+
+            logger.info(
+                "Queued %d documents for processing in collection '%s' by user %s",
+                queued_count,
+                collection,
+                _user.id,
+            )
+
+            return ProcessDocumentsResponse(
+                status="success",
+                collection=collection,
+                queued_count=queued_count,
+                message=f"{queued_count} documents queued for processing",
+                task_id=None,  # Would be Celery task ID in production
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to process documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.get(
+    "/collections/{collection}/documents/staged",
+    response_model=ListStagedDocumentsResponse,
+)
+async def list_staged_documents(
+    collection: str,
+    status: Optional[str] = Query(
+        None,
+        description="Filter by status: uploaded, queued, parsing, chunked, embedding, complete, failed",
+    ),
+    _user: User = Depends(get_current_user),
+) -> ListStagedDocumentsResponse:
+    """List staged documents in a collection (Phase 1B)."""
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            return ListStagedDocumentsResponse(
+                status="error",
+                documents=[],
+                total_count=0,
+                message="PostgreSQL metadata store not available",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_read(collection, int(_user.id), bool(_user.is_admin))
+
+        from sqlalchemy import select
+
+        from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
+
+        session = session_factory()
+        try:
+            query = select(KBDocumentStaging).where(
+                KBDocumentStaging.collection == collection
+            )
+
+            if status:
+                query = query.where(KBDocumentStaging.status == status)
+
+            docs = session.execute(query).scalars().all()
+
+            doc_infos = []
+            for doc in docs:
+                doc_infos.append(
+                    {
+                        "doc_id": doc.doc_id,
+                        "file_id": doc.file_id,
+                        "collection": doc.collection,
+                        "status": doc.status,
+                        "uploaded_at": doc.uploaded_at.isoformat(),
+                        "uploaded_by_user_id": doc.uploaded_by_user_id,
+                        "processing_started_at": doc.processing_started_at.isoformat()
+                        if doc.processing_started_at
+                        else None,
+                        "completed_at": doc.completed_at.isoformat()
+                        if doc.completed_at
+                        else None,
+                        "error_message": doc.error_message,
+                        "retry_count": doc.retry_count,
+                    }
+                )
+
+            return ListStagedDocumentsResponse(
+                status="success",
+                documents=doc_infos,
+                total_count=len(doc_infos),
+                message=f"Found {len(doc_infos)} staged documents",
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to list staged documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.get(
+    "/collections/{collection}/documents/{doc_id}/status",
+    response_model=DocumentStatusResponse,
+)
+async def get_document_status(
+    collection: str,
+    doc_id: str,
+    _user: User = Depends(get_current_user),
+) -> DocumentStatusResponse:
+    """Get processing status for a specific document (Phase 1B)."""
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            return DocumentStatusResponse(
+                status="error",
+                doc_id=doc_id,
+                staging_info=None,
+                message="PostgreSQL metadata store not available",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_read(collection, int(_user.id), bool(_user.is_admin))
+
+        from sqlalchemy import select
+
+        from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
+
+        session = session_factory()
+        try:
+            staging = session.execute(
+                select(KBDocumentStaging).where(
+                    KBDocumentStaging.collection == collection,
+                    KBDocumentStaging.doc_id == doc_id,
+                )
+            ).scalar_one_or_none()
+
+            if staging is None:
+                return DocumentStatusResponse(
+                    status="error",
+                    doc_id=doc_id,
+                    staging_info=None,
+                    message=f"Document '{doc_id}' not found in staging",
+                )
+
+            staging_info = {
+                "doc_id": staging.doc_id,
+                "file_id": staging.file_id,
+                "collection": staging.collection,
+                "status": staging.status,
+                "uploaded_at": staging.uploaded_at.isoformat(),
+                "uploaded_by_user_id": staging.uploaded_by_user_id,
+                "processing_started_at": staging.processing_started_at.isoformat()
+                if staging.processing_started_at
+                else None,
+                "completed_at": staging.completed_at.isoformat()
+                if staging.completed_at
+                else None,
+                "error_message": staging.error_message,
+                "retry_count": staging.retry_count,
+            }
+
+            return DocumentStatusResponse(
+                status="success",
+                doc_id=doc_id,
+                staging_info=staging_info,
+                message="Document status retrieved successfully",
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to get document status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.post(
+    "/collections/{collection}/documents/{doc_id}/retry",
+    response_model=RetryDocumentResponse,
+)
+async def retry_document(
+    collection: str,
+    doc_id: str,
+    _user: User = Depends(get_current_user),
+) -> RetryDocumentResponse:
+    """Retry processing for a failed document (Phase 1B)."""
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Document processing requires PostgreSQL metadata store",
+            )
+
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+
+        from sqlalchemy import select
+
+        from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
+
+        session = session_factory()
+        try:
+            staging = session.execute(
+                select(KBDocumentStaging).where(
+                    KBDocumentStaging.collection == collection,
+                    KBDocumentStaging.doc_id == doc_id,
+                )
+            ).scalar_one_or_none()
+
+            if staging is None:
+                return RetryDocumentResponse(
+                    status="error",
+                    doc_id=doc_id,
+                    message=f"Document '{doc_id}' not found in staging",
+                )
+
+            if staging.status != "failed":
+                return RetryDocumentResponse(
+                    status="error",
+                    doc_id=doc_id,
+                    message=f"Document status is '{staging.status}', only failed documents can be retried",
+                )
+
+            # Reset to queued for retry
+            staging.status = "queued"
+            staging.error_message = None
+            staging.retry_count += 1
+
+            session.commit()
+
+            logger.info(
+                "Document '%s' queued for retry (attempt %d) in collection '%s' by user %s",
+                doc_id,
+                staging.retry_count,
+                collection,
+                _user.id,
+            )
+
+            return RetryDocumentResponse(
+                status="success",
+                doc_id=doc_id,
+                message=f"Document '{doc_id}' queued for retry (attempt {staging.retry_count})",
+            )
+        finally:
+            session.close()
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to retry document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@kb_router.post(
+    "/collections/clone",
+    response_model=CloneCollectionResponse,
+)
+async def clone_collection(
+    request: CloneCollectionRequest,
+    _user: User = Depends(get_current_user),
+) -> CloneCollectionResponse:
+    """Clone a collection (metadata and config only, not documents).
+
+    Phase 1B: Creates a new collection with settings copied from an existing one.
+    This is a helper for when users want to modify configuration but
+    configuration changes are not allowed (must create new collection).
+
+    Only the collection owner can clone.
+    """
+    from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
+    from ...core.tools.core.RAG_tools.storage.permissions import (
+        CollectionPermissionChecker,
+    )
+
+    try:
+        metadata_store = get_metadata_store()
+        session_factory = getattr(metadata_store, "_session_factory", None)
+
+        if session_factory is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Collection cloning requires PostgreSQL metadata store",
+            )
+
+        # Check if user owns source collection
+        checker = CollectionPermissionChecker(session_factory)
+        checker.require_modify(
+            request.source_collection, int(_user.id), bool(_user.is_admin)
+        )
+
+        # Get source collection
+        source_collection = await metadata_store.get_collection(
+            request.source_collection
+        )
+
+        # Create new collection with cloned settings
+        from ...core.tools.core.RAG_tools.core.schemas import CollectionInfo
+
+        new_collection = CollectionInfo(
+            name=request.new_collection,
+            owner_user_id=int(_user.id),
+            # Clone configuration
+            embedding_model_id=source_collection.embedding_model_id,
+            embedding_dimension=source_collection.embedding_dimension,
+            allow_mixed_parse_methods=source_collection.allow_mixed_parse_methods,
+            collection_locked=source_collection.collection_locked,
+            skip_config_validation=source_collection.skip_config_validation,
+            ingestion_config=source_collection.ingestion_config,
+        )
+
+        # Apply config overrides if provided
+        if request.new_config:
+            # Update with overridden values
+            config_dict = (
+                new_collection.ingestion_config.model_dump()
+                if new_collection.ingestion_config
+                else {}
+            )
+            config_dict.update(request.new_config)
+            if new_collection.ingestion_config is not None:
+                new_collection.ingestion_config = type(
+                    new_collection.ingestion_config
+                ).model_validate(config_dict)
+            else:
+                # If no existing config, create a new IngestionConfig from dict
+                from ...core.tools.core.RAG_tools.core.schemas import IngestionConfig
+
+                new_collection.ingestion_config = IngestionConfig.model_validate(
+                    config_dict
+                )
+
+        await metadata_store.save_collection(new_collection)
+
+        logger.info(
+            "Collection '%s' cloned to '%s' by user %s",
+            request.source_collection,
+            request.new_collection,
+            _user.id,
+        )
+
+        return CloneCollectionResponse(
+            status="success",
+            source_collection=request.source_collection,
+            new_collection=request.new_collection,
+            message=f"Collection '{request.new_collection}' created with settings from '{request.source_collection}'",
+        )
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to clone collection: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

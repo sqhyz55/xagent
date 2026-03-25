@@ -1245,6 +1245,18 @@ class CollectionInfo(BaseModel):
     # Basic identifier
     name: str = Field(..., description="Collection identifier")
 
+    # 👤 Owner (Phase 1B: multi-user isolation)
+    owner_user_id: Optional[int] = Field(
+        default=None,
+        description="User ID of the collection owner. None for legacy collections.",
+    )
+
+    # 🔗 File ID linkage (Phase 1B: cross-domain reference)
+    external_file_id: Optional[str] = Field(
+        default=None,
+        description="Link to file system file_id for cross-domain reference.",
+    )
+
     # 🎯 Core binding: Embedding configuration (lazy initialization)
     embedding_model_id: Optional[str] = Field(
         default=None,  # None indicates not initialized
@@ -1333,7 +1345,13 @@ class CollectionInfo(BaseModel):
             if isinstance(value, float) and math.isnan(value):
                 data[key] = None
 
-        # 3. Check version and migrate if needed
+        # 3. Set default values for Phase 1B fields if missing (for backward compatibility)
+        if "owner_user_id" not in data:
+            data["owner_user_id"] = None
+        if "external_file_id" not in data:
+            data["external_file_id"] = None
+
+        # 4. Check version and migrate if needed
         current_version = "1.0.0"
         data_version = data.get("schema_version", "0.0.0")
 
@@ -1726,3 +1744,246 @@ class WebIngestionResult(BaseModel):
     elapsed_time_ms: int = Field(
         ..., ge=0, description="Total elapsed time in milliseconds"
     )
+
+
+# ------------------------- Phase 1B Schemas -------------------------
+# Collection sharing, document staging, and collection cloning
+
+
+class ShareCollectionRequest(BaseModel):
+    """Request schema for sharing a collection with another user (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    shared_with_user_id: int = Field(
+        ..., description="User ID to share the collection with"
+    )
+    message: Optional[str] = Field(
+        None, description="Optional message for the share recipient"
+    )
+
+
+class ShareCollectionResponse(BaseModel):
+    """Response schema for share operation (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    collection: str = Field(..., description="Collection name")
+    shared_with_user_id: int = Field(
+        ..., description="User ID that collection was shared with"
+    )
+    message: str = Field(..., description="Human-readable result message")
+
+
+class UnshareCollectionRequest(BaseModel):
+    """Request schema for unsharing a collection (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    shared_with_user_id: int = Field(..., description="User ID to remove from sharing")
+
+
+class UnshareCollectionResponse(BaseModel):
+    """Response schema for unshare operation (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    collection: str = Field(..., description="Collection name")
+    shared_with_user_id: int = Field(
+        ..., description="User ID that was removed from sharing"
+    )
+    message: str = Field(..., description="Human-readable result message")
+
+
+class CollectionShareInfo(BaseModel):
+    """Information about a collection share (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    collection: str = Field(..., description="Collection name")
+    shared_with_user_id: int = Field(..., description="User ID that has access")
+    shared_with_username: Optional[str] = Field(
+        None, description="Username of the user with access (if available)"
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        description="When the share was created",
+    )
+    created_by: int = Field(..., description="User ID who created the share")
+
+
+class ListSharedCollectionsResponse(BaseModel):
+    """Response schema for listing collections shared with current user (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    collections: List[CollectionShareInfo] = Field(
+        default_factory=list, description="Collections shared with current user"
+    )
+    total_count: int = Field(
+        ..., ge=0, description="Total number of shared collections"
+    )
+    message: str = Field(..., description="Human-readable result message")
+
+
+class StageDocumentRequest(BaseModel):
+    """Request schema for staging a document (Phase 1B).
+
+    The document is registered but not processed immediately.
+    Processing happens later via explicit trigger or scheduled job.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    file_id: str = Field(..., description="File ID from file system")
+    collection: str = Field(..., description="Target collection name")
+    doc_id: Optional[str] = Field(
+        None, description="Document ID (auto-generated if not provided)"
+    )
+
+
+class StageDocumentResponse(BaseModel):
+    """Response schema for document staging (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    doc_id: str = Field(..., description="Generated or provided document ID")
+    file_id: str = Field(..., description="File ID from request")
+    collection: str = Field(..., description="Collection name")
+    staging_status: str = Field(
+        ..., description="Initial staging status: 'uploaded' or 'queued'"
+    )
+    message: str = Field(..., description="Human-readable result message")
+
+
+class ProcessDocumentsRequest(BaseModel):
+    """Request schema for triggering document processing (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    collection: str = Field(..., description="Target collection name")
+    doc_ids: Optional[List[str]] = Field(
+        None,
+        description="List of document IDs to process. None = all uploaded documents",
+    )
+
+
+class ProcessDocumentsResponse(BaseModel):
+    """Response schema for processing trigger (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    collection: str = Field(..., description="Collection name")
+    queued_count: int = Field(
+        ..., ge=0, description="Number of documents queued for processing"
+    )
+    message: str = Field(..., description="Human-readable result message")
+    task_id: Optional[str] = Field(
+        None, description="Celery task ID for async processing (if applicable)"
+    )
+
+
+class DocumentStagingInfo(BaseModel):
+    """Information about a staged document (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    doc_id: str = Field(..., description="Document ID")
+    file_id: str = Field(..., description="File ID from file system")
+    collection: str = Field(..., description="Collection name")
+    status: str = Field(
+        ...,
+        description="Staging status: uploaded, queued, parsing, chunked, embedding, complete, failed",
+    )
+    uploaded_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        description="When document was registered",
+    )
+    uploaded_by_user_id: int = Field(
+        ..., description="User ID who uploaded the document"
+    )
+    processing_started_at: Optional[datetime] = Field(
+        None, description="When processing started"
+    )
+    completed_at: Optional[datetime] = Field(
+        None, description="When processing completed"
+    )
+    error_message: Optional[str] = Field(None, description="Error message if failed")
+    retry_count: int = Field(0, ge=0, description="Number of retry attempts")
+
+
+class ListStagedDocumentsResponse(BaseModel):
+    """Response schema for listing staged documents (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    documents: List[DocumentStagingInfo] = Field(
+        default_factory=list, description="Staged documents"
+    )
+    total_count: int = Field(..., ge=0, description="Total number of staged documents")
+    message: str = Field(..., description="Human-readable result message")
+
+
+class DocumentStatusResponse(BaseModel):
+    """Response schema for single document status query (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Query status: success|error")
+    doc_id: str = Field(..., description="Document ID from request")
+    staging_info: Optional[DocumentStagingInfo] = Field(
+        None, description="Staging information if found"
+    )
+    message: str = Field(..., description="Human-readable result message")
+
+
+class RetryDocumentRequest(BaseModel):
+    """Request schema for retrying a failed document (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    doc_id: str = Field(..., description="Document ID to retry")
+
+
+class RetryDocumentResponse(BaseModel):
+    """Response schema for retry operation (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    doc_id: str = Field(..., description="Document ID that was retried")
+    message: str = Field(..., description="Human-readable result message")
+
+
+class CloneCollectionRequest(BaseModel):
+    """Request schema for cloning a collection (Phase 1B).
+
+    Creates a new collection with settings copied from an existing one.
+    Documents are NOT copied - only metadata and configuration.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_collection: str = Field(..., description="Source collection to clone from")
+    new_collection: str = Field(..., description="Name for the new collection")
+    new_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional config overrides to apply to the cloned collection",
+    )
+
+
+class CloneCollectionResponse(BaseModel):
+    """Response schema for clone operation (Phase 1B)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Operation status: success|error")
+    source_collection: str = Field(..., description="Source collection name")
+    new_collection: str = Field(..., description="Name of created collection")
+    message: str = Field(..., description="Human-readable result message")

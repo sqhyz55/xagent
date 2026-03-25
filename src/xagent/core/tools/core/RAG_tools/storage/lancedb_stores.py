@@ -75,6 +75,9 @@ class LanceDBMetadataStore(MetadataStore):
                 ("allow_mixed_parse_methods", pa.bool_()),
                 ("skip_config_validation", pa.bool_()),
                 ("ingestion_config", pa.string()),
+                # Phase 1B fields
+                ("owner_user_id", pa.int32()),
+                ("external_file_id", pa.string()),
                 ("created_at", pa.timestamp("us")),
                 ("updated_at", pa.timestamp("us")),
                 ("last_accessed_at", pa.timestamp("us")),
