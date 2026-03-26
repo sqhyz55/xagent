@@ -169,6 +169,11 @@ class KBDocumentStaging(Base):
         Index("idx_kb_document_staging_file_id", "file_id"),
         Index("idx_kb_document_staging_status", "status"),
         Index("idx_kb_document_staging_uploaded_by_user_id", "uploaded_by_user_id"),
+        UniqueConstraint(
+            "collection",
+            "doc_id",
+            name="uq_kb_document_staging_collection_doc_id",
+        ),
     )
 
 

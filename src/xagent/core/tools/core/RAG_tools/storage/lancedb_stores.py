@@ -157,6 +157,13 @@ class LanceDBMetadataStore(MetadataStore):
             logger.debug("Error reading collection config: %s", exc)
             return None
 
+    def get_session_factory(self) -> None:
+        """LanceDB does not use session factory pattern.
+
+        Returns None to indicate this is a non-RDB backend.
+        """
+        return None
+
     def get_raw_connection(self) -> DBConnection:
         return get_connection_from_env() if self._conn is None else self._conn
 

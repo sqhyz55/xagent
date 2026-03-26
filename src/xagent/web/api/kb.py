@@ -187,7 +187,10 @@ async def save_collection_config(
         )
     except Exception as e:
         logger.error(f"Failed to save collection config: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save collection configuration. Please try again later.",
+        )
 
 
 @kb_router.post(
@@ -1705,7 +1708,7 @@ async def get_parse_result_api(
         )
     except DocumentNotFoundError as e:
         logger.warning("Parse result not found: %s", e)
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail="Parse result not found.")
 
     paginated_elements, pagination_info = paginate_parse_results(
         elements, page, page_size
@@ -1749,7 +1752,7 @@ async def share_collection(
         metadata_store = get_metadata_store()
 
         # Verify current user is the owner
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
         if session_factory is None:
             raise HTTPException(
                 status_code=400,
@@ -1805,11 +1808,16 @@ async def share_collection(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to share collection '{collection}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to share collection. Please try again later.",
+        )
 
 
 @kb_router.delete(
@@ -1833,7 +1841,7 @@ async def unshare_collection(
 
     try:
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
             raise HTTPException(
@@ -1884,11 +1892,16 @@ async def unshare_collection(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to unshare collection '{collection}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to unshare collection. Please try again later.",
+        )
 
 
 @kb_router.get(
@@ -1910,14 +1923,12 @@ async def list_shared_collections(
 
     try:
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
-            return ListSharedCollectionsResponse(
-                status="error",
-                collections=[],
-                total_count=0,
-                message="PostgreSQL metadata store not available",
+            raise HTTPException(
+                status_code=503,
+                detail="PostgreSQL metadata store not available. This feature requires PostgreSQL backend.",
             )
 
         from sqlalchemy import select
@@ -1964,7 +1975,10 @@ async def list_shared_collections(
 
     except Exception as e:
         logger.error(f"Failed to list shared collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to list shared collections. Please try again later.",
+        )
 
 
 @kb_router.post(
@@ -1987,8 +2001,15 @@ async def register_document(
     )
 
     try:
+        # Validate path collection matches request collection
+        if request.collection != collection:
+            raise HTTPException(
+                status_code=400,
+                detail="Path collection parameter must match request.collection field",
+            )
+
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
             raise HTTPException(
@@ -2039,11 +2060,16 @@ async def register_document(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to register document: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to register document. Please try again later.",
+        )
 
 
 @kb_router.post(
@@ -2066,8 +2092,15 @@ async def process_documents(
     )
 
     try:
+        # Validate path collection matches request collection
+        if request.collection != collection:
+            raise HTTPException(
+                status_code=400,
+                detail="Path collection parameter must match request.collection field",
+            )
+
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
             raise HTTPException(
@@ -2133,11 +2166,16 @@ async def process_documents(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to process documents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process documents. Please try again later.",
+        )
 
 
 @kb_router.get(
@@ -2160,14 +2198,12 @@ async def list_staged_documents(
 
     try:
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
-            return ListStagedDocumentsResponse(
-                status="error",
-                documents=[],
-                total_count=0,
-                message="PostgreSQL metadata store not available",
+            raise HTTPException(
+                status_code=503,
+                detail="PostgreSQL metadata store not available. This feature requires PostgreSQL backend.",
             )
 
         checker = CollectionPermissionChecker(session_factory)
@@ -2218,11 +2254,16 @@ async def list_staged_documents(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to list staged documents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to list staged documents. Please try again later.",
+        )
 
 
 @kb_router.get(
@@ -2242,14 +2283,12 @@ async def get_document_status(
 
     try:
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
-            return DocumentStatusResponse(
-                status="error",
-                doc_id=doc_id,
-                staging_info=None,
-                message="PostgreSQL metadata store not available",
+            raise HTTPException(
+                status_code=503,
+                detail="PostgreSQL metadata store not available. This feature requires PostgreSQL backend.",
             )
 
         checker = CollectionPermissionChecker(session_factory)
@@ -2269,11 +2308,9 @@ async def get_document_status(
             ).scalar_one_or_none()
 
             if staging is None:
-                return DocumentStatusResponse(
-                    status="error",
-                    doc_id=doc_id,
-                    staging_info=None,
-                    message=f"Document '{doc_id}' not found in staging",
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document '{doc_id}' not found in collection '{collection}'",
                 )
 
             staging_info = {
@@ -2302,11 +2339,16 @@ async def get_document_status(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to get document status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to get document status. Please try again later.",
+        )
 
 
 @kb_router.post(
@@ -2326,7 +2368,7 @@ async def retry_document(
 
     try:
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
             raise HTTPException(
@@ -2351,17 +2393,15 @@ async def retry_document(
             ).scalar_one_or_none()
 
             if staging is None:
-                return RetryDocumentResponse(
-                    status="error",
-                    doc_id=doc_id,
-                    message=f"Document '{doc_id}' not found in staging",
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document '{doc_id}' not found in collection '{collection}'",
                 )
 
             if staging.status != "failed":
-                return RetryDocumentResponse(
-                    status="error",
-                    doc_id=doc_id,
-                    message=f"Document status is '{staging.status}', only failed documents can be retried",
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Only failed documents can be retried. Current status: '{staging.status}'",
                 )
 
             # Reset to queued for retry
@@ -2387,11 +2427,15 @@ async def retry_document(
         finally:
             session.close()
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
     except Exception as e:
         logger.error(f"Failed to retry document: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500, detail="Failed to retry document. Please try again later."
+        )
 
 
 @kb_router.post(
@@ -2417,7 +2461,7 @@ async def clone_collection(
 
     try:
         metadata_store = get_metadata_store()
-        session_factory = getattr(metadata_store, "_session_factory", None)
+        session_factory = metadata_store.get_session_factory()
 
         if session_factory is None:
             raise HTTPException(
@@ -2436,6 +2480,17 @@ async def clone_collection(
             request.source_collection
         )
 
+        # Check if new collection already exists
+        try:
+            await metadata_store.get_collection(request.new_collection)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Collection '{request.new_collection}' already exists.",
+            )
+        except ValueError:
+            # Collection doesn't exist, which is what we want
+            pass
+
         # Create new collection with cloned settings
         from ...core.tools.core.RAG_tools.core.schemas import CollectionInfo
 
@@ -2449,6 +2504,8 @@ async def clone_collection(
             collection_locked=source_collection.collection_locked,
             skip_config_validation=source_collection.skip_config_validation,
             ingestion_config=source_collection.ingestion_config,
+            # Phase 1B fields
+            external_file_id=source_collection.external_file_id,
         )
 
         # Apply config overrides if provided
@@ -2488,10 +2545,15 @@ async def clone_collection(
             message=f"Collection '{request.new_collection}' created with settings from '{request.source_collection}'",
         )
 
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError:
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to perform this action."
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Collection not found.")
     except Exception as e:
         logger.error(f"Failed to clone collection: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to clone collection. Please try again later.",
+        )

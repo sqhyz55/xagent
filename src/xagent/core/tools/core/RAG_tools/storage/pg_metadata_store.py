@@ -217,6 +217,21 @@ class PostgreSQLMetadataStore(MetadataStore):
                 return None
             return json.dumps(row.config_json)
 
+    def get_session_factory(self) -> Any:
+        """Return async session factory for PostgreSQL operations.
+
+        Returns:
+            SQLAlchemy async_sessionmaker bound to this store's engine.
+
+        Note:
+            The returned factory creates AsyncSession instances. Callers
+            should use it in an async context:
+
+            async with session_factory() as session:
+                # ... use session
+        """
+        return self._session_factory
+
     def get_raw_connection(self) -> Any:
         """Return raw engine for legacy compatibility paths.
 

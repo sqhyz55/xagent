@@ -477,6 +477,18 @@ class DualWriteMetadataStore(MetadataStore):
         store = self._get_read_store()
         return await store.get_collection_config(collection, user_id)
 
+    def get_session_factory(self) -> Any:
+        """Return PostgreSQL session factory for RDB operations.
+
+        Returns:
+            Session factory from PostgreSQL backend if available, None otherwise.
+
+        Note:
+            In dual-write mode, RDB operations like sharing/staging go through
+            the PostgreSQL backend. This method provides access to its session factory.
+        """
+        return self._pg_store.get_session_factory()
+
     def get_raw_connection(self) -> Any:
         """Return LanceDB backend connection."""
         return self._lancedb_store.get_raw_connection()

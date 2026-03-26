@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from lancedb.db import DBConnection
 
@@ -83,6 +83,19 @@ class MetadataStore(ABC):
 
         Returns:
             Config JSON string if found, None otherwise.
+        """
+
+    def get_session_factory(self) -> Any | None:
+        """Return session factory for RDB operations.
+
+        Returns:
+            Session factory (e.g., async_sessionmaker) for RDB backends,
+            None for non-RDB backends like LanceDB.
+
+        Note:
+            This is primarily used by API layer for operations that need
+            direct database access (e.g., sharing, staging, permissions).
+            Prefer using async methods when possible.
         """
 
     @abstractmethod
