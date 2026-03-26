@@ -1742,7 +1742,7 @@ async def share_collection(
     """
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
     from ...core.tools.core.RAG_tools.storage.rdb_models import (
         KBCollectionShare,
@@ -1759,21 +1759,21 @@ async def share_collection(
                 detail="Collection sharing requires PostgreSQL metadata store",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
 
         # Check if share already exists
         from sqlalchemy import select
 
-        session = session_factory()
-        try:
-            existing = session.execute(
+        async with session_factory() as session:
+            result = await session.execute(
                 select(KBCollectionShare).where(
                     KBCollectionShare.collection == collection,
                     KBCollectionShare.shared_with_user_id
                     == request.shared_with_user_id,
                 )
-            ).scalar_one_or_none()
+            )
+            existing = result.scalar_one_or_none()
 
             if existing:
                 return ShareCollectionResponse(
@@ -1790,7 +1790,7 @@ async def share_collection(
                 created_by=int(_user.id),
             )
             session.add(new_share)
-            session.commit()
+            await session.commit()
 
             logger.info(
                 "Collection '%s' shared with user %s by user %s",
@@ -1805,8 +1805,6 @@ async def share_collection(
                 shared_with_user_id=request.shared_with_user_id,
                 message=f"Collection '{collection}' shared with user {request.shared_with_user_id}",
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -1835,7 +1833,7 @@ async def unshare_collection(
     """
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
     from ...core.tools.core.RAG_tools.storage.rdb_models import KBCollectionShare
 
@@ -1849,21 +1847,21 @@ async def unshare_collection(
                 detail="Collection sharing requires PostgreSQL metadata store",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
 
         from sqlalchemy import select
 
-        session = session_factory()
-        try:
+        async with session_factory() as session:
             # Find and delete the share
-            share = session.execute(
+            result = await session.execute(
                 select(KBCollectionShare).where(
                     KBCollectionShare.collection == collection,
                     KBCollectionShare.shared_with_user_id
                     == request.shared_with_user_id,
                 )
-            ).scalar_one_or_none()
+            )
+            share = result.scalar_one_or_none()
 
             if share is None:
                 return UnshareCollectionResponse(
@@ -1873,8 +1871,8 @@ async def unshare_collection(
                     message="Share does not exist (already removed)",
                 )
 
-            session.delete(share)
-            session.commit()
+            await session.delete(share)
+            await session.commit()
 
             logger.info(
                 "Collection '%s' unshared from user %s by user %s",
@@ -1889,8 +1887,6 @@ async def unshare_collection(
                 shared_with_user_id=request.shared_with_user_id,
                 message=f"User {request.shared_with_user_id} removed from collection '{collection}'",
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -1933,23 +1929,24 @@ async def list_shared_collections(
 
         from sqlalchemy import select
 
-        session = session_factory()
-        try:
+        async with session_factory() as session:
             # Get all shares for current user
-            shares = session.execute(
+            result = await session.execute(
                 select(KBCollectionShare).where(
                     KBCollectionShare.shared_with_user_id == int(_user.id)
                 )
-            ).scalars()
+            )
+            shares = result.scalars()
 
             share_infos = []
             for share in shares:
                 # Get collection name and created_by info
-                collection = session.execute(
+                collection_result = await session.execute(
                     select(KBCollectionMetadata).where(
                         KBCollectionMetadata.name == share.collection
                     )
-                ).scalar_one_or_none()
+                )
+                collection = collection_result.scalar_one_or_none()
 
                 if collection is None:
                     continue
@@ -1970,8 +1967,6 @@ async def list_shared_collections(
                 total_count=len(share_infos),
                 message=f"Found {len(share_infos)} shared collections",
             )
-        finally:
-            session.close()
 
     except Exception as e:
         logger.error(f"Failed to list shared collections: {e}", exc_info=True)
@@ -1997,7 +1992,7 @@ async def register_document(
     """
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
 
     try:
@@ -2017,8 +2012,8 @@ async def register_document(
                 detail="Document staging requires PostgreSQL metadata store",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
 
         # Generate doc_id if not provided
         doc_id = request.doc_id or f"doc_{collection}_{request.file_id}_{int(_user.id)}"
@@ -2028,8 +2023,7 @@ async def register_document(
 
         from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
 
-        session = session_factory()
-        try:
+        async with session_factory() as session:
             staging = KBDocumentStaging(
                 collection=collection,
                 doc_id=doc_id,
@@ -2039,7 +2033,7 @@ async def register_document(
                 uploaded_at=datetime.now(timezone.utc),
             )
             session.add(staging)
-            session.commit()
+            await session.commit()
 
             logger.info(
                 "Document '%s' registered in collection '%s' with file_id '%s' by user %s",
@@ -2057,8 +2051,6 @@ async def register_document(
                 staging_status="uploaded",
                 message=f"Document '{doc_id}' registered successfully. Process it to start ingestion.",
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -2088,7 +2080,7 @@ async def process_documents(
     """
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
 
     try:
@@ -2108,15 +2100,14 @@ async def process_documents(
                 detail="Document processing requires PostgreSQL metadata store",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
 
         from sqlalchemy import select
 
         from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
 
-        session = session_factory()
-        try:
+        async with session_factory() as session:
             # Build query to find documents to process
             query = select(KBDocumentStaging).where(
                 KBDocumentStaging.collection == collection,
@@ -2127,7 +2118,8 @@ async def process_documents(
                 query = query.where(KBDocumentStaging.doc_id.in_(request.doc_ids))
 
             # Get documents
-            docs_to_process = session.execute(query).scalars().all()
+            result = await session.execute(query)
+            docs_to_process = result.scalars().all()
 
             if not docs_to_process:
                 return ProcessDocumentsResponse(
@@ -2142,7 +2134,7 @@ async def process_documents(
                 doc.status = "queued"
                 doc.processing_started_at = None  # Will be set when processing starts
 
-            session.commit()
+            await session.commit()
 
             queued_count = len(docs_to_process)
 
@@ -2163,8 +2155,6 @@ async def process_documents(
                 message=f"{queued_count} documents queued for processing",
                 task_id=None,  # Would be Celery task ID in production
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -2193,7 +2183,7 @@ async def list_staged_documents(
     """List staged documents in a collection (Phase 1B)."""
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
 
     try:
@@ -2206,15 +2196,14 @@ async def list_staged_documents(
                 detail="PostgreSQL metadata store not available. This feature requires PostgreSQL backend.",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_read(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_read(collection, int(_user.id), bool(_user.is_admin))
 
         from sqlalchemy import select
 
         from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
 
-        session = session_factory()
-        try:
+        async with session_factory() as session:
             query = select(KBDocumentStaging).where(
                 KBDocumentStaging.collection == collection
             )
@@ -2222,7 +2211,8 @@ async def list_staged_documents(
             if status:
                 query = query.where(KBDocumentStaging.status == status)
 
-            docs = session.execute(query).scalars().all()
+            result = await session.execute(query)
+            docs = result.scalars().all()
 
             doc_infos = []
             for doc in docs:
@@ -2251,8 +2241,6 @@ async def list_staged_documents(
                 total_count=len(doc_infos),
                 message=f"Found {len(doc_infos)} staged documents",
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -2278,7 +2266,7 @@ async def get_document_status(
     """Get processing status for a specific document (Phase 1B)."""
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
 
     try:
@@ -2291,21 +2279,21 @@ async def get_document_status(
                 detail="PostgreSQL metadata store not available. This feature requires PostgreSQL backend.",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_read(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_read(collection, int(_user.id), bool(_user.is_admin))
 
         from sqlalchemy import select
 
         from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
 
-        session = session_factory()
-        try:
-            staging = session.execute(
+        async with session_factory() as session:
+            result = await session.execute(
                 select(KBDocumentStaging).where(
                     KBDocumentStaging.collection == collection,
                     KBDocumentStaging.doc_id == doc_id,
                 )
-            ).scalar_one_or_none()
+            )
+            staging = result.scalar_one_or_none()
 
             if staging is None:
                 raise HTTPException(
@@ -2336,8 +2324,6 @@ async def get_document_status(
                 staging_info=staging_info,
                 message="Document status retrieved successfully",
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -2363,7 +2349,7 @@ async def retry_document(
     """Retry processing for a failed document (Phase 1B)."""
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
 
     try:
@@ -2376,21 +2362,21 @@ async def retry_document(
                 detail="Document processing requires PostgreSQL metadata store",
             )
 
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_modify(collection, int(_user.id), bool(_user.is_admin))
 
         from sqlalchemy import select
 
         from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
 
-        session = session_factory()
-        try:
-            staging = session.execute(
+        async with session_factory() as session:
+            result = await session.execute(
                 select(KBDocumentStaging).where(
                     KBDocumentStaging.collection == collection,
                     KBDocumentStaging.doc_id == doc_id,
                 )
-            ).scalar_one_or_none()
+            )
+            staging = result.scalar_one_or_none()
 
             if staging is None:
                 raise HTTPException(
@@ -2409,7 +2395,7 @@ async def retry_document(
             staging.error_message = None
             staging.retry_count += 1
 
-            session.commit()
+            await session.commit()
 
             logger.info(
                 "Document '%s' queued for retry (attempt %d) in collection '%s' by user %s",
@@ -2424,8 +2410,6 @@ async def retry_document(
                 doc_id=doc_id,
                 message=f"Document '{doc_id}' queued for retry (attempt {staging.retry_count})",
             )
-        finally:
-            session.close()
 
     except PermissionError:
         raise HTTPException(
@@ -2456,7 +2440,7 @@ async def clone_collection(
     """
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
-        CollectionPermissionChecker,
+        AsyncCollectionPermissionChecker,
     )
 
     try:
@@ -2470,8 +2454,8 @@ async def clone_collection(
             )
 
         # Check if user owns source collection
-        checker = CollectionPermissionChecker(session_factory)
-        checker.require_modify(
+        checker = AsyncCollectionPermissionChecker(session_factory)
+        await checker.require_modify(
             request.source_collection, int(_user.id), bool(_user.is_admin)
         )
 
