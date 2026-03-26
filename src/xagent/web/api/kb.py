@@ -1930,27 +1930,22 @@ async def list_shared_collections(
         from sqlalchemy import select
 
         async with session_factory() as session:
-            # Get all shares for current user
-            result = await session.execute(
-                select(KBCollectionShare).where(
-                    KBCollectionShare.shared_with_user_id == int(_user.id)
+            # Use JOIN to get shares and collection metadata in one query
+            # This eliminates N+1 query problem
+            stmt = (
+                select(KBCollectionShare, KBCollectionMetadata)
+                .join(
+                    KBCollectionMetadata,
+                    KBCollectionShare.collection == KBCollectionMetadata.name,
                 )
+                .where(KBCollectionShare.shared_with_user_id == int(_user.id))
             )
-            shares = result.scalars()
+
+            result = await session.execute(stmt)
+            rows = result.all()
 
             share_infos = []
-            for share in shares:
-                # Get collection name and created_by info
-                collection_result = await session.execute(
-                    select(KBCollectionMetadata).where(
-                        KBCollectionMetadata.name == share.collection
-                    )
-                )
-                collection = collection_result.scalar_one_or_none()
-
-                if collection is None:
-                    continue
-
+            for share, collection in rows:
                 share_infos.append(
                     {
                         "collection": share.collection,
@@ -2178,9 +2173,13 @@ async def list_staged_documents(
         None,
         description="Filter by status: uploaded, queued, parsing, chunked, embedding, complete, failed",
     ),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(
+        50, ge=1, le=1000, description="Number of items per page (max 1000)"
+    ),
     _user: User = Depends(get_current_user),
 ) -> ListStagedDocumentsResponse:
-    """List staged documents in a collection (Phase 1B)."""
+    """List staged documents in a collection (Phase 1B) with pagination."""
     from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
     from ...core.tools.core.RAG_tools.storage.permissions import (
         AsyncCollectionPermissionChecker,
@@ -2199,19 +2198,33 @@ async def list_staged_documents(
         checker = AsyncCollectionPermissionChecker(session_factory)
         await checker.require_read(collection, int(_user.id), bool(_user.is_admin))
 
-        from sqlalchemy import select
+        from sqlalchemy import func, select
 
         from ...core.tools.core.RAG_tools.storage.rdb_models import KBDocumentStaging
 
         async with session_factory() as session:
-            query = select(KBDocumentStaging).where(
+            # Build base query
+            base_query = select(KBDocumentStaging).where(
                 KBDocumentStaging.collection == collection
             )
 
             if status:
-                query = query.where(KBDocumentStaging.status == status)
+                base_query = base_query.where(KBDocumentStaging.status == status)
 
-            result = await session.execute(query)
+            # Get total count using func.count()
+            count_query = select(func.count()).select_from(base_query.subquery())
+            count_result = await session.execute(count_query)
+            total_count = count_result.scalar()
+
+            # Calculate pagination
+            offset = (page - 1) * page_size
+            total_pages = (
+                (total_count + page_size - 1) // page_size if total_count > 0 else 1
+            )
+
+            # Get paginated results
+            paginated_query = base_query.offset(offset).limit(page_size)
+            result = await session.execute(paginated_query)
             docs = result.scalars().all()
 
             doc_infos = []
@@ -2238,8 +2251,8 @@ async def list_staged_documents(
             return ListStagedDocumentsResponse(
                 status="success",
                 documents=doc_infos,
-                total_count=len(doc_infos),
-                message=f"Found {len(doc_infos)} staged documents",
+                total_count=total_count,
+                message=f"Found {len(doc_infos)} staged documents (page {page}/{total_pages}, total: {total_count})",
             )
 
     except PermissionError:

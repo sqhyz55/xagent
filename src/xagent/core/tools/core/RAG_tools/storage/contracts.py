@@ -99,8 +99,21 @@ class MetadataStore(ABC):
         """
 
     @abstractmethod
-    def get_raw_connection(self) -> DBConnection:
-        """Return raw backend connection for legacy compatibility paths."""
+    def get_raw_connection(self) -> Any:
+        """Return raw backend connection for legacy compatibility paths.
+
+        Returns:
+            Raw backend connection. Type varies by implementation:
+            - LanceDB: DBConnection
+            - PostgreSQL: AsyncEngine (async engine)
+            - Other implementations may return different types
+
+        Note:
+            This method provides access to the underlying storage for operations
+            that cannot be expressed through the standard contract. The return type
+            is Any because different backends have fundamentally different connection
+            types. Callers should know the specific backend they're working with.
+        """
 
 
 class VectorIndexStore(ABC):

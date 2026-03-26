@@ -7,7 +7,6 @@ Tests verify that:
 4. Uses await session.execute(...)
 """
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from xagent.core.tools.core.RAG_tools.storage.permissions import (
     AsyncCollectionPermissionChecker,
-    CollectionPermissions,
 )
 
 
@@ -95,7 +93,10 @@ class TestAsyncCollectionPermissionChecker:
 
         # First call returns collection, second returns share
         mock_execute_result = MagicMock()
-        mock_execute_result.scalar_one_or_none.side_effect = [mock_collection, mock_share]
+        mock_execute_result.scalar_one_or_none.side_effect = [
+            mock_collection,
+            mock_share,
+        ]
         mock_async_session.execute = AsyncMock(return_value=mock_execute_result)
 
         perms = await permission_checker.get_permissions("test_collection", user_id=2)
