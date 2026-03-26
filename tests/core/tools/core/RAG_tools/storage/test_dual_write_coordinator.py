@@ -19,6 +19,7 @@ from xagent.core.tools.core.RAG_tools.storage.dual_write_coordinator import (
     DualWriteCoordinator,
     DualWriteMetadataStore,
     DualWriteStats,
+    MetadataBackend,
     ReconcileResult,
 )
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import LanceDBMetadataStore
@@ -60,8 +61,8 @@ class TestReconcileResult:
         """Test reconcile result with no mismatches."""
         result = ReconcileResult(
             collection_name="test_collection",
-            primary_backend="lancedb",
-            secondary_backend="postgresql",
+            primary_backend=MetadataBackend.LANCEDB,
+            secondary_backend=MetadataBackend.POSTGRESQL,
             records_checked=1,
             mismatches=[],
             is_consistent=True,
@@ -77,8 +78,8 @@ class TestReconcileResult:
         ]
         result = ReconcileResult(
             collection_name="test_collection",
-            primary_backend="lancedb",
-            secondary_backend="postgresql",
+            primary_backend=MetadataBackend.LANCEDB,
+            secondary_backend=MetadataBackend.POSTGRESQL,
             records_checked=1,
             mismatches=mismatches,
             is_consistent=False,
@@ -116,20 +117,16 @@ class TestDualWriteCoordinator:
     ) -> DualWriteCoordinator:
         """Create dual-write coordinator with mocked stores."""
         return DualWriteCoordinator(
-            primary_backend="lancedb",
-            secondary_backend="postgresql",
+            read_backend=MetadataBackend.LANCEDB,
             write_mode="both",
-            read_backend="lancedb",
             metadata_store_lancedb=mock_lancedb_store,
             metadata_store_pg=mock_postgres_store,
         )
 
     def test_initialization(self, dual_write_coordinator: DualWriteCoordinator) -> None:
         """Test coordinator initialization."""
-        assert dual_write_coordinator._primary_backend == "lancedb"
-        assert dual_write_coordinator._secondary_backend == "postgresql"
         assert dual_write_coordinator._write_mode == "both"
-        assert dual_write_coordinator._read_backend == "lancedb"
+        assert dual_write_coordinator._read_backend == MetadataBackend.LANCEDB
         assert dual_write_coordinator.get_stats().writes_to_primary == 0
 
     def test_invalid_write_mode(self) -> None:
@@ -140,7 +137,7 @@ class TestDualWriteCoordinator:
     def test_invalid_read_backend(self) -> None:
         """Test that invalid read backend raises ValueError."""
         with pytest.raises(ValueError, match="Invalid read_backend"):
-            DualWriteCoordinator(read_backend="invalid")
+            DualWriteCoordinator(read_backend="invalid")  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_reconcile_collection_consistent(
@@ -246,9 +243,9 @@ class TestDualWriteCoordinator:
         self, dual_write_coordinator: DualWriteCoordinator
     ) -> None:
         """Test changing read backend dynamically."""
-        assert dual_write_coordinator._read_backend == "lancedb"
-        dual_write_coordinator.set_read_backend("postgresql")
-        assert dual_write_coordinator._read_backend == "postgresql"
+        assert dual_write_coordinator._read_backend == MetadataBackend.LANCEDB
+        dual_write_coordinator.set_read_backend(MetadataBackend.POSTGRESQL)
+        assert dual_write_coordinator._read_backend == MetadataBackend.POSTGRESQL
 
 
 class TestDualWriteMetadataStore:
@@ -290,19 +287,20 @@ class TestDualWriteMetadataStore:
     ) -> DualWriteMetadataStore:
         """Create dual-write metadata store with mocked backends."""
         return DualWriteMetadataStore(
-            primary=mock_primary_store,
-            secondary=mock_secondary_store,
+            lancedb_store=mock_primary_store,
+            pg_store=mock_secondary_store,
             stats=stats,
+            read_backend=MetadataBackend.LANCEDB,
         )
 
     @pytest.mark.asyncio
-    async def test_get_collection_reads_from_primary(
+    async def test_get_collection_reads_from_lancedb(
         self,
         dual_write_store: DualWriteMetadataStore,
         mock_primary_store: MagicMock,
         mock_secondary_store: MagicMock,
     ) -> None:
-        """Test that get_collection reads from primary backend."""
+        """Test that get_collection reads from LanceDB backend."""
         collection = CollectionInfo(name="test", owner_user_id=1)
         mock_primary_store.get_collection.return_value = collection
 
@@ -382,13 +380,13 @@ class TestDualWriteMetadataStore:
         mock_secondary_store.ensure_collection_metadata_table.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_get_collection_config_reads_from_primary(
+    async def test_get_collection_config_reads_from_lancedb(
         self,
         dual_write_store: DualWriteMetadataStore,
         mock_primary_store: MagicMock,
         mock_secondary_store: MagicMock,
     ) -> None:
-        """Test that get_collection_config reads from primary backend."""
+        """Test that get_collection_config reads from LanceDB backend."""
         mock_primary_store.get_collection_config.return_value = '{"chunk_size": 1000}'
 
         result = await dual_write_store.get_collection_config("test", 1)
@@ -397,12 +395,12 @@ class TestDualWriteMetadataStore:
         mock_primary_store.get_collection_config.assert_called_once_with("test", 1)
         mock_secondary_store.get_collection_config.assert_not_called()
 
-    def test_get_raw_connection_returns_primary(
+    def test_get_raw_connection_returns_lancedb(
         self,
         dual_write_store: DualWriteMetadataStore,
         mock_primary_store: MagicMock,
     ) -> None:
-        """Test that get_raw_connection returns primary connection."""
+        """Test that get_raw_connection returns LanceDB connection."""
         mock_conn = MagicMock()
         mock_primary_store.get_raw_connection.return_value = mock_conn
 

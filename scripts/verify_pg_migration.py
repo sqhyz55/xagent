@@ -17,8 +17,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import sys
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -144,10 +144,11 @@ async def verify_migration(db_url: str) -> bool:
     os.environ["RAG_METADATA_STORE_BACKEND"] = "postgresql"
 
     try:
+        from sqlalchemy import create_engine, inspect
+
+        from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
         from xagent.core.tools.core.RAG_tools.storage import factory
         from xagent.core.tools.core.RAG_tools.storage.rdb_models import Base
-        from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
-        from sqlalchemy import create_engine, inspect
 
         # Reset factory to use PostgreSQL
         factory.reset_metadata_store()

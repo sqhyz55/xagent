@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +30,12 @@ class CollectionPermissions:
 class CollectionPermissionChecker:
     """Check and enforce collection permissions (Phase 1B)."""
 
-    def __init__(self, session_factory: type) -> None:
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
         """Initialize permission checker.
 
         Args:
-            session_factory: SQLAlchemy session factory.
+            session_factory: SQLAlchemy session factory (e.g., sessionmaker or async_sessionmaker).
+                             Should return a Session when called.
         """
         self._session_factory = session_factory
 

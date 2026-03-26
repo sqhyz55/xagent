@@ -106,11 +106,11 @@ class DefaultKBWriteCoordinator(KBWriteCoordinator):
             )
             return LanceDBMetadataStore()
 
+        from .dual_write_coordinator import MetadataBackend
+
         coordinator = DualWriteCoordinator(
-            primary_backend="lancedb",
-            secondary_backend="postgresql",
+            read_backend=MetadataBackend.LANCEDB,
             write_mode=WRITE_BACKEND,
-            read_backend=READ_BACKEND,
         )
         # Store coordinator for stats access
         self._dual_write_coordinator = coordinator

@@ -20,7 +20,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
 
 from ..core.schemas import CollectionInfo
 from .contracts import KBWriteCoordinator, MetadataStore, VectorIndexStore
@@ -28,6 +29,13 @@ from .lancedb_stores import LanceDBMetadataStore, LanceDBVectorIndexStore
 from .pg_metadata_store import PostgreSQLMetadataStore
 
 logger = logging.getLogger(__name__)
+
+
+class MetadataBackend(str, Enum):
+    """Metadata storage backend types."""
+
+    LANCEDB = "lancedb"
+    POSTGRESQL = "postgresql"
 
 
 @dataclass
@@ -47,8 +55,8 @@ class ReconcileResult:
     """Result of a reconcile operation."""
 
     collection_name: str
-    primary_backend: str
-    secondary_backend: str
+    primary_backend: MetadataBackend
+    secondary_backend: MetadataBackend
     records_checked: int
     mismatches: List[Dict[str, Any]] = field(default_factory=list)
     is_consistent: bool = True
@@ -74,10 +82,8 @@ class DualWriteCoordinator(KBWriteCoordinator):
 
     def __init__(
         self,
-        primary_backend: str = "lancedb",
-        secondary_backend: str = "postgresql",
-        write_mode: str = "lancedb",  # 'lancedb', 'postgresql', or 'both'
-        read_backend: str = "lancedb",  # 'lancedb' or 'postgresql'
+        read_backend: MetadataBackend = MetadataBackend.LANCEDB,
+        write_mode: Literal["lancedb", "postgresql", "both"] = "lancedb",
         metadata_store_pg: Optional[PostgreSQLMetadataStore] = None,
         metadata_store_lancedb: Optional[LanceDBMetadataStore] = None,
         vector_index: Optional[VectorIndexStore] = None,
@@ -85,10 +91,8 @@ class DualWriteCoordinator(KBWriteCoordinator):
         """Initialize dual-write coordinator.
 
         Args:
-            primary_backend: Primary (legacy) backend name.
-            secondary_backend: Secondary (new) backend name.
+            read_backend: Which backend to read from (default: LanceDB).
             write_mode: Where to write - 'lancedb', 'postgresql', or 'both'.
-            read_backend: Which backend to read from.
             metadata_store_pg: PostgreSQL metadata store instance.
             metadata_store_lancedb: LanceDB metadata store instance.
             vector_index: Vector index store (always LanceDB in Phase 1B).
@@ -97,15 +101,13 @@ class DualWriteCoordinator(KBWriteCoordinator):
             raise ValueError(
                 f"Invalid write_mode: {write_mode}. Must be 'lancedb', 'postgresql', or 'both'"
             )
-        if read_backend not in ("lancedb", "postgresql"):
+        if not isinstance(read_backend, MetadataBackend):
             raise ValueError(
-                f"Invalid read_backend: {read_backend}. Must be 'lancedb' or 'postgresql'"
+                f"Invalid read_backend: {read_backend}. Must be MetadataBackend enum"
             )
 
-        self._primary_backend = primary_backend
-        self._secondary_backend = secondary_backend
-        self._write_mode = write_mode
         self._read_backend = read_backend
+        self._write_mode = write_mode
         self._stats = DualWriteStats()
 
         # Initialize stores
@@ -119,16 +121,17 @@ class DualWriteCoordinator(KBWriteCoordinator):
         logger.info(
             "DualWriteCoordinator initialized: write_mode=%s, read_backend=%s",
             write_mode,
-            read_backend,
+            read_backend.value,
         )
 
     def _create_metadata_store(self) -> MetadataStore:
         """Create metadata store based on write and read mode."""
         if self._write_mode == "both":
             return DualWriteMetadataStore(
-                primary=self._metadata_lancedb,
-                secondary=self._metadata_postgres,
+                lancedb_store=self._metadata_lancedb,
+                pg_store=self._metadata_postgres,
                 stats=self._stats,
+                read_backend=self._read_backend,
             )
         elif self._write_mode == "postgresql":
             return self._metadata_postgres
@@ -198,8 +201,8 @@ class DualWriteCoordinator(KBWriteCoordinator):
 
             result = ReconcileResult(
                 collection_name=collection_name,
-                primary_backend=self._primary_backend,
-                secondary_backend=self._secondary_backend,
+                primary_backend=MetadataBackend.LANCEDB,
+                secondary_backend=MetadataBackend.POSTGRESQL,
                 records_checked=1,
                 mismatches=mismatches,
                 is_consistent=len(mismatches) == 0,
@@ -221,8 +224,8 @@ class DualWriteCoordinator(KBWriteCoordinator):
             logger.error("Failed to reconcile collection '%s': %s", collection_name, e)
             return ReconcileResult(
                 collection_name=collection_name,
-                primary_backend=self._primary_backend,
-                secondary_backend=self._secondary_backend,
+                primary_backend=MetadataBackend.LANCEDB,
+                secondary_backend=MetadataBackend.POSTGRESQL,
                 records_checked=0,
                 is_consistent=False,
             )
@@ -253,7 +256,7 @@ class DualWriteCoordinator(KBWriteCoordinator):
             return {
                 "status": "success",
                 "collection": collection_name,
-                "message": f"Collection '{collection_name}' backfilled from {self._primary_backend} to {self._secondary_backend}",
+                "message": f"Collection '{collection_name}' backfilled from LanceDB to PostgreSQL",
             }
 
         except Exception as e:
@@ -270,18 +273,20 @@ class DualWriteCoordinator(KBWriteCoordinator):
         Returns:
             Dict with backfill summary including success/failed counts.
         """
-        from ...LanceDB.collection_manager import list_collections  # type: ignore
+        from ..core.schemas import ListCollectionsResult
+        from ..management.collections import list_collections
 
         logger.info("Starting backfill for all collections")
 
-        collections = list_collections()
+        result: ListCollectionsResult = list_collections()
         success_count = 0
         failed_count = 0
         failed_collections = []
 
-        for collection_name in collections:
-            result = await self.backfill_collection(collection_name)
-            if result["status"] == "success":
+        for collection_info in result.collections:
+            collection_name = collection_info.name
+            backfill_result = await self.backfill_collection(collection_name)
+            if backfill_result["status"] == "success":
                 success_count += 1
             else:
                 failed_count += 1
@@ -295,7 +300,7 @@ class DualWriteCoordinator(KBWriteCoordinator):
 
         return {
             "status": "complete",
-            "total_collections": len(collections),
+            "total_collections": result.total_count,
             "success_count": success_count,
             "failed_count": failed_count,
             "failed_collections": failed_collections,
@@ -311,80 +316,127 @@ class DualWriteCoordinator(KBWriteCoordinator):
             raise ValueError(f"Invalid write_mode: {mode}")
 
         old_mode = self._write_mode
-        self._write_mode = mode
+        self._write_mode = mode  # type: ignore[assignment]
         self._metadata = self._create_metadata_store()
 
         logger.info("Write mode changed from '%s' to '%s'", old_mode, mode)
 
-    def set_read_backend(self, backend: str) -> None:
+    def set_read_backend(self, backend: MetadataBackend) -> None:
         """Change read backend dynamically.
 
+        This method immediately affects read operations. If using dual-write mode,
+        the DualWriteMetadataStore's read backend will also be updated.
+
         Args:
-            backend: New read backend - 'lancedb' or 'postgresql'.
+            backend: New read backend (must be MetadataBackend enum).
         """
-        if backend not in ("lancedb", "postgresql"):
-            raise ValueError(f"Invalid read_backend: {backend}")
+        if not isinstance(backend, MetadataBackend):
+            raise ValueError(
+                f"Invalid backend: {backend}. Must be MetadataBackend enum. "
+                "Use MetadataBackend.LANCEDB or MetadataBackend.POSTGRESQL"
+            )
 
         old_backend = self._read_backend
         self._read_backend = backend
 
-        logger.info("Read backend changed from '%s' to '%s'", old_backend, backend)
+        # If using dual-write mode, also update the metadata store's read backend
+        if isinstance(self._metadata, DualWriteMetadataStore):
+            self._metadata.set_read_backend(backend)
+
+        logger.info(
+            "Read backend changed from '%s' to '%s'",
+            old_backend.value,
+            backend.value,
+        )
 
 
 class DualWriteMetadataStore(MetadataStore):
     """Metadata store that writes to both LanceDB and PostgreSQL.
 
     Used during migration phase to ensure both backends stay in sync.
-    Reads from the configured read backend.
+    Reads from the configured read backend (can be switched dynamically).
     """
 
     def __init__(
         self,
-        primary: MetadataStore,
-        secondary: MetadataStore,
+        lancedb_store: MetadataStore,
+        pg_store: MetadataStore,
         stats: DualWriteStats,
+        read_backend: MetadataBackend = MetadataBackend.LANCEDB,
     ) -> None:
         """Initialize dual-write metadata store.
 
         Args:
-            primary: Primary (legacy) backend - LanceDB.
-            secondary: Secondary (new) backend - PostgreSQL.
+            lancedb_store: LanceDB metadata store.
+            pg_store: PostgreSQL metadata store.
             stats: Statistics tracker for dual-write operations.
+            read_backend: Which backend to read from (default: LanceDB).
         """
-        self._primary = primary
-        self._secondary = secondary
+        self._lancedb_store = lancedb_store
+        self._pg_store = pg_store
         self._stats = stats
+        self._read_backend = read_backend
+
+    def set_read_backend(self, backend: MetadataBackend) -> None:
+        """Switch the read backend dynamically.
+
+        Args:
+            backend: New backend to read from.
+        """
+        if not isinstance(backend, MetadataBackend):
+            raise ValueError(
+                f"Invalid backend: {backend}. Must be MetadataBackend enum"
+            )
+
+        old_backend = self._read_backend
+        self._read_backend = backend
+        logger.info(
+            "Read backend switched from '%s' to '%s'",
+            old_backend.value,
+            backend.value,
+        )
+
+    def _get_read_store(self) -> MetadataStore:
+        """Get the backend to read from based on current configuration.
+
+        Returns:
+            MetadataStore to read from.
+        """
+        if self._read_backend == MetadataBackend.POSTGRESQL:
+            return self._pg_store
+        return self._lancedb_store
 
     async def get_collection(self, collection_name: str) -> CollectionInfo:
-        """Read from primary backend (LanceDB during migration)."""
-        return await self._primary.get_collection(collection_name)
+        """Read from the configured read backend."""
+        store = self._get_read_store()
+        return await store.get_collection(collection_name)
 
     async def save_collection(self, collection: CollectionInfo) -> None:
         """Write to both backends."""
         self._stats.last_write_time = datetime.now(timezone.utc)
 
-        # Write to primary
+        # Write to LanceDB
         try:
-            await self._primary.save_collection(collection)
+            await self._lancedb_store.save_collection(collection)
             self._stats.writes_to_primary += 1
         except Exception as e:
-            logger.error("Failed to write to primary backend: %s", e)
+            logger.error("Failed to write to LanceDB backend: %s", e)
             self._stats.write_failures += 1
             raise
 
-        # Write to secondary
+        # Write to PostgreSQL
         try:
-            await self._secondary.save_collection(collection)
+            await self._pg_store.save_collection(collection)
             self._stats.writes_to_secondary += 1
         except Exception as e:
-            logger.error("Failed to write to secondary backend: %s", e)
+            logger.error("Failed to write to PostgreSQL backend: %s", e)
             self._stats.write_failures += 1
-            # Don't raise - allow primary write to succeed
+            # Don't raise - allow LanceDB write to succeed
 
     async def ensure_collection_metadata_table(self) -> None:
         """Ensure tables exist in both backends."""
-        await self._primary.ensure_collection_metadata_table()
-        await self._secondary.ensure_collection_metadata_table()
+        await self._lancedb_store.ensure_collection_metadata_table()
+        await self._pg_store.ensure_collection_metadata_table()
 
     async def save_collection_config(
         self,
@@ -395,23 +447,25 @@ class DualWriteMetadataStore(MetadataStore):
         """Save config to both backends."""
         self._stats.last_write_time = datetime.now(timezone.utc)
 
-        # Write to primary
+        # Write to LanceDB
         try:
-            await self._primary.save_collection_config(collection, config_json, user_id)
+            await self._lancedb_store.save_collection_config(
+                collection, config_json, user_id
+            )
             self._stats.writes_to_primary += 1
         except Exception as e:
-            logger.error("Failed to write config to primary backend: %s", e)
+            logger.error("Failed to write config to LanceDB backend: %s", e)
             self._stats.write_failures += 1
             raise
 
-        # Write to secondary
+        # Write to PostgreSQL
         try:
-            await self._secondary.save_collection_config(
+            await self._pg_store.save_collection_config(
                 collection, config_json, user_id
             )
             self._stats.writes_to_secondary += 1
         except Exception as e:
-            logger.error("Failed to write config to secondary backend: %s", e)
+            logger.error("Failed to write config to PostgreSQL backend: %s", e)
             self._stats.write_failures += 1
 
     async def get_collection_config(
@@ -419,9 +473,10 @@ class DualWriteMetadataStore(MetadataStore):
         collection: str,
         user_id: int,
     ) -> str | None:
-        """Read from primary backend."""
-        return await self._primary.get_collection_config(collection, user_id)
+        """Read from the configured read backend."""
+        store = self._get_read_store()
+        return await store.get_collection_config(collection, user_id)
 
     def get_raw_connection(self) -> Any:
-        """Return primary backend connection."""
-        return self._primary.get_raw_connection()
+        """Return LanceDB backend connection."""
+        return self._lancedb_store.get_raw_connection()
