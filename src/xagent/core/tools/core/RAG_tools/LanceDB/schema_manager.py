@@ -199,6 +199,18 @@ def ensure_chunks_table(conn: DBConnection) -> None:
             pa.field("user_id", pa.int64()),
         ]
     )
+
+    # Automatic migration for existing tables missing 'user_id'
+    if _table_exists(conn, "chunks"):
+        try:
+            table = conn.open_table("chunks")
+            if "user_id" not in table.schema.names:
+                logger.info("Migrating 'chunks' table: adding missing 'user_id' column")
+                # Add user_id column with null default, cast to bigint (int64)
+                table.add_columns({"user_id": "cast(null as bigint)"})
+        except Exception as e:
+            logger.warning(f"Failed to check/migrate 'chunks' table schema: {e}")
+
     _create_table(conn, "chunks", schema=schema)
 
 
@@ -234,6 +246,20 @@ def ensure_embeddings_table(
             pa.field("user_id", pa.int64()),
         ]
     )
+
+    # Automatic migration for existing tables missing 'user_id'
+    if _table_exists(conn, table_name):
+        try:
+            table = conn.open_table(table_name)
+            if "user_id" not in table.schema.names:
+                logger.info(
+                    f"Migrating '{table_name}' table: adding missing 'user_id' column"
+                )
+                # Add user_id column with null default, cast to bigint (int64)
+                table.add_columns({"user_id": "cast(null as bigint)"})
+        except Exception as e:
+            logger.warning(f"Failed to check/migrate '{table_name}' table schema: {e}")
+
     _create_table(
         conn,
         table_name,

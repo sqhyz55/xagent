@@ -15,6 +15,14 @@ import pytest
 from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
     check_table_needs_migration,
 )
+from xagent.migrations.lancedb.backfill_user_id import (
+    ORPHANED_PERMANENT,
+    ORPHANED_TEMPORARY,
+    _migration_lock,
+    backfill_all,
+    backfill_chunks_table,
+    backfill_orphaned_chunks,
+)
 from xagent.providers.vector_store.lancedb import get_connection_from_env
 
 
@@ -29,6 +37,26 @@ def temp_lancedb_dir():
             os.environ["LANCEDB_DIR"] = original_env
         else:
             os.environ.pop("LANCEDB_DIR", None)
+
+
+@pytest.fixture(autouse=True)
+def cleanup_migration_lock():
+    """Ensure migration lock is released before each test."""
+    # If lock is held (e.g., from previous test), release it
+    if _migration_lock.locked():
+        try:
+            _migration_lock.release()
+            print("WARNING: Released stale migration lock before test")
+        except Exception:
+            pass
+    yield
+    # Cleanup after test
+    if _migration_lock.locked():
+        try:
+            _migration_lock.release()
+            print("WARNING: Released migration lock after test")
+        except Exception:
+            pass
 
 
 def test_auto_migration_detects_old_schema(temp_lancedb_dir):
@@ -152,3 +180,409 @@ def test_auto_migration_handles_embeddings_tables(temp_lancedb_dir):
 
     # Verify that no migration is needed
     assert check_table_needs_migration(conn, "embeddings_test_model_new") is False
+
+
+def test_two_phase_migration_recovers_orphaned_records(temp_lancedb_dir):
+    """Test that two-phase migration recovers orphaned records when documents are created after chunks."""
+    from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+        ensure_chunks_table,
+        ensure_documents_table,
+    )
+
+    conn = get_connection_from_env()
+
+    # Create chunks table using ensure_chunks_table (creates proper schema)
+    ensure_chunks_table(conn)
+    ensure_documents_table(conn)
+
+    # Add some chunks without user_id (simulating old data)
+    chunks_table = conn.open_table("chunks")
+    chunks_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_1",
+                "parse_hash": "hash1",
+                "chunk_id": "chunk_1",
+                "index": 0,
+                "text": "Test chunk 1",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch1",
+                "config_hash": "cfg1",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            },
+            {
+                "collection": "test",
+                "doc_id": "doc_2",
+                "parse_hash": "hash2",
+                "chunk_id": "chunk_2",
+                "index": 0,
+                "text": "Test chunk 2",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch2",
+                "config_hash": "cfg2",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            },
+        ]
+    )
+
+    # Phase 1: Run migration - chunks should be marked as orphaned (user_id = ORPHANED_TEMPORARY)
+    result_phase1 = backfill_chunks_table(dry_run=False, conn=conn)
+    assert result_phase1["skipped"] == 2  # Both chunks orphaned in phase 1
+    assert result_phase1["backfilled"] == 0
+
+    # Verify that chunks are marked with ORPHANED_TEMPORARY after Phase 1
+    phase1_chunks = conn.open_table("chunks").search().to_arrow()
+    phase1_chunk_data = phase1_chunks.to_pylist()
+    for chunk in phase1_chunk_data:
+        assert (
+            chunk["user_id"] == ORPHANED_TEMPORARY
+        )  # Should be marked as temporary orphan
+
+    # Now add documents (simulating concurrent document creation)
+    docs_table = conn.open_table("documents")
+    docs_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_1",
+                "source_path": "/path/doc1.txt",
+                "file_type": "txt",
+                "content_hash": "h1",
+                "uploaded_at": 1700000000000,
+                "title": "Doc 1",
+                "language": "en",
+                "user_id": 100,
+            },
+            {
+                "collection": "test",
+                "doc_id": "doc_2",
+                "source_path": "/path/doc2.txt",
+                "file_type": "txt",
+                "content_hash": "h2",
+                "uploaded_at": 1700000000000,
+                "title": "Doc 2",
+                "language": "en",
+                "user_id": 200,
+            },
+        ]
+    )
+
+    # Phase 2: Retry orphaned chunks
+    result_phase2 = backfill_orphaned_chunks(dry_run=False, conn=conn)
+
+    # Verify that orphaned chunks were recovered
+    assert result_phase2["backfilled"] == 2  # Both chunks recovered
+    assert result_phase2["skipped"] == 0  # No longer orphaned
+
+    # Verify final state
+    final_chunks = conn.open_table("chunks").search().to_arrow()
+    assert len(final_chunks) == 2
+    # Check that user_id values are correct
+    chunk_user_ids = final_chunks.to_pylist()
+    doc_1_chunk = next(c for c in chunk_user_ids if c["doc_id"] == "doc_1")
+    doc_2_chunk = next(c for c in chunk_user_ids if c["doc_id"] == "doc_2")
+    assert doc_1_chunk["user_id"] == 100
+    assert doc_2_chunk["user_id"] == 200
+
+
+def test_two_phase_migration_handles_permanently_orphaned_records(temp_lancedb_dir):
+    """Test that permanently orphaned records (no matching document ever exists) are marked correctly."""
+    from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+        ensure_chunks_table,
+        ensure_documents_table,
+    )
+
+    conn = get_connection_from_env()
+
+    # Create chunks and documents tables
+    ensure_chunks_table(conn)
+    ensure_documents_table(conn)
+
+    # Add a chunk with a doc_id that will never have a matching document
+    chunks_table = conn.open_table("chunks")
+    chunks_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "deleted_doc",
+                "parse_hash": "hash_deleted",
+                "chunk_id": "orphaned_chunk",
+                "index": 0,
+                "text": "This chunk has no matching document",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch_deleted",
+                "config_hash": "cfg_deleted",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            }
+        ]
+    )
+
+    # Run full migration (both phases)
+    result = backfill_all(dry_run=False, conn=conn)
+
+    # Verify results
+    assert result["chunks"]["backfilled"] == 0  # No chunks backfilled
+    assert result["chunks"]["skipped"] == 1  # One chunk permanently orphaned
+
+    # Verify the chunk is marked with user_id = ORPHANED_PERMANENT
+    final_chunks = conn.open_table("chunks").search().to_arrow()
+    chunk_data = final_chunks.to_pylist()[0]
+    assert chunk_data["user_id"] == ORPHANED_PERMANENT  # Marked as permanently orphaned
+
+
+def test_two_phase_migration_with_mixed_scenarios(temp_lancedb_dir):
+    """Test two-phase migration with a mix of normal, temporarily orphaned, and permanently orphaned records."""
+    from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+        ensure_chunks_table,
+        ensure_documents_table,
+    )
+
+    conn = get_connection_from_env()
+
+    # Create chunks and documents tables
+    ensure_chunks_table(conn)
+    ensure_documents_table(conn)
+
+    # Add documents for doc_1 and doc_3 (doc_2 will be added later, doc_4 never exists)
+    docs_table = conn.open_table("documents")
+    docs_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_1",
+                "source_path": "/path/doc1.txt",
+                "file_type": "txt",
+                "content_hash": "h1",
+                "uploaded_at": 1700000000000,
+                "title": "Doc 1",
+                "language": "en",
+                "user_id": 100,
+            },
+            {
+                "collection": "test",
+                "doc_id": "doc_3",
+                "source_path": "/path/doc3.txt",
+                "file_type": "txt",
+                "content_hash": "h3",
+                "uploaded_at": 1700000000000,
+                "title": "Doc 3",
+                "language": "en",
+                "user_id": 300,
+            },
+        ]
+    )
+
+    # Add chunks with proper schema
+    chunks_table = conn.open_table("chunks")
+    chunks_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_1",
+                "parse_hash": "hash1",
+                "chunk_id": "chunk_1",
+                "index": 0,
+                "text": "Chunk with doc",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch1",
+                "config_hash": "cfg1",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            },
+            {
+                "collection": "test",
+                "doc_id": "doc_2",
+                "parse_hash": "hash2",
+                "chunk_id": "chunk_2",
+                "index": 0,
+                "text": "Chunk without doc yet",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch2",
+                "config_hash": "cfg2",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            },
+            {
+                "collection": "test",
+                "doc_id": "doc_3",
+                "parse_hash": "hash3",
+                "chunk_id": "chunk_3",
+                "index": 0,
+                "text": "Another chunk with doc",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch3",
+                "config_hash": "cfg3",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            },
+            {
+                "collection": "test",
+                "doc_id": "doc_4",
+                "parse_hash": "hash4",
+                "chunk_id": "chunk_4",
+                "index": 0,
+                "text": "Chunk with deleted doc",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch4",
+                "config_hash": "cfg4",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            },
+        ]
+    )
+
+    # Phase 1: Initial migration
+    result_phase1 = backfill_chunks_table(dry_run=False, conn=conn)
+
+    # chunk_1 and chunk_3 should be backfilled
+    # chunk_2 and chunk_4 should be marked orphaned
+    assert result_phase1["backfilled"] == 2
+    assert result_phase1["skipped"] == 2
+
+    # Verify that chunk_2 and chunk_4 are marked with ORPHANED_TEMPORARY after Phase 1
+    phase1_chunks = conn.open_table("chunks").search().to_arrow()
+    phase1_chunk_data = phase1_chunks.to_pylist()
+    chunk_2_phase1 = next(c for c in phase1_chunk_data if c["chunk_id"] == "chunk_2")
+    chunk_4_phase1 = next(c for c in phase1_chunk_data if c["chunk_id"] == "chunk_4")
+    assert chunk_2_phase1["user_id"] == ORPHANED_TEMPORARY
+    assert chunk_4_phase1["user_id"] == ORPHANED_TEMPORARY
+
+    # Now add document for doc_2 (simulating late-arriving document)
+    docs_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_2",
+                "source_path": "/path/doc2.txt",
+                "file_type": "txt",
+                "content_hash": "h2",
+                "uploaded_at": 1700000000000,
+                "title": "Doc 2",
+                "language": "en",
+                "user_id": 200,
+            }
+        ]
+    )
+
+    # Phase 2: Retry orphaned chunks
+    result_phase2 = backfill_orphaned_chunks(dry_run=False, conn=conn)
+
+    # chunk_2 should be recovered
+    # chunk_4 remains orphaned
+    assert result_phase2["backfilled"] == 1
+    assert result_phase2["skipped"] == 1
+
+    # Verify final state
+    final_chunks = conn.open_table("chunks").search().to_arrow()
+    chunk_data = final_chunks.to_pylist()
+
+    # Find each chunk and verify user_id
+    chunk_1 = next(c for c in chunk_data if c["chunk_id"] == "chunk_1")
+    chunk_2 = next(c for c in chunk_data if c["chunk_id"] == "chunk_2")
+    chunk_3 = next(c for c in chunk_data if c["chunk_id"] == "chunk_3")
+    chunk_4 = next(c for c in chunk_data if c["chunk_id"] == "chunk_4")
+
+    assert chunk_1["user_id"] == 100  # Backfilled in phase 1
+    assert chunk_2["user_id"] == 200  # Recovered in phase 2
+    assert chunk_3["user_id"] == 300  # Backfilled in phase 1
+    assert chunk_4["user_id"] == ORPHANED_PERMANENT  # Permanently orphaned
+
+
+def test_two_phase_migration_with_no_orphaned_records(temp_lancedb_dir):
+    """Test that phase 2 is skipped when there are no orphaned records."""
+    from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+        ensure_chunks_table,
+        ensure_documents_table,
+    )
+
+    conn = get_connection_from_env()
+
+    # Create chunks and documents tables
+    ensure_chunks_table(conn)
+    ensure_documents_table(conn)
+
+    # Add document and chunk
+    docs_table = conn.open_table("documents")
+    docs_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_1",
+                "source_path": "/path/doc1.txt",
+                "file_type": "txt",
+                "content_hash": "h1",
+                "uploaded_at": 1700000000000,
+                "title": "Doc 1",
+                "language": "en",
+                "user_id": 100,
+            }
+        ]
+    )
+
+    chunks_table = conn.open_table("chunks")
+    chunks_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_1",
+                "parse_hash": "hash1",
+                "chunk_id": "chunk_1",
+                "index": 0,
+                "text": "Test chunk",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch1",
+                "config_hash": "cfg1",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": None,
+            }
+        ]
+    )
+
+    # Run full migration
+    result = backfill_all(dry_run=False, conn=conn)
+
+    # All records should be backfilled in phase 1, phase 2 should be skipped
+    assert result["chunks"]["backfilled"] == 1
+    assert result["chunks"]["skipped"] == 0  # No orphaned records
+    assert result["chunks"].get("failed", 0) == 0
+
+    # Verify final state
+    final_chunks = conn.open_table("chunks").search().to_arrow()
+    chunk_data = final_chunks.to_pylist()[0]
+    assert chunk_data["user_id"] == 100

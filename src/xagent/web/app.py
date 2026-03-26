@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -197,11 +198,13 @@ async def startup_event() -> None:
     )
 
     # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
+    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: false)
+    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "false").lower() == "true"
+
     try:
         from ..core.tools.core.RAG_tools.LanceDB.schema_manager import (
             check_table_needs_migration,
         )
-        from ..migrations.lancedb.backfill_user_id import backfill_all
         from ..providers.vector_store.lancedb import get_connection_from_env
 
         conn = get_connection_from_env()
@@ -209,58 +212,114 @@ async def startup_event() -> None:
         # Check if any tables need migration
         needs_migration = False
         tables_to_check = ["chunks", "documents", "parses"]
+        tables_need_migration_list = []
 
         for table_name in tables_to_check:
             if check_table_needs_migration(conn, table_name):
-                logger.info(
+                logger.warning(
                     "Table '%s' needs migration (missing user_id field)",
                     table_name,
                 )
+                tables_need_migration_list.append(table_name)
                 needs_migration = True
-                break
 
-        # Check embeddings tables
+        # Check embeddings tables (use list_tables if available, fallback to table_names)
         if not needs_migration:
             try:
-                table_names_fn = getattr(conn, "table_names", None)
-                if table_names_fn:
-                    all_tables = list(table_names_fn())
+                # Try new API first, then fall back to deprecated one
+                list_tables_fn = getattr(conn, "list_tables", None)
+                if list_tables_fn is None:
+                    list_tables_fn = getattr(conn, "table_names", None)
+
+                if list_tables_fn:
+                    tables_res = list_tables_fn()
+                    # Newer LanceDB versions return a ListTablesResponse object
+                    if hasattr(tables_res, "tables"):
+                        all_tables = tables_res.tables
+                    else:
+                        all_tables = list(tables_res)
+
                     embeddings_tables = [
                         t for t in all_tables if t.startswith("embeddings_")
                     ]
                     for table_name in embeddings_tables:
                         if check_table_needs_migration(conn, table_name):
-                            logger.info(
+                            logger.warning(
                                 "Table '%s' needs migration (missing user_id field)",
                                 table_name,
                             )
+                            tables_need_migration_list.append(table_name)
                             needs_migration = True
-                            break
             except Exception as e:
                 logger.warning("Could not check embeddings tables: %s", e)
 
-        # Run migration if needed
         if needs_migration:
-            logger.info("Running LanceDB user_id migration...")
-            try:
-                result = backfill_all(dry_run=False)
-                logger.info(
-                    "Migration completed: chunks=%s, embeddings=%s",
-                    result.get("chunks", {}).get("backfilled", 0),
-                    result.get("embeddings", {}).get("backfilled", 0),
-                )
-            except Exception as e:
-                logger.error("LanceDB migration failed: %s", e, exc_info=True)
+            if tables_need_migration_list:
                 logger.warning(
-                    "Application will continue, but some features may not work correctly. "
-                    "Please run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                    "Tables requiring migration: %s",
+                    ", ".join(tables_need_migration_list),
+                )
+
+            if auto_migrate:
+                # Run migration in background to avoid blocking startup
+                logger.info("=" * 60)
+                logger.info("STARTING BACKGROUND LANCEDB MIGRATION")
+                logger.info("=" * 60)
+                logger.info(
+                    "Tables requiring migration: %s",
+                    ", ".join(tables_need_migration_list),
+                )
+
+                async def run_migration_background() -> None:
+                    from ..migrations.lancedb.backfill_user_id import backfill_all
+
+                    try:
+                        result = await asyncio.to_thread(backfill_all, dry_run=False)
+                        logger.info("=" * 60)
+                        logger.info("BACKGROUND LANCEDB MIGRATION COMPLETED")
+                        logger.info("=" * 60)
+                        logger.info(
+                            "Migration results: chunks=%s backfilled, embeddings=%s backfilled",
+                            result.get("chunks", {}).get("backfilled", 0),
+                            result.get("embeddings", {}).get("backfilled", 0),
+                        )
+
+                        # Log any skipped records
+                        chunks_skipped = result.get("chunks", {}).get("skipped", 0)
+                        embeddings_skipped = result.get("embeddings", {}).get(
+                            "skipped", 0
+                        )
+                        if chunks_skipped > 0 or embeddings_skipped > 0:
+                            logger.warning(
+                                "Some records were skipped (no matching document): chunks=%s, embeddings=%s",
+                                chunks_skipped,
+                                embeddings_skipped,
+                            )
+                    except Exception as e:
+                        logger.error("=" * 60)
+                        logger.error("BACKGROUND LANCEDB MIGRATION FAILED")
+                        logger.error("=" * 60)
+                        logger.error("Error: %s", e, exc_info=True)
+                        logger.warning(
+                            "Some features may not work correctly. "
+                            "Please run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
+                        )
+
+                # Start background task without awaiting
+                asyncio.create_task(run_migration_background())
+            else:
+                logger.warning(
+                    "LANCEDB_AUTO_MIGRATE is disabled. "
+                    "Migration will NOT run automatically. "
+                    "To enable automatic migration, set LANCEDB_AUTO_MIGRATE=true. "
+                    "To run migration manually: python -m xagent.migrations.lancedb.backfill_user_id"
                 )
         else:
             logger.info("LanceDB tables are up to date, no migration needed")
     except Exception as e:
         logger.warning(
-            "Could not check/run LanceDB migration: %s. "
-            "Application will continue, but migration may be needed.",
+            "Could not check LanceDB migration status: %s. "
+            "Application will continue, but some features may not work correctly.",
             e,
         )
 
