@@ -1,6 +1,8 @@
 """Knowledge base API route handlers"""
 
 import asyncio
+import concurrent.futures
+import contextvars
 import functools
 import hashlib
 import json
@@ -891,6 +893,11 @@ def with_kb_user_scope(func: T) -> T:
 # Create router
 kb_router = APIRouter(prefix="/api/kb", tags=["kb"])
 
+# Shared executor for ingestion tasks to prevent global thread pool exhaustion
+_ingest_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=10, thread_name_prefix="ingest_worker_"
+)
+
 
 class CloudFile(BaseModel):
     provider: str
@@ -1408,8 +1415,12 @@ async def ingest(
                 file_id=str(file_record.file_id),
             )
 
+        ingest_ctx = contextvars.copy_context()
         loop = asyncio.get_running_loop()
-        result: IngestionResult = await loop.run_in_executor(None, _run_ingestion)
+        result: IngestionResult = await loop.run_in_executor(
+            _ingest_executor,
+            lambda: ingest_ctx.run(_run_ingestion),
+        )
 
         if result.status in {"error", "partial"}:
             await _rollback_failed_ingestion(
@@ -1675,15 +1686,21 @@ async def ingest_cloud(
                         file_config = config.model_copy(
                             update={"parse_method": normalized_parse_method}
                         )
-                        result = await asyncio.to_thread(
-                            run_document_ingestion,
-                            collection=safe_collection,
-                            source_path=str(file_path),
-                            ingestion_config=file_config,
-                            progress_manager=progress_manager,
-                            user_id=int(_user.id),
-                            is_admin=bool(_user.is_admin),
-                            file_id=str(file_record.file_id),
+                        def _run_cloud_ingestion() -> IngestionResult:
+                            return run_document_ingestion(
+                                collection=safe_collection,
+                                source_path=str(file_path),
+                                ingestion_config=file_config,
+                                progress_manager=progress_manager,
+                                user_id=int(_user.id),
+                                is_admin=bool(_user.is_admin),
+                                file_id=str(file_record.file_id),
+                            )
+
+                        cloud_ctx = contextvars.copy_context()
+                        result = await asyncio.get_running_loop().run_in_executor(
+                            _ingest_executor,
+                            lambda: cloud_ctx.run(_run_cloud_ingestion),
                         )
                         if result.status in {"error", "partial"}:
                             await _rollback_failed_cloud_ingestion(
@@ -2632,9 +2649,8 @@ async def ingest_web(
             finally:
                 db_session.close()
 
-        result = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: asyncio.run(
+        def _run_web_ingestion_blocking() -> WebIngestionResult:
+            return asyncio.run(
                 run_web_ingestion(
                     collection=safe_collection,
                     crawl_config=crawl_config,
@@ -2643,7 +2659,12 @@ async def ingest_web(
                     is_admin=bool(_user.is_admin),
                     file_handler=_file_handler_with_db,
                 )
-            ),
+            )
+
+        web_ctx = contextvars.copy_context()
+        result = await asyncio.get_running_loop().run_in_executor(
+            _ingest_executor,
+            lambda: web_ctx.run(_run_web_ingestion_blocking),
         )
 
         if result.status == "error":
