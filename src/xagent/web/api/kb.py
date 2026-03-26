@@ -899,6 +899,42 @@ _ingest_executor = concurrent.futures.ThreadPoolExecutor(
 )
 
 
+def shutdown_ingest_executor() -> None:
+    """Shutdown the shared ingestion executor gracefully.
+
+    Called during application shutdown to ensure pending tasks complete
+    and resources are properly released. Uses a timeout to prevent blocking
+    application shutdown indefinitely.
+    """
+    logger.info("Shutting down ingestion executor...")
+    try:
+        import threading
+
+        shutdown_complete = threading.Event()
+
+        def wait_for_shutdown() -> None:
+            _ingest_executor.shutdown(wait=True)
+            shutdown_complete.set()
+
+        shutdown_thread = threading.Thread(target=wait_for_shutdown, daemon=True)
+        shutdown_thread.start()
+
+        if shutdown_complete.wait(timeout=30):
+            logger.info("Ingestion executor shutdown complete")
+        else:
+            logger.warning(
+                "Executor shutdown timed out after 30s; forcing shutdown. "
+                "Some ingestion tasks may be incomplete."
+            )
+            _ingest_executor.shutdown(wait=False)
+    except Exception as e:
+        logger.error("Error during executor shutdown: %s", e)
+        try:
+            _ingest_executor.shutdown(wait=False)
+        except Exception:
+            pass
+
+
 class CloudFile(BaseModel):
     provider: str
     fileId: str
