@@ -55,6 +55,14 @@ DEFAULT_LANCEDB_BATCH_DELAY_MS: Final[int] = 0
 Set to 0 to disable any artificial throttling.
 """
 
+# Reserved int64 lower bound for internal system sentinel values.
+MIN_INT64: Final[int] = -(2**63)
+
+# Stable expression that always matches no rows for unauthenticated reads.
+UNAUTHENTICATED_NO_ACCESS_FILTER: Final[str] = (
+    "(user_id IS NULL and user_id IS NOT NULL)"
+)
+
 # Parameters that affect parse hash
 PARSE_PARAM_WHITELIST: Final[Sequence[str]] = (
     "extract_tables",

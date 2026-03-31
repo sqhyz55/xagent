@@ -6,22 +6,24 @@ startup to add user_id fields to existing LanceDB tables.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 
 import pyarrow as pa
 import pytest
 
+from xagent.core.tools.core.RAG_tools.core.config import MIN_INT64
 from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
     check_table_needs_migration,
 )
 from xagent.migrations.lancedb.backfill_user_id import (
     ORPHANED_PERMANENT,
     ORPHANED_TEMPORARY,
-    _migration_lock,
     backfill_all,
     backfill_chunks_table,
     backfill_orphaned_chunks,
+    backfill_orphaned_embeddings,
 )
 from xagent.providers.vector_store.lancedb import get_connection_from_env
 
@@ -37,26 +39,6 @@ def temp_lancedb_dir():
             os.environ["LANCEDB_DIR"] = original_env
         else:
             os.environ.pop("LANCEDB_DIR", None)
-
-
-@pytest.fixture(autouse=True)
-def cleanup_migration_lock():
-    """Ensure migration lock is released before each test."""
-    # If lock is held (e.g., from previous test), release it
-    if _migration_lock.locked():
-        try:
-            _migration_lock.release()
-            print("WARNING: Released stale migration lock before test")
-        except Exception:
-            pass
-    yield
-    # Cleanup after test
-    if _migration_lock.locked():
-        try:
-            _migration_lock.release()
-            print("WARNING: Released migration lock after test")
-        except Exception:
-            pass
 
 
 def test_auto_migration_detects_old_schema(temp_lancedb_dir):
@@ -586,3 +568,391 @@ def test_two_phase_migration_with_no_orphaned_records(temp_lancedb_dir):
     final_chunks = conn.open_table("chunks").search().to_arrow()
     chunk_data = final_chunks.to_pylist()[0]
     assert chunk_data["user_id"] == 100
+
+
+def test_backfill_all_remaps_legacy_minus_one_orphans(temp_lancedb_dir):
+    """Legacy -1 orphan markers are remapped and then retried in phase 2."""
+    from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+        ensure_chunks_table,
+        ensure_documents_table,
+    )
+
+    conn = get_connection_from_env()
+    ensure_chunks_table(conn)
+    ensure_documents_table(conn)
+
+    docs_table = conn.open_table("documents")
+    docs_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_legacy",
+                "source_path": "/path/doc_legacy.txt",
+                "file_type": "txt",
+                "content_hash": "hash_legacy",
+                "uploaded_at": 1700000000000,
+                "title": "Legacy Doc",
+                "language": "en",
+                "user_id": 777,
+            }
+        ]
+    )
+
+    chunks_table = conn.open_table("chunks")
+    chunks_table.add(
+        [
+            {
+                "collection": "test",
+                "doc_id": "doc_legacy",
+                "parse_hash": "hash_legacy",
+                "chunk_id": "chunk_legacy",
+                "index": 0,
+                "text": "legacy orphaned chunk",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "ch_legacy",
+                "config_hash": "cfg_legacy",
+                "created_at": 1700000000000,
+                "metadata": "{}",
+                "user_id": -1,  # historical transitional value
+            }
+        ]
+    )
+
+    result = backfill_all(dry_run=False, conn=conn)
+
+    # Legacy -1 rows should be remapped to MIN_INT64 then recovered in phase 2.
+    assert result["chunks"]["backfilled"] == 1
+    assert result["chunks"]["skipped"] == 0
+
+    final_chunks = conn.open_table("chunks").search().to_arrow().to_pylist()
+    assert len(final_chunks) == 1
+    assert final_chunks[0]["user_id"] == 777
+    assert final_chunks[0]["user_id"] != -1
+    assert final_chunks[0]["user_id"] != MIN_INT64
+
+
+def test_phase2_ensures_tables_exist(temp_lancedb_dir):
+    """Phase 2 helpers should be callable without prior Phase 1 table creation."""
+    conn = get_connection_from_env()
+
+    # Should not raise even if tables don't exist yet.
+    res_chunks = backfill_orphaned_chunks(dry_run=True, conn=conn)
+    assert res_chunks["table"] == "chunks"
+
+    res_embeddings = backfill_orphaned_embeddings(dry_run=True, conn=conn)
+    assert res_embeddings["table"] == "embeddings"
+
+
+@pytest.mark.asyncio
+async def test_startup_event_skips_when_auto_migrate_disabled(
+    monkeypatch: pytest.MonkeyPatch, temp_lancedb_dir
+):
+    """Startup should not create migration task when auto migration is disabled."""
+    import importlib
+
+    web_app_module = importlib.import_module("xagent.web.app")
+
+    class _FakeManager:
+        async def initialize(self) -> None:
+            return None
+
+        async def list_skills(self) -> list[str]:
+            return []
+
+        async def list_templates(self) -> list[str]:
+            return []
+
+    class _FakeMemoryStoreManager:
+        def get_store_info(self) -> dict[str, object]:
+            return {
+                "is_lancedb": True,
+                "embedding_model_id": "test-model",
+                "similarity_threshold": 0.5,
+            }
+
+    class _FakeSandboxManager:
+        async def cleanup(self) -> None:
+            return None
+
+        async def warmup(self) -> None:
+            return None
+
+    class _FakeConn:
+        pass
+
+    migration_called = {"value": False}
+    created_tasks: list[asyncio.Task] = []
+    original_create_task = asyncio.create_task
+
+    monkeypatch.setenv("LANCEDB_AUTO_MIGRATE", "false")
+    monkeypatch.setattr(web_app_module, "init_db", lambda: None)
+    monkeypatch.setattr(web_app_module, "_migration_task", None)
+    monkeypatch.setattr(
+        "xagent.skills.utils.create_skill_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.templates.utils.create_template_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.web.dynamic_memory_store.get_memory_store_manager",
+        lambda: _FakeMemoryStoreManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.web.sandbox_manager.get_sandbox_manager",
+        lambda: _FakeSandboxManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.providers.vector_store.lancedb.get_connection_from_env",
+        lambda: _FakeConn(),
+    )
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.check_table_needs_migration",
+        lambda _conn, table_name: table_name == "chunks",
+    )
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.list_embeddings_table_names",
+        lambda _conn: [],
+    )
+
+    def _fake_backfill_all(*, dry_run: bool = False, conn=None) -> dict:
+        migration_called["value"] = True
+        return {
+            "chunks": {"backfilled": 1, "skipped": 0, "failed": 0},
+            "embeddings": {"backfilled": 0, "skipped": 0, "failed": 0},
+            "locked": True,
+        }
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def _track_create_task(coro):
+        task = original_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(
+        "xagent.migrations.lancedb.backfill_user_id.backfill_all",
+        _fake_backfill_all,
+    )
+    monkeypatch.setattr(web_app_module.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(web_app_module.asyncio, "create_task", _track_create_task)
+
+    await web_app_module.startup_event()
+    if created_tasks:
+        await asyncio.gather(*created_tasks)
+
+    assert created_tasks == []
+    assert migration_called["value"] is False
+
+
+@pytest.mark.asyncio
+async def test_startup_event_triggers_background_auto_migration(
+    monkeypatch: pytest.MonkeyPatch, temp_lancedb_dir
+):
+    """Startup should create task and execute backfill when enabled and needed."""
+    import importlib
+
+    web_app_module = importlib.import_module("xagent.web.app")
+
+    class _FakeManager:
+        async def initialize(self) -> None:
+            return None
+
+        async def list_skills(self) -> list[str]:
+            return []
+
+        async def list_templates(self) -> list[str]:
+            return []
+
+    class _FakeMemoryStoreManager:
+        def get_store_info(self) -> dict[str, object]:
+            return {
+                "is_lancedb": True,
+                "embedding_model_id": "test-model",
+                "similarity_threshold": 0.5,
+            }
+
+    class _FakeSandboxManager:
+        async def cleanup(self) -> None:
+            return None
+
+        async def warmup(self) -> None:
+            return None
+
+    class _FakeConn:
+        pass
+
+    migration_called = {"value": False}
+    created_tasks: list[asyncio.Task] = []
+    original_create_task = asyncio.create_task
+
+    monkeypatch.setenv("LANCEDB_AUTO_MIGRATE", "true")
+    monkeypatch.setattr(web_app_module, "init_db", lambda: None)
+    monkeypatch.setattr(web_app_module, "_migration_task", None)
+    monkeypatch.setattr(
+        "xagent.skills.utils.create_skill_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.templates.utils.create_template_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.web.dynamic_memory_store.get_memory_store_manager",
+        lambda: _FakeMemoryStoreManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.web.sandbox_manager.get_sandbox_manager",
+        lambda: _FakeSandboxManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.providers.vector_store.lancedb.get_connection_from_env",
+        lambda: _FakeConn(),
+    )
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.check_table_needs_migration",
+        lambda _conn, table_name: table_name == "chunks",
+    )
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.list_embeddings_table_names",
+        lambda _conn: [],
+    )
+
+    def _fake_backfill_all(*, dry_run: bool = False, conn=None) -> dict:
+        migration_called["value"] = True
+        return {
+            "chunks": {"backfilled": 1, "skipped": 0, "failed": 0},
+            "embeddings": {"backfilled": 0, "skipped": 0, "failed": 0},
+            "locked": True,
+        }
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def _track_create_task(coro):
+        task = original_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(
+        "xagent.migrations.lancedb.backfill_user_id.backfill_all",
+        _fake_backfill_all,
+    )
+    monkeypatch.setattr(web_app_module.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(web_app_module.asyncio, "create_task", _track_create_task)
+
+    await web_app_module.startup_event()
+    if created_tasks:
+        await asyncio.gather(*created_tasks)
+
+    assert len(created_tasks) == 1
+    assert migration_called["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_startup_event_no_task_when_no_table_needs_migration(
+    monkeypatch: pytest.MonkeyPatch, temp_lancedb_dir
+):
+    """Startup should not create migration task when no table needs migration."""
+    import importlib
+
+    web_app_module = importlib.import_module("xagent.web.app")
+
+    class _FakeManager:
+        async def initialize(self) -> None:
+            return None
+
+        async def list_skills(self) -> list[str]:
+            return []
+
+        async def list_templates(self) -> list[str]:
+            return []
+
+    class _FakeMemoryStoreManager:
+        def get_store_info(self) -> dict[str, object]:
+            return {
+                "is_lancedb": True,
+                "embedding_model_id": "test-model",
+                "similarity_threshold": 0.5,
+            }
+
+    class _FakeSandboxManager:
+        async def cleanup(self) -> None:
+            return None
+
+        async def warmup(self) -> None:
+            return None
+
+    class _FakeConn:
+        pass
+
+    migration_called = {"value": False}
+    created_tasks: list[asyncio.Task] = []
+    original_create_task = asyncio.create_task
+
+    monkeypatch.setenv("LANCEDB_AUTO_MIGRATE", "true")
+    monkeypatch.setattr(web_app_module, "init_db", lambda: None)
+    monkeypatch.setattr(web_app_module, "_migration_task", None)
+    monkeypatch.setattr(
+        "xagent.skills.utils.create_skill_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.templates.utils.create_template_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.web.dynamic_memory_store.get_memory_store_manager",
+        lambda: _FakeMemoryStoreManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.web.sandbox_manager.get_sandbox_manager",
+        lambda: _FakeSandboxManager(),
+    )
+    monkeypatch.setattr(
+        "xagent.providers.vector_store.lancedb.get_connection_from_env",
+        lambda: _FakeConn(),
+    )
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.check_table_needs_migration",
+        lambda _conn, _table_name: False,
+    )
+    monkeypatch.setattr(
+        "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.list_embeddings_table_names",
+        lambda _conn: [],
+    )
+
+    def _fake_backfill_all(*, dry_run: bool = False, conn=None) -> dict:
+        migration_called["value"] = True
+        return {
+            "chunks": {"backfilled": 0, "skipped": 0, "failed": 0},
+            "embeddings": {"backfilled": 0, "skipped": 0, "failed": 0},
+            "locked": True,
+        }
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    def _track_create_task(coro):
+        task = original_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(
+        "xagent.migrations.lancedb.backfill_user_id.backfill_all",
+        _fake_backfill_all,
+    )
+    monkeypatch.setattr(web_app_module.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(web_app_module.asyncio, "create_task", _track_create_task)
+
+    await web_app_module.startup_event()
+    if created_tasks:
+        await asyncio.gather(*created_tasks)
+
+    assert created_tasks == []
+    assert migration_called["value"] is False

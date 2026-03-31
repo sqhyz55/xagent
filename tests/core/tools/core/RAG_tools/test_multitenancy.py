@@ -25,6 +25,7 @@ from xagent.core.tools.adapters.vibe.document_search import (
     get_list_knowledge_bases_tool,
 )
 from xagent.core.tools.core.RAG_tools.chunk.chunk_document import chunk_document
+from xagent.core.tools.core.RAG_tools.core.config import MIN_INT64
 from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
 from xagent.core.tools.core.RAG_tools.file.register_document import register_document
 from xagent.core.tools.core.RAG_tools.management.collections import (
@@ -33,6 +34,7 @@ from xagent.core.tools.core.RAG_tools.management.collections import (
     retry_document,
 )
 from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
+from xagent.core.tools.core.RAG_tools.retrieval.search_engine import search_dense_engine
 from xagent.core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
@@ -80,7 +82,7 @@ class TestUserPermissions:
     def test_unauthenticated_no_access(self):
         """Unauthenticated users cannot see any data."""
         filter_str = UserPermissions.get_user_filter(user_id=None, is_admin=False)
-        assert filter_str == "user_id == -1"  # Impossible condition
+        assert filter_str == UserPermissions.get_no_access_filter()
 
     def test_can_access_data_admin(self):
         """Admin can access all data."""
@@ -371,6 +373,54 @@ class TestMultiTenancySearch:
         assert len(result_user2) == 1
         assert result_user2["doc_id"][0].as_py() == "doc2_user2"
 
+    @pytest.mark.integration
+    def test_unauthenticated_search_hides_orphaned_records(
+        self, temp_lancedb_dir: str
+    ) -> None:
+        """Unauthenticated dense search should not return orphaned sentinel records."""
+        import pandas as pd
+
+        conn = get_connection_from_env()
+        from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+            ensure_embeddings_table,
+        )
+
+        ensure_embeddings_table(conn, "test_model", vector_dim=1)
+        table = conn.open_table("embeddings_test_model")
+
+        table.add(
+            pd.DataFrame(
+                [
+                    {
+                        "collection": "test_collection",
+                        "doc_id": "orphaned_doc",
+                        "chunk_id": "chunk_orphaned",
+                        "parse_hash": "hash_orphaned",
+                        "model": "test_model",
+                        "vector": [1.0],
+                        "vector_dimension": 1,
+                        "text": "orphaned content should be hidden",
+                        "chunk_hash": "chunk_hash_orphaned",
+                        "created_at": datetime.utcnow(),
+                        "metadata": "{}",
+                        "user_id": MIN_INT64,
+                    }
+                ]
+            )
+        )
+
+        results, _, _ = search_dense_engine(
+            collection="test_collection",
+            model_tag="test_model",
+            query_vector=[1.0],
+            top_k=10,
+            user_id=None,
+            is_admin=False,
+            readonly=True,
+        )
+
+        assert results == []
+
 
 class TestToolUserContext:
     """Test user context passing through tools."""
@@ -466,9 +516,9 @@ class TestUserPermissionsRAGTools:
         assert filter_expr == "user_id == 123"
 
     def test_get_user_filter_unauthenticated(self):
-        """Test unauthenticated user filter matches nothing (user_id == -1)."""
+        """Test unauthenticated user filter matches nothing."""
         filter_expr = UserPermissions.get_user_filter(None, False)
-        assert filter_expr == "user_id == -1"
+        assert filter_expr == UserPermissions.get_no_access_filter()
 
     def test_can_access_data_admin(self):
         """Test admin can access any data."""
@@ -863,7 +913,7 @@ class TestEndToEndMultiTenancy:
         """Test complete workflow ensuring user data isolation.
 
         Uses current UserPermissions: regular users see only their own data
-        (no legacy NULL); unauthenticated get user_id == -1.
+        (no legacy NULL); unauthenticated gets no-access filter.
         """
         user1_id = 1001
         user2_id = 1002
@@ -888,7 +938,7 @@ class TestEndToEndMultiTenancy:
 
         assert user1_filter == f"user_id == {user1_id}"
         assert admin_filter is None
-        assert null_filter == "user_id == -1"
+        assert null_filter == UserPermissions.get_no_access_filter()
 
         with (
             patch(

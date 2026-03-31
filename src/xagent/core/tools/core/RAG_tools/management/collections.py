@@ -151,7 +151,10 @@ def _iter_batches(
             # Simple filter parsing for "user_id == X" or "user_id IS NULL"
             import re
 
-            if "user_id IS NULL" in user_filter:
+            if UserPermissions.is_no_access_filter(user_filter):
+                # Explicit unauthenticated no-access marker: return empty result directly.
+                arrow_table = arrow_table.slice(0, 0)
+            elif "user_id IS NULL" in user_filter:
                 # Filter for NULL user_id
                 mask = pa.compute.is_null(arrow_table["user_id"])
                 arrow_table = arrow_table.filter(mask)
@@ -164,9 +167,6 @@ def _iter_batches(
                         arrow_table["user_id"], pa.scalar(user_val, type=pa.int64())
                     )
                     arrow_table = arrow_table.filter(mask)
-            elif "user_id == -1" in user_filter:
-                # Impossible condition - return empty result
-                arrow_table = arrow_table.slice(0, 0)
         except Exception as filter_exc:
             logger.warning("Failed to apply user filter on Arrow table: %s", filter_exc)
             # Continue without filter if filtering fails

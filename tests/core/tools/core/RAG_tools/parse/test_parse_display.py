@@ -156,7 +156,7 @@ class TestReconstructParseResultMultiTenancy:
     def test_unauthenticated_sees_nothing(
         self, temp_lancedb_dir: str, test_collection: str, test_doc_id: str
     ) -> None:
-        """Without user_id and not admin, no data is visible (user_id == -1 filter)."""
+        """Without user_id and not admin, no data is visible."""
         sample = self._require_file("test.txt")
         register_document(
             collection=test_collection,

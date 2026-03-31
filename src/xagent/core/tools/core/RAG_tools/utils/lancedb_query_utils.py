@@ -5,6 +5,7 @@ implementing a three-tier fallback pattern for maximum compatibility.
 """
 
 import logging
+from collections.abc import Callable, Iterable
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -79,3 +80,34 @@ def query_to_list(
                             row[key] = None
 
     return results
+
+
+def list_table_names(conn: Any) -> list[str]:
+    """List LanceDB table names with compatibility across API versions.
+
+    LanceDB has exposed both `list_tables()` and `table_names()` across versions,
+    and `list_tables()` may return either an iterable of names or an object with
+    a `.tables` attribute.
+    """
+    list_tables_fn: Callable[[], Any] | None = getattr(conn, "list_tables", None)
+    if list_tables_fn is None:
+        list_tables_fn = getattr(conn, "table_names", None)
+    if list_tables_fn is None:
+        return []
+
+    tables_res = list_tables_fn()
+    if hasattr(tables_res, "tables"):
+        raw = tables_res.tables
+    else:
+        raw = tables_res
+
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, Iterable):
+        return [str(t) for t in list(raw)]
+    return []
+
+
+def list_embeddings_table_names(conn: Any, prefix: str = "embeddings_") -> list[str]:
+    """List embeddings table names (default prefix: `embeddings_`)."""
+    return [name for name in list_table_names(conn) if str(name).startswith(prefix)]

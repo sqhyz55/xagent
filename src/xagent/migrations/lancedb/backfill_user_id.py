@@ -4,16 +4,18 @@ This migration script backfills the user_id field in chunks and embeddings table
 by joining with the documents table. This is necessary for multi-tenancy data isolation.
 
 Uses two-phase migration:
-- Phase 1: Normal backfill, mark orphaned records with user_id = -1
+- Phase 1: Normal backfill, mark orphaned records with reserved sentinel
 - Phase 2: Retry orphaned records in case their parent documents were created concurrently
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
 import os
 import sys
+import tempfile
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -27,13 +29,19 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from xagent.core.tools.core.RAG_tools.core.config import MIN_INT64
+
 # Import after path modification (required for standalone migration scripts)
 # ruff: noqa: E402
 from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
     ensure_chunks_table,
     ensure_documents_table,
 )
-from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
+from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+    list_embeddings_table_names,
+    query_to_list,
+)
+from xagent.core.tools.core.RAG_tools.utils.string_utils import escape_lancedb_string
 from xagent.providers.vector_store.lancedb import get_connection_from_env
 
 # Configure logging
@@ -46,17 +54,141 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 10000
 
 # Orphaned record markers
-# These are used as user_id values to mark records that couldn't be matched to a document.
-# Since user_id should normally be >= 0, negative values serve as special markers.
+# Use int64 lower-bound sentinels reserved for internal migration states.
+# This avoids collisions with user filtering semantics (e.g. unauthenticated access).
 ORPHANED_TEMPORARY = (
-    -1
-)  # Phase 1: Temporary orphan (may be due to concurrent document creation)
+    MIN_INT64  # Phase 1: Temporary orphan (may be due to concurrent document creation)
+)
 ORPHANED_PERMANENT = (
-    -2
+    MIN_INT64 + 1
 )  # Phase 2: Permanent orphan (confirmed no matching document exists)
 
 # Global lock to prevent concurrent migrations
 _migration_lock = threading.Lock()
+
+
+def _get_migration_lock_file_path() -> str:
+    """Resolve file lock path for cross-process migration coordination."""
+    lock_file = os.environ.get("LANCEDB_MIGRATION_LOCK_FILE")
+    if lock_file:
+        return lock_file
+
+    lancedb_dir = os.environ.get("LANCEDB_DIR")
+    if lancedb_dir:
+        return os.path.join(lancedb_dir, ".lancedb_user_id_migration.lock")
+
+    return os.path.join(
+        tempfile.gettempdir(),
+        "xagent_lancedb_user_id_migration.lock",
+    )
+
+
+def _acquire_file_lock() -> Any | None:
+    """Acquire non-blocking file lock shared by all local processes."""
+    lock_path = _get_migration_lock_file_path()
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    lock_file = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        return lock_file
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    except Exception:
+        lock_file.close()
+        raise
+
+
+def _release_file_lock(lock_file: Any) -> None:
+    """Release file lock and close file handle safely."""
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
+
+
+def _orphaned_temporary_filter() -> str:
+    """Build a LanceDB-safe filter for ORPHANED_TEMPORARY int64 sentinel."""
+    return f"user_id = cast({ORPHANED_TEMPORARY} as bigint)"
+
+
+def _build_doc_id_in_filter(doc_ids: list[str]) -> str:
+    """Build a safe LanceDB IN filter for doc_id values."""
+    escaped_ids = [f"'{escape_lancedb_string(doc_id)}'" for doc_id in doc_ids]
+    return f"doc_id IN ({', '.join(escaped_ids)})"
+
+
+def _build_record_update_filter(
+    record: dict[str, Any], filter_fields: list[str]
+) -> str:
+    """Build a safe AND filter targeting a single record by key fields."""
+    filter_parts: list[str] = []
+    for field_name in filter_fields:
+        field_value = record.get(field_name)
+        if field_value is None:
+            filter_parts.append(f"{field_name} IS NULL")
+            continue
+
+        # Keep numeric comparisons unquoted; quote and escape all other scalar values.
+        if isinstance(field_value, (int, float)) and not isinstance(field_value, bool):
+            filter_parts.append(f"{field_name} = {field_value}")
+        else:
+            escaped_value = escape_lancedb_string(field_value)
+            filter_parts.append(f"{field_name} = '{escaped_value}'")
+    return " and ".join(filter_parts)
+
+
+def _remap_legacy_orphaned_user_ids(conn: DBConnection, dry_run: bool = False) -> dict:
+    """One-time compatibility remap for legacy orphan marker values.
+
+    Historical migration runs used ``-1`` as temporary orphan marker, which now
+    conflicts with unauthenticated read filtering semantics. This helper remaps
+    legacy ``-1`` to the reserved int64 sentinel to keep Phase 2 retry behavior
+    consistent after upgrading.
+    """
+
+    remapped_counts: dict[str, int] = {}
+    target_tables = ["chunks", *_get_embeddings_tables(conn)]
+
+    for table_name in target_tables:
+        try:
+            table = conn.open_table(table_name)
+        except Exception as exc:
+            logger.warning("Skip legacy remap for %s: %s", table_name, exc)
+            continue
+
+        try:
+            legacy_rows = query_to_list(
+                table.search().where("user_id = -1").limit(BATCH_SIZE)
+            )
+            if not legacy_rows:
+                continue
+
+            remapped_counts[table_name] = len(legacy_rows)
+            if dry_run:
+                logger.info(
+                    "Dry-run legacy remap: %s rows in %s would be updated from -1 to %s",
+                    len(legacy_rows),
+                    table_name,
+                    ORPHANED_TEMPORARY,
+                )
+                continue
+
+            table.update("user_id = -1", {"user_id": ORPHANED_TEMPORARY})
+            logger.info(
+                "Legacy remap complete: %s rows in %s updated from -1 to %s",
+                len(legacy_rows),
+                table_name,
+                ORPHANED_TEMPORARY,
+            )
+        except Exception as exc:
+            logger.warning("Legacy remap failed for %s: %s", table_name, exc)
+
+    return remapped_counts
 
 
 def _backfill_table_core(
@@ -107,10 +239,9 @@ def _backfill_table_core(
 
         if all_doc_ids:
             # Bulk lookup for documents
-            doc_ids_str = ", ".join([f"'{d}'" for d in all_doc_ids])
             docs = query_to_list(
                 docs_table.search()
-                .where(f"doc_id IN ({doc_ids_str})")
+                .where(_build_doc_id_in_filter(all_doc_ids))
                 .limit(len(all_doc_ids))
             )
             for doc in docs:
@@ -123,6 +254,7 @@ def _backfill_table_core(
 
         # Update records
         skipped = 0
+        updated_in_batch = 0
         for record in batch:
             doc_id = record.get("doc_id")
 
@@ -138,10 +270,9 @@ def _backfill_table_core(
             if not dry_run:
                 try:
                     # Build update filter
-                    update_filter = " and ".join(
-                        [f"{f} = '{record.get(f)}'" for f in filter_fields]
-                    )
+                    update_filter = _build_record_update_filter(record, filter_fields)
                     table.update(update_filter, {"user_id": user_id})
+                    updated_in_batch += 1
 
                     if is_recovered:
                         total_backfilled += 1
@@ -155,6 +286,17 @@ def _backfill_table_core(
         logger.info(
             f"{log_prefix} Batch #{batch_number}: {len(batch) - skipped} processed, {skipped} marked as failure_id ({failure_user_id})"
         )
+        if dry_run:
+            # Dry-run does not mutate records, so processing additional batches would
+            # read the same records repeatedly and never converge.
+            break
+        if updated_in_batch == 0:
+            logger.error(
+                "%s Batch #%s made zero update progress; aborting to avoid infinite loop.",
+                log_prefix,
+                batch_number,
+            )
+            break
 
     return {
         "total": total_backfilled + total_skipped + total_failed,
@@ -198,14 +340,17 @@ def backfill_orphaned_chunks(
     if conn is None:
         conn = get_connection_from_env()
 
+    ensure_chunks_table(conn)
+    ensure_documents_table(conn)
+
     chunks_table = conn.open_table("chunks")
     docs_table = conn.open_table("documents")
 
-    logger.info("Phase 2: Retrying orphaned chunks (user_id = -1)...")
+    logger.info("Phase 2: Retrying orphaned chunks (user_id = ORPHANED_TEMPORARY)...")
     result = _backfill_table_core(
         table=chunks_table,
         docs_table=docs_table,
-        query_filter=f"user_id = {ORPHANED_TEMPORARY}",
+        query_filter=_orphaned_temporary_filter(),
         filter_fields=["doc_id", "chunk_id", "parse_hash"],
         failure_user_id=ORPHANED_PERMANENT,
         dry_run=dry_run,
@@ -217,20 +362,8 @@ def backfill_orphaned_chunks(
 
 def _get_embeddings_tables(conn: DBConnection) -> list[str]:
     """Helper to get all embeddings tables with API compatibility."""
-    list_tables_fn = getattr(conn, "list_tables", None)
-    if list_tables_fn is None:
-        list_tables_fn = getattr(conn, "table_names", None)
-
-    if list_tables_fn is None:
-        return []
-
     try:
-        tables_res = list_tables_fn()
-        if hasattr(tables_res, "tables"):
-            table_names = tables_res.tables
-        else:
-            table_names = list(tables_res)
-        return [t for t in table_names if t.startswith("embeddings_")]
+        return list_embeddings_table_names(conn)
     except Exception as e:
         logger.warning(f"Failed to list LanceDB tables: {e}")
         return []
@@ -290,6 +423,8 @@ def backfill_orphaned_embeddings(
     if conn is None:
         conn = get_connection_from_env()
 
+    ensure_documents_table(conn)
+
     embeddings_tables = _get_embeddings_tables(conn)
     if not embeddings_tables:
         return {
@@ -309,7 +444,7 @@ def backfill_orphaned_embeddings(
         res = _backfill_table_core(
             table=conn.open_table(table_name),
             docs_table=docs_table,
-            query_filter=f"user_id = {ORPHANED_TEMPORARY}",
+            query_filter=_orphaned_temporary_filter(),
             filter_fields=["doc_id", "chunk_id", "parse_hash", "model"],
             failure_user_id=ORPHANED_PERMANENT,
             dry_run=dry_run,
@@ -337,10 +472,25 @@ def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dic
         logger.warning("Another migration is already in progress")
         return {"error": "Migration lock already held"}
 
+    file_lock = None
     try:
+        file_lock = _acquire_file_lock()
+        if file_lock is None:
+            logger.warning("Another migration is running in a different process")
+            return {"error": "Migration file lock already held"}
+
         logger.info("=" * 60)
         logger.info("LanceDB User ID Backfill Migration (Two-Phase)")
         logger.info("=" * 60)
+
+        legacy_remap = _remap_legacy_orphaned_user_ids(conn=conn, dry_run=dry_run)
+        if legacy_remap:
+            logger.info("Legacy orphan remap summary: %s", legacy_remap)
+        has_legacy_chunk_orphans = legacy_remap.get("chunks", 0) > 0
+        has_legacy_embedding_orphans = any(
+            table_name.startswith("embeddings_") and count > 0
+            for table_name, count in legacy_remap.items()
+        )
 
         # Phase 1
         chunks_res = backfill_chunks_table(dry_run=dry_run, conn=conn)
@@ -350,13 +500,13 @@ def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dic
         chunks_retry = {"backfilled": 0, "skipped": chunks_res["skipped"]}
         embeddings_retry = {"backfilled": 0, "skipped": embeddings_res["skipped"]}
 
-        if chunks_res["skipped"] > 0:
+        if chunks_res["skipped"] > 0 or has_legacy_chunk_orphans:
             chunks_retry = backfill_orphaned_chunks(dry_run=dry_run, conn=conn)
             chunks_res["backfilled"] += chunks_retry["backfilled"]
             chunks_res["skipped"] = chunks_retry["skipped"]
             chunks_res["failed"] += chunks_retry["failed"]
 
-        if embeddings_res["skipped"] > 0:
+        if embeddings_res["skipped"] > 0 or has_legacy_embedding_orphans:
             embeddings_retry = backfill_orphaned_embeddings(dry_run=dry_run, conn=conn)
             embeddings_res["backfilled"] += embeddings_retry["backfilled"]
             embeddings_res["skipped"] = embeddings_retry["skipped"]
@@ -368,6 +518,8 @@ def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dic
             "locked": True,
         }
     finally:
+        if file_lock is not None:
+            _release_file_lock(file_lock)
         _migration_lock.release()
         logger.info("Migration lock released")
 
@@ -376,8 +528,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Backfill user_id for LanceDB tables for multi-tenancy support.\n\n"
         "This script performs a two-phase migration:\n"
-        "  Phase 1: Backfill records, mark orphaned records with user_id = -1\n"
-        "  Phase 2: Retry orphaned records, mark permanent orphans with user_id = -2\n\n"
+        f"  Phase 1: Backfill records, mark orphaned records with user_id = {ORPHANED_TEMPORARY}\n"
+        f"  Phase 2: Retry orphaned records, mark permanent orphans with user_id = {ORPHANED_PERMANENT}\n\n"
         "Orphaned records occur when chunks/embeddings exist without matching documents,\n"
         "which can happen due to concurrent document creation during migration.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
