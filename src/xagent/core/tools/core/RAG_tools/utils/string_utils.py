@@ -32,7 +32,13 @@ def escape_lancedb_string(input_string: Any) -> str:
     return input_string.replace("\\", "\\\\").replace("'", "''")
 
 
-def build_lancedb_filter_expression(filters: Dict[str, Any]) -> str:
+def build_lancedb_filter_expression(
+    filters: Dict[str, Any],
+    *,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+    skip_user_filter: bool = False,
+) -> str:
     """
     Builds a safe LanceDB filter expression from a dictionary of filters.
 
@@ -42,9 +48,17 @@ def build_lancedb_filter_expression(filters: Dict[str, Any]) -> str:
 
     Args:
         filters: A dictionary where keys are column names and values are the filter values.
+        user_id: Optional user ID for multi-tenancy filtering
+        is_admin: Whether user has admin privileges (bypasses user filtering)
+        skip_user_filter: If True, don't apply user permissions filter (default: False)
 
     Returns:
         A string representing the safely constructed LanceDB filter expression.
+
+    Note:
+        When skip_user_filter=True, user permissions are not applied to the filter.
+        This allows the function to be used for base filters where user permissions
+        are handled separately by the caller (e.g., in load_ingestion_status).
     """
     from ..storage.contracts import FilterCondition, FilterOperator
     from ..storage.factory import get_vector_index_store
@@ -66,10 +80,11 @@ def build_lancedb_filter_expression(filters: Dict[str, Any]) -> str:
         filter_expr = tuple(conditions)
 
     # Get backend-specific syntax
+    # When skip_user_filter=True, pass is_admin=True to bypass user filtering
     backend_filter = vector_store.build_filter_expression(
         filters=filter_expr,
-        user_id=None,
-        is_admin=False,
+        user_id=user_id if not skip_user_filter else None,
+        is_admin=is_admin or skip_user_filter,
     )
 
     return backend_filter or ""

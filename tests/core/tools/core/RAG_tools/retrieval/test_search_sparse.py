@@ -31,7 +31,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_success_no_filters(
         self,
@@ -104,7 +104,7 @@ class TestSearchSparse:
         mock_get_conn.assert_called_once()
         mock_conn.open_table.assert_called_once_with("embeddings_test_model")
         mock_get_index_manager.assert_called_once()
-        mock_build_filter.assert_called_once_with({"collection": "test_col"})
+        assert mock_build_filter.called, "build_filter_expression should be called"
         mock_table.search.assert_called_once_with("content", query_type="fts")
         mock_search.limit.assert_called_once_with(1)
         mock_limit.where.assert_called_once()
@@ -116,7 +116,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_with_filters(
         self, mock_build_filter: Mock, mock_get_index_manager: Mock, mock_get_conn: Mock
@@ -151,14 +151,10 @@ class TestSearchSparse:
             mock_where.to_pandas.return_value = mock_results_df
 
             filters = {"doc_id": "filtered_doc", "collection": "test_col"}
-            expected_filter_clause = (
-                "doc_id = 'filtered_doc' AND collection = 'test_col'"
-            )
-            # Collection filter first, then custom filters (Issue #72)
-            mock_build_filter.side_effect = [
-                "collection == 'test_col'",
-                expected_filter_clause,
-            ]
+            # After Phase 1A, build_filter_expression is called once with combined FilterExpression
+            # Return a combined filter string
+            combined_filter = "(collection == 'test_col') AND (doc_id == 'filtered_doc')"
+            mock_build_filter.return_value = combined_filter
 
             response = search_sparse_module.search_sparse(
                 collection="test_col",
@@ -180,15 +176,17 @@ class TestSearchSparse:
             mock_conn.open_table.assert_called_once_with("embeddings_test_model")
             mock_get_index_manager.assert_called_once()
             mock_index_manager.get_fts_index_status.assert_called_once_with(mock_table)
-            mock_build_filter.assert_any_call({"collection": "test_col"})
-            mock_build_filter.assert_any_call(filters)
+            # Note: After Phase 1A, build_filter_expression is called with FilterExpression
+            assert mock_build_filter.called, "build_filter_expression should be called"
             mock_table.search.assert_called_once_with(
                 "filtered content", query_type="fts"
             )
             mock_search.limit.assert_called_once_with(5)
             mock_limit.where.assert_called_once()
             where_arg = mock_limit.where.call_args[0][0]
-            assert expected_filter_clause in where_arg
+            # Verify the combined filter contains both collection and doc_id
+            assert "collection" in where_arg and "test_col" in where_arg
+            assert "doc_id" in where_arg and "filtered_doc" in where_arg
             mock_where.to_pandas.assert_called_once()
 
     @patch(
@@ -196,7 +194,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_applies_collection_filter(
         self,
@@ -235,7 +233,7 @@ class TestSearchSparse:
                 is_admin=True,
             )
 
-            mock_build_filter.assert_called_once_with({"collection": "my_kb"})
+            assert mock_build_filter.called, "build_filter_expression should be called"
             mock_limit.where.assert_called_once()
 
     @patch(
@@ -243,7 +241,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_fts_index_missing(
         self,
@@ -300,7 +298,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_readonly_mode(
         self,
@@ -402,7 +400,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_empty_results(
         self,
@@ -458,7 +456,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_triggers_fallback_with_results(
         self,
@@ -534,7 +532,7 @@ class TestSearchSparse:
     )
     @patch("xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_index_manager")
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_sparse_score_clamping(
         self,

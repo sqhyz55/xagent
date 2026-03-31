@@ -144,10 +144,11 @@ class TestReadChunksForEmbedding:
 
             # Verify count_rows was called with escaped input
             # Single quotes should be doubled: ' becomes ''
+            # Note: After Phase 1A, filter expressions are wrapped in parentheses
             expected_chunks_where_clause = (
-                f"collection == '{safe_collection}' AND "
-                f"doc_id == 'malicious'' OR 1=1 --' AND "
-                f"parse_hash == '{safe_parse_hash}'"
+                f"(collection == '{safe_collection}') AND "
+                f"(doc_id == 'malicious'' OR 1=1 --') AND "
+                f"(parse_hash == '{safe_parse_hash}')"
             )
             mock_chunks_table.count_rows.assert_called_once_with(
                 expected_chunks_where_clause

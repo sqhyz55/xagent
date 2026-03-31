@@ -25,6 +25,136 @@ from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ..core.schemas import CollectionInfo
 
 
+# Field name whitelist for filter validation
+# Derived from all LanceDB table schemas in schema_manager.py
+_VALID_FILTER_FIELDS = frozenset({
+    # documents table
+    "collection", "doc_id", "source_path", "file_type", "content_hash",
+    "uploaded_at", "title", "language", "user_id",
+    # parses table
+    "parse_hash", "parser", "created_at", "params_json",
+    # chunks table
+    "chunk_id", "index", "page_number", "section", "anchor", "json_path",
+    "chunk_hash", "config_hash", "metadata",
+    # embeddings table
+    "model", "vector_dimension", "vector",
+    # ingestion_runs table
+    "status", "message", "updated_at",
+    # main_pointers table
+    "step_type", "model_tag", "semantic_id", "technical_id", "operator",
+    # prompt_templates table
+    "id", "name", "template", "version", "is_latest",
+    # collection_metadata table
+    "name", "schema_version", "embedding_model_id", "embedding_dimension",
+    "documents", "processed_documents", "parses", "chunks", "embeddings",
+    "document_names", "collection_locked", "allow_mixed_parse_methods",
+    "skip_config_validation", "ingestion_config", "created_at", "updated_at",
+    "last_accessed_at", "extra_metadata",
+    # collection_config table
+    "config_json",
+})
+
+
+def validate_field_name(field: str) -> None:
+    """Validate that a field name is in the allowed whitelist.
+
+    Args:
+        field: Field name to validate.
+
+    Raises:
+        ValueError: If field name is not in the whitelist.
+    """
+    if field not in _VALID_FILTER_FIELDS:
+        raise ValueError(
+            f"Invalid filter field '{field}'. "
+            f"Field must be one of: {', '.join(sorted(_VALID_FILTER_FIELDS))}"
+        )
+
+
+def validate_filter_value(value: Any) -> None:
+    """Validate that a filter value is an allowed type.
+
+    Allowed types: str, int, float, bool, None, list, tuple, set.
+
+    Args:
+        value: Value to validate.
+
+    Raises:
+        ValueError: If value type is not allowed.
+        TypeError: If value is a complex object (dict, custom class).
+    """
+    if value is None:
+        return
+
+    if isinstance(value, (str, int, float, bool)):
+        return
+
+    if isinstance(value, (list, tuple, set)):
+        # Validate each element in the collection
+        for item in value:
+            if not isinstance(item, (str, int, float, bool, type(None))):
+                raise TypeError(
+                    f"Invalid filter value type in collection: {type(item).__name__}. "
+                    f"Collection elements must be str, int, float, bool, or None."
+                )
+        return
+
+    # Reject dict and complex objects
+    raise TypeError(
+        f"Invalid filter value type: {type(value).__name__}. "
+        f"Allowed types: str, int, float, bool, None, list, tuple, set."
+    )
+
+
+def build_filter_from_dict(filters: Dict[str, Any]) -> Optional[FilterExpression]:
+    """Convert a dictionary of filters to a FilterExpression with validation.
+
+    This function provides a common entry point for building filter expressions
+    from simple dictionary key-value pairs. All keys are validated against the
+    field name whitelist, and all values are type-checked.
+
+    Args:
+        filters: Dictionary of field-name -> value mappings for equality filters.
+
+    Returns:
+        FilterExpression: Single FilterCondition for one filter,
+                         tuple of conditions (AND) for multiple filters,
+                         or None if filters is empty.
+
+    Raises:
+        ValueError: If a field name is not in the whitelist.
+        TypeError: If a value type is not allowed.
+
+    Example:
+        >>> build_filter_from_dict({"collection": "my_collection", "doc_id": "doc123"})
+        (FilterCondition(field='collection', operator=FilterOperator.EQ, value='my_collection'),
+         FilterCondition(field='doc_id', operator=FilterOperator.EQ, value='doc123'))
+
+        >>> build_filter_from_dict({"doc_id": "doc123"})
+        FilterCondition(field='doc_id', operator=FilterOperator.EQ, value='doc123')
+    """
+    if not filters:
+        return None
+
+    conditions = []
+    for field, value in filters.items():
+        # Validate field name
+        validate_field_name(field)
+
+        # Validate value type
+        validate_filter_value(value)
+
+        # Create filter condition
+        conditions.append(
+            FilterCondition(field=field, operator=FilterOperator.EQ, value=value)
+        )
+
+    # Return single condition or tuple (AND combination)
+    if len(conditions) == 1:
+        return conditions[0]
+    return tuple(conditions)
+
+
 @runtime_checkable
 class DatabaseConnection(Protocol):
     """Backend-agnostic database connection protocol.

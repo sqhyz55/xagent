@@ -32,9 +32,9 @@ from ..core.schemas import (
 )
 from ..LanceDB.schema_manager import ensure_documents_table, ensure_parses_table
 from ..storage.factory import get_vector_index_store
+from ..storage.contracts import build_filter_from_dict
 from ..utils.hash_utils import compute_parse_hash, get_parse_params_whitelist
 from ..utils.lancedb_query_utils import query_to_list
-from ..utils.string_utils import build_lancedb_filter_expression
 from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
@@ -346,21 +346,21 @@ def _get_document_from_db(
         ensure_documents_table(conn)
         table = conn.open_table("documents")
         query_filters = {"collection": collection, "doc_id": doc_id}
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
+        filter_expr_obj = build_filter_from_dict(query_filters)
 
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
+        # Use storage abstraction to build backend-specific filter
+        vector_store = get_vector_index_store()
+        backend_filter = vector_store.build_filter_expression(
+            filters=filter_expr_obj,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
-        if table.count_rows(filter_expr) == 0:
+        if table.count_rows(backend_filter) == 0:
             return None
 
         # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        records = query_to_list(table.search().where(filter_expr))
+        records = query_to_list(table.search().where(backend_filter))
         if not records:
             return None
         return records[0]

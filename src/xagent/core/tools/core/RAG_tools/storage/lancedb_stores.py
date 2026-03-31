@@ -24,6 +24,7 @@ from .contracts import (
     FilterExpression,
     FilterOperator,
     MetadataStore,
+    validate_field_name,
     VectorIndexStore,
 )
 
@@ -187,7 +188,10 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         conn = self._get_connection()
         ensure_documents_table(conn)
         table = conn.open_table("documents")
-        base_filter = build_lancedb_filter_expression({"collection": collection_name})
+        # Build base filter without user permissions (will be added separately)
+        base_filter = build_lancedb_filter_expression(
+            {"collection": collection_name}, skip_user_filter=True
+        )
         user_filter = UserPermissions.get_user_filter(user_id, is_admin)
         if user_filter and base_filter:
             combined_filter = f"({base_filter}) and ({user_filter})"
@@ -534,14 +538,21 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> int:
-        """Count rows in a table with optional filters."""
+        """Count rows in a table with optional filters.
+
+        Raises:
+            DatabaseOperationError: If table cannot be opened or count fails
+        """
+        from ..core.exceptions import DatabaseOperationError
+
         conn = self._get_connection()
 
         try:
             table = conn.open_table(table_name)
         except Exception as exc:
-            logger.debug("Unable to open table '%s': %s", table_name, exc)
-            return 0
+            raise DatabaseOperationError(
+                f"Failed to open table '{table_name}': {exc}"
+            ) from exc
 
         # Build filter expression
         filter_expr = None
@@ -563,8 +574,9 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 return int(table.count_rows(combined_filter))
             return int(table.count_rows())
         except Exception as exc:
-            logger.debug("Failed to count rows in '%s': %s", table_name, exc)
-            return 0
+            raise DatabaseOperationError(
+                f"Failed to count rows in table '{table_name}': {exc}"
+            ) from exc
 
     def aggregate_document_counts(
         self,
@@ -637,6 +649,9 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
     def _translate_condition(self, condition: FilterCondition) -> str:
         """Translate single condition to LanceDB syntax."""
+        # Validate field name to prevent injection
+        validate_field_name(condition.field)
+
         field = condition.field
         op = condition.operator
         value = condition.value

@@ -24,6 +24,7 @@ from ..core.exceptions import (
 from ..core.schemas import ChunkStrategy
 from ..LanceDB.schema_manager import ensure_chunks_table
 from ..storage.factory import get_vector_index_store
+from ..storage.contracts import build_filter_from_dict
 from ..utils.hash_utils import compute_chunk_hash
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
@@ -301,32 +302,29 @@ def _get_existing_chunks(
         conn = get_connection_from_env()
         table = conn.open_table("chunks")
 
-        # Build safe filter expression using utility function
+        # Build safe filter expression using common function with validation
         query_filters = {
             "collection": collection,
             "doc_id": doc_id,
             "parse_hash": parse_hash,
             "config_hash": config_hash,
         }
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
+        filter_expr_obj = build_filter_from_dict(query_filters)
 
-        # Add user permission filter for multi-tenancy
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
+        # Use storage abstraction to build backend-specific filter
+        vector_store = get_vector_index_store()
+        backend_filter = vector_store.build_filter_expression(
+            filters=filter_expr_obj,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
         # OPTIMIZATION: Use count_rows() for memory-efficient existence check
-        if table.count_rows(filter_expr) == 0:
+        if table.count_rows(backend_filter) == 0:
             return []
 
         # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        chunks_data = query_to_list(table.search().where(filter_expr))
+        chunks_data = query_to_list(table.search().where(backend_filter))
 
         # Convert to expected format with metadata deserialization
         # Arrow/to_list() returns None instead of NaN, so direct None check is sufficient
@@ -380,32 +378,29 @@ def _load_paragraphs(
         conn = get_connection_from_env()
         table = conn.open_table("parses")
 
-        # Build safe filter expression using utility function
+        # Build safe filter expression using common function with validation
         query_filters = {
             "collection": collection,
             "doc_id": doc_id,
             "parse_hash": parse_hash,
         }
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
+        filter_expr_obj = build_filter_from_dict(query_filters)
 
-        # Add user permission filter for multi-tenancy
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
+        # Use storage abstraction to build backend-specific filter
+        vector_store = get_vector_index_store()
+        backend_filter = vector_store.build_filter_expression(
+            filters=filter_expr_obj,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
         # First check if any parse exists using efficient count_rows
-        if table.count_rows(filter_expr) == 0:
+        if table.count_rows(backend_filter) == 0:
             return []
 
         # Only load data if parse exists
         # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        records = query_to_list(table.search().where(filter_expr))
+        records = query_to_list(table.search().where(backend_filter))
         if not records:
             return []
         record = records[0]

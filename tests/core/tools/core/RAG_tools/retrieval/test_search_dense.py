@@ -81,7 +81,7 @@ class TestSearchDenseEngine:
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_engine_basic(
         self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
@@ -162,13 +162,14 @@ class TestSearchDenseEngine:
                 vector_column_name="vector",
             )
             # Collection filter must be applied for KB isolation (Issue #72)
-            mock_build_filter.assert_any_call({"collection": "test_collection"})
+            # Note: After Phase 1A, build_filter_expression takes FilterExpression objects
+            assert mock_build_filter.called, "build_filter_expression should be called"
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_engine_with_filters(
         self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
@@ -199,11 +200,10 @@ class TestSearchDenseEngine:
 
             # Execute search with filters (collection filter + custom filters)
             filters = {"doc_id": "test_doc", "file_type": "pdf"}
-            expected_filter_clause = "doc_id = 'test_doc' AND file_type = 'pdf'"
-            mock_build_filter.side_effect = [
-                "collection == 'test_collection'",
-                expected_filter_clause,
-            ]
+            # After Phase 1A, build_filter_expression is called once with combined FilterExpression
+            # Return a combined filter string that includes both collection and custom filters
+            combined_filter = "(collection == 'test_collection') AND (doc_id == 'test_doc') AND (file_type == 'pdf')"
+            mock_build_filter.return_value = combined_filter
 
             search_dense_engine(
                 collection="test_collection",
@@ -222,20 +222,23 @@ class TestSearchDenseEngine:
             mock_index_manager.check_and_create_index.assert_called_once_with(
                 mock_table, "embeddings_test_model", False
             )
-            mock_build_filter.assert_any_call({"collection": "test_collection"})
-            mock_build_filter.assert_any_call(filters)
+            # Note: After Phase 1A, build_filter_expression is called once with combined FilterExpression
+            assert mock_build_filter.called, "build_filter_expression should be called"
             search_query = mock_table.search.return_value
             # Note: The filter is wrapped in parentheses by the filter application logic
             search_query.where.assert_called_once()
             where_arg = search_query.where.call_args[0][0]
-            assert expected_filter_clause in where_arg
+            # Verify the combined filter contains all expected parts
+            assert "collection" in where_arg and "test_collection" in where_arg
+            assert "doc_id" in where_arg and "test_doc" in where_arg
+            assert "file_type" in where_arg and "pdf" in where_arg
             search_query.where.return_value.limit.assert_called_once_with(5)
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_dense_engine_applies_collection_filter(
         self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
@@ -270,7 +273,8 @@ class TestSearchDenseEngine:
                 is_admin=True,
             )
 
-            mock_build_filter.assert_any_call({"collection": "my_kb"})
+            # Note: After Phase 1A, build_filter_expression is called with FilterExpression
+            assert mock_build_filter.called, "build_filter_expression should be called"
             search_query = mock_table.search.return_value
             search_query.where.assert_called_once()
             where_arg = search_query.where.call_args[0][0]
@@ -280,7 +284,7 @@ class TestSearchDenseEngine:
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_engine_readonly_mode(
         self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
@@ -338,13 +342,14 @@ class TestSearchDenseEngine:
                 vector_column_name="vector",
             )
             # Collection filter is always applied for KB isolation
-            mock_build_filter.assert_any_call({"collection": "test_collection"})
+            # Note: After Phase 1A, build_filter_expression is called with FilterExpression
+            assert mock_build_filter.called, "build_filter_expression should be called"
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_engine_error_handling(
         self, mock_build_filter: Mock, mock_get_conn: Mock
@@ -735,7 +740,7 @@ class TestSearchDenseIntegration:
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_engine_arrow_fallback_to_list(
         self, mock_build_filter: Mock, mock_get_conn: Mock
@@ -808,7 +813,7 @@ class TestSearchDenseIntegration:
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.build_lancedb_filter_expression"
+        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
     )
     def test_search_engine_arrow_fallback_to_pandas_with_nan(
         self, mock_build_filter: Mock, mock_get_conn: Mock

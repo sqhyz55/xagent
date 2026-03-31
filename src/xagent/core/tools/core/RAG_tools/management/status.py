@@ -54,8 +54,9 @@ def write_ingestion_status(
     ensure_ingestion_runs_table(conn)
     table = conn.open_table("ingestion_runs")
 
+    # Build filter without user permissions (deleting all matching records)
     filter_expr = build_lancedb_filter_expression(
-        {"collection": collection, "doc_id": doc_id}
+        {"collection": collection, "doc_id": doc_id}, skip_user_filter=True
     )
     if filter_expr:
         table.delete(filter_expr)
@@ -113,7 +114,8 @@ def load_ingestion_status(
     if doc_id is not None:
         filters["doc_id"] = doc_id
 
-    base_filter = build_lancedb_filter_expression(filters)
+    # Build base filter without user permissions (will be added separately)
+    base_filter = build_lancedb_filter_expression(filters, skip_user_filter=True)
     user_filter = UserPermissions.get_user_filter(user_id, is_admin)
 
     if user_filter and base_filter:
@@ -157,8 +159,9 @@ def clear_ingestion_status(
     ensure_ingestion_runs_table(conn)
     table = conn.open_table("ingestion_runs")
 
+    # Build base filter without user permissions (will be added separately)
     base_filter = build_lancedb_filter_expression(
-        {"collection": collection, "doc_id": doc_id}
+        {"collection": collection, "doc_id": doc_id}, skip_user_filter=True
     )
     user_filter = UserPermissions.get_user_filter(user_id, is_admin)
 

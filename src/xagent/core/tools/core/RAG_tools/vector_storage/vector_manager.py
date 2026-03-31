@@ -496,29 +496,40 @@ def read_chunks_for_embedding(
         if filters:
             query_filters.update(filters)
 
+        # Use storage abstraction to build safe filter expression
+        vector_store = get_vector_index_store()
+
+        # Convert dict filters to FilterExpression
+        from ..storage.contracts import FilterCondition, FilterOperator
+        conditions = [
+            FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
+            for key, value in query_filters.items()
+        ]
+
+        # Combine conditions with AND
+        filter_expr_obj = tuple(conditions) if len(conditions) > 1 else conditions[0] if conditions else None
+
+        # Build backend-specific filter with user permissions
+        backend_filter = vector_store.build_filter_expression(
+            filters=filter_expr_obj,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
         # Read chunks from database
         chunks_table = conn.open_table("chunks")
 
-        # Build combined filter expression with user permissions
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
-
         try:
             # OPTIMIZATION: Use count_rows() for memory-efficient counting
-            total_count = chunks_table.count_rows(filter_expr)
+            total_count = chunks_table.count_rows(backend_filter) if backend_filter else chunks_table.count_rows()
             if total_count == 0:
                 logger.info("No chunks found for the given criteria")
                 return EmbeddingReadResponse(chunks=[], total_count=0, pending_count=0)
 
             # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-            chunks_data = query_to_list(chunks_table.search().where(filter_expr))
+            chunks_data = query_to_list(
+                chunks_table.search().where(backend_filter) if backend_filter else chunks_table.search()
+            )
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to read chunks for embedding: %s", e)
             raise DatabaseOperationError(
@@ -569,22 +580,21 @@ def read_chunks_for_embedding(
                 "parse_hash": parse_hash,
                 "model": model,
             }
-            base_embedding_filter_expr = build_lancedb_filter_expression(
-                embedding_filters
+
+            # Use storage abstraction to build safe filter expression
+            from ..storage.contracts import FilterCondition, FilterOperator
+            conditions = [
+                FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
+                for key, value in embedding_filters.items()
+            ]
+            filter_expr_obj = tuple(conditions) if len(conditions) > 1 else conditions[0]
+
+            # Build backend-specific filter with user permissions
+            embedding_filter_expr = vector_store.build_filter_expression(
+                filters=filter_expr_obj,
+                user_id=user_id,
+                is_admin=is_admin,
             )
-
-            # Add user permission filter for multi-tenancy
-            user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-            # Combine filters
-            if user_filter_expr and base_embedding_filter_expr:
-                embedding_filter_expr = (
-                    f"({base_embedding_filter_expr}) and ({user_filter_expr})"
-                )
-            elif user_filter_expr:
-                embedding_filter_expr = user_filter_expr
-            else:
-                embedding_filter_expr = base_embedding_filter_expr
 
             # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
             embeddings_data = query_to_list(
