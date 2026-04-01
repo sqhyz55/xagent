@@ -580,6 +580,80 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             return f"{vector_index_status} advice: {vector_index_advice}"
         return vector_index_status
 
+    # --- Index Management (Phase 1A Part 2) ---
+
+    def should_reindex(
+        self, table_name: str, total_upserted: int, policy: IndexPolicy
+    ) -> bool:
+        """Determine if reindex should be triggered (sync)."""
+        try:
+            conn = self._get_connection()
+            table = conn.open_table(table_name)
+
+            # Immediate reindex if enabled
+            if policy.enable_immediate_reindex and total_upserted > 0:
+                return True
+
+            # Batch size threshold
+            if total_upserted >= policy.reindex_batch_size:
+                return True
+
+            # Smart reindex: check unindexed ratio
+            if policy.enable_smart_reindex:
+                try:
+                    stats = table.index_stats("vector_idx")
+                    if stats.num_indexed_rows > 0:
+                        unindexed_ratio = (
+                            stats.num_unindexed_rows / stats.num_indexed_rows
+                        )
+                        if unindexed_ratio > policy.reindex_unindexed_ratio_threshold:
+                            return True
+
+                    # Absolute threshold for unindexed rows
+                    if stats.num_unindexed_rows > 10000:
+                        return True
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("Could not get index stats for %s: %s", table_name, e)
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to check reindex status for {table_name}: {e}")
+            return False
+
+    def trigger_reindex(self, table_name: str) -> bool:
+        """Trigger reindex operation on the table (sync)."""
+        try:
+            logger.info("Triggering reindex for %s", table_name)
+            conn = self._get_connection()
+            table = conn.open_table(table_name)
+            table.optimize()
+            logger.info("Reindex completed for %s", table_name)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Reindex failed for %s: %s", table_name, e)
+            return False
+
+    async def should_reindex_async(
+        self, table_name: str, total_upserted: int, policy: IndexPolicy
+    ) -> bool:
+        """Async version of should_reindex.
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+        # Delegate to sync implementation for now
+        return self.should_reindex(table_name, total_upserted, policy)
+
+    async def trigger_reindex_async(self, table_name: str) -> bool:
+        """Async version of trigger_reindex.
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+        # Delegate to sync implementation for now
+        return self.trigger_reindex(table_name)
+
     def get_raw_connection(self) -> DBConnection:
         return self._get_connection()
 

@@ -23,6 +23,7 @@ from typing import (
 
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ..core.schemas import CollectionInfo
+from ..core.config import IndexPolicy
 
 
 # Field name whitelist for filter validation
@@ -685,6 +686,74 @@ class VectorIndexStore(ABC):
         Args:
             model_tag: Model tag for the embeddings table.
             records: List of embedding record dictionaries to upsert.
+        """
+
+    # --- Index Management (Phase 1A Part 2) ---
+
+    @abstractmethod
+    def should_reindex(
+        self,
+        table_name: str,
+        total_upserted: int,
+        policy: IndexPolicy,
+    ) -> bool:
+        """Determine if reindex should be triggered.
+
+        Args:
+            table_name: Embeddings table name.
+            total_upserted: Total upserted records since last index.
+            policy: Index policy with reindex thresholds.
+
+        Returns:
+            True if reindex should be triggered.
+        """
+
+    @abstractmethod
+    def trigger_reindex(self, table_name: str) -> bool:
+        """Trigger index rebuild operation.
+
+        Args:
+            table_name: Embeddings table name.
+
+        Returns:
+            True if reindex was triggered successfully.
+        """
+
+    # --- Async index management variants ---
+
+    @abstractmethod
+    async def should_reindex_async(
+        self,
+        table_name: str,
+        total_upserted: int,
+        policy: IndexPolicy,
+    ) -> bool:
+        """Async version of should_reindex.
+
+        Args:
+            table_name: Embeddings table name.
+            total_upserted: Total upserted records since last index.
+            policy: Index policy with reindex thresholds.
+
+        Returns:
+            True if reindex should be triggered.
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+
+    @abstractmethod
+    async def trigger_reindex_async(self, table_name: str) -> bool:
+        """Async version of trigger_reindex.
+
+        Args:
+            table_name: Embeddings table name.
+
+        Returns:
+            True if reindex was triggered successfully.
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
         """
 
     @abstractmethod

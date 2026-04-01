@@ -246,61 +246,6 @@ def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
     )
 
 
-def _should_reindex(
-    table: Any,
-    table_name: str,
-    total_upserted: int,
-    policy: IndexPolicy,
-) -> bool:
-    """Determine if reindex should be triggered.
-
-    Args:
-        table: LanceDB table instance
-        table_name: Table name for tracking
-        total_upserted: Number of rows upserted in this operation
-        policy: Index policy configuration
-
-    Returns:
-        True if reindex should be triggered
-    """
-    # Immediate reindex if enabled
-    if policy.enable_immediate_reindex and total_upserted > 0:
-        return True
-
-    # Batch size threshold
-    if total_upserted >= policy.reindex_batch_size:
-        return True
-
-    # Smart reindex: check unindexed ratio
-    if policy.enable_smart_reindex:
-        try:
-            stats = table.index_stats("vector_idx")
-            if stats.num_indexed_rows > 0:
-                unindexed_ratio = stats.num_unindexed_rows / stats.num_indexed_rows
-                if unindexed_ratio > policy.reindex_unindexed_ratio_threshold:
-                    return True
-
-            # Absolute threshold for unindexed rows
-            if stats.num_unindexed_rows > 10000:
-                return True
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Could not get index stats for %s: %s", table_name, e)
-
-    return False
-
-
-def _trigger_reindex(table: Any, table_name: str) -> bool:
-    """Trigger reindex operation on the table."""
-    try:
-        logger.info("Triggering reindex for %s", table_name)
-        table.optimize()
-        logger.info("Reindex completed for %s", table_name)
-        return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Reindex failed for %s: %s", table_name, e)
-        return False
-
-
 def validate_query_vector(
     query_vector: List[float],
     model_tag: Optional[str] = None,

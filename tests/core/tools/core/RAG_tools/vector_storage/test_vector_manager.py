@@ -1425,96 +1425,6 @@ class TestReindexingFunctionality:
         """Test collection name."""
         return f"test_collection_{uuid.uuid4().hex[:8]}"
 
-    def test_should_reindex_batch_threshold(self):
-        """Test reindex decision based on batch size threshold."""
-        from unittest.mock import MagicMock
-
-        from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            _should_reindex,
-        )
-
-        mock_table = MagicMock()
-        policy = IndexPolicy(reindex_batch_size=100)
-
-        # Test batch threshold
-        assert _should_reindex(mock_table, "test_table", 150, policy) is True
-        assert _should_reindex(mock_table, "test_table", 50, policy) is False
-
-    def test_should_reindex_immediate_mode(self):
-        """Test immediate reindex mode."""
-        from unittest.mock import MagicMock
-
-        from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            _should_reindex,
-        )
-
-        mock_table = MagicMock()
-        policy = IndexPolicy(enable_immediate_reindex=True, reindex_batch_size=1000)
-
-        # Test immediate reindex
-        assert _should_reindex(mock_table, "test_table", 1, policy) is True
-        assert _should_reindex(mock_table, "test_table", 0, policy) is False
-
-    def test_should_reindex_smart_mode(self):
-        """Test smart reindex mode based on unindexed ratio."""
-        from unittest.mock import MagicMock
-
-        from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            _should_reindex,
-        )
-
-        mock_table = MagicMock()
-        policy = IndexPolicy(
-            enable_smart_reindex=True, reindex_unindexed_ratio_threshold=0.05
-        )
-
-        # Mock index stats
-        mock_stats = MagicMock()
-        mock_stats.num_indexed_rows = 1000
-        mock_stats.num_unindexed_rows = 60  # 6% > 5% threshold
-        mock_table.index_stats.return_value = mock_stats
-
-        assert _should_reindex(mock_table, "test_table", 10, policy) is True
-
-        # Test below threshold
-        mock_stats.num_unindexed_rows = 30  # 3% < 5% threshold
-        assert _should_reindex(mock_table, "test_table", 10, policy) is False
-
-    def test_trigger_reindex_success(self):
-        """Test successful reindex trigger."""
-        from unittest.mock import MagicMock
-
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            _trigger_reindex,
-        )
-
-        mock_table = MagicMock()
-        mock_table.optimize.return_value = None
-
-        result = _trigger_reindex(mock_table, "test_table")
-
-        assert result is True
-        mock_table.optimize.assert_called_once()
-
-    def test_trigger_reindex_failure(self):
-        """Test reindex trigger failure."""
-        from unittest.mock import MagicMock
-
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            _trigger_reindex,
-        )
-
-        mock_table = MagicMock()
-        mock_table.optimize.side_effect = Exception("Optimize failed")
-
-        result = _trigger_reindex(mock_table, "test_table")
-
-        assert result is False
-        mock_table.optimize.assert_called_once()
-
     def test_write_vectors_with_reindex_integration(
         self, temp_lancedb_dir, test_collection
     ):
@@ -1531,15 +1441,9 @@ class TestReindexingFunctionality:
         # Mock create_index to return index_building status
         mock_vector_store.create_index.return_value = "index_building"
 
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
-                return_value=mock_vector_store,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager._should_reindex",
-                return_value=True,
-            ),
+        with patch(
+            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
                 collection=test_collection,

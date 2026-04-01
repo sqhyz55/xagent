@@ -2,6 +2,8 @@
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -392,4 +394,199 @@ def test_upsert_embeddings_both_methods_fail(mock_get_connection: Mock) -> None:
     # Verify both methods were attempted
     mock_table.merge_insert.assert_called_once()
     mock_table.add.assert_called_once()
+
+
+# ============================================================================
+# Index Management Tests (Phase 1A Part 2)
+# ============================================================================
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_should_reindex_immediate_reindex_enabled(
+    mock_get_connection: Mock,
+) -> None:
+    """Test should_reindex returns True when immediate reindex is enabled."""
+    from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock index stats
+    mock_stats = Mock()
+    mock_stats.num_indexed_rows = 1000
+    mock_stats.num_unindexed_rows = 100
+    mock_table.index_stats.return_value = mock_stats
+
+    store = LanceDBVectorIndexStore()
+
+    policy = IndexPolicy(
+        reindex_batch_size=1000,
+        enable_immediate_reindex=True,
+        enable_smart_reindex=False,
+    )
+
+    result = store.should_reindex("embeddings_test", total_upserted=10, policy=policy)
+
+    assert result is True  # immediate reindex enabled
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_should_reindex_batch_threshold(
+    mock_get_connection: Mock,
+) -> None:
+    """Test should_reindex returns True when batch size threshold reached."""
+    from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    store = LanceDBVectorIndexStore()
+
+    policy = IndexPolicy(
+        reindex_batch_size=100,
+        enable_immediate_reindex=False,
+        enable_smart_reindex=False,
+    )
+
+    # Total upserted >= batch_size
+    result = store.should_reindex("embeddings_test", total_upserted=100, policy=policy)
+    assert result is True
+
+    # Below threshold
+    result = store.should_reindex("embeddings_test", total_upserted=99, policy=policy)
+    assert result is False
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_should_reindex_smart_reindex(
+    mock_get_connection: Mock,
+) -> None:
+    """Test should_reindex with smart reindex enabled."""
+    from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock index stats with high unindexed ratio
+    mock_stats = Mock()
+    mock_stats.num_indexed_rows = 100
+    mock_stats.num_unindexed_rows = 60  # 60% unindexed
+    mock_table.index_stats.return_value = mock_stats
+
+    store = LanceDBVectorIndexStore()
+
+    policy = IndexPolicy(
+        reindex_batch_size=10000,
+        enable_immediate_reindex=False,
+        enable_smart_reindex=True,
+        reindex_unindexed_ratio_threshold=0.5,  # 50% threshold
+    )
+
+    # High unindexed ratio should trigger reindex
+    result = store.should_reindex("embeddings_test", total_upserted=10, policy=policy)
+    assert result is True
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_trigger_reindex_success(mock_get_connection: Mock) -> None:
+    """Test trigger_reindex calls table.optimize()."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    store = LanceDBVectorIndexStore()
+
+    result = store.trigger_reindex("embeddings_test")
+
+    assert result is True
+    mock_table.optimize.assert_called_once()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_trigger_reindex_failure(mock_get_connection: Mock) -> None:
+    """Test trigger_reindex returns False on exception."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+    mock_table.optimize.side_effect = Exception("Optimize failed")
+
+    store = LanceDBVectorIndexStore()
+
+    result = store.trigger_reindex("embeddings_test")
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_should_reindex_async_delegates_to_sync(
+    mock_get_connection: Mock,
+) -> None:
+    """Test async version delegates to sync implementation."""
+    from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock index stats with high unindexed ratio (60%)
+    mock_stats = Mock()
+    mock_stats.num_indexed_rows = 100
+    mock_stats.num_unindexed_rows = 60  # 60% unindexed, exceeds 50% threshold
+    mock_table.index_stats.return_value = mock_stats
+
+    store = LanceDBVectorIndexStore()
+
+    policy = IndexPolicy(
+        reindex_batch_size=10000,
+        enable_immediate_reindex=False,
+        enable_smart_reindex=True,
+        reindex_unindexed_ratio_threshold=0.5,
+    )
+
+    # Async version should delegate to sync
+    result = await store.should_reindex_async("embeddings_test", total_upserted=10, policy=policy)
+    assert result is True  # Smart reindex triggers due to high unindexed ratio
+
+
+@pytest.mark.asyncio
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_trigger_reindex_async_delegates_to_sync(
+    mock_get_connection: Mock,
+) -> None:
+    """Test async trigger_reindex delegates to sync implementation."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    store = LanceDBVectorIndexStore()
+
+    # Async version should delegate to sync
+    result = await store.trigger_reindex_async("embeddings_test")
+    assert result is True
+    mock_table.optimize.assert_called_once()
 

@@ -42,7 +42,7 @@ class StorageFactory:
     """
 
     _instance: Optional[StorageFactory] = None
-    _lock = threading.Lock()
+    _lock = threading.RLock()  # RLock for reentrant locking
 
     def __init__(self) -> None:
         """Private constructor - use get_factory() instead."""
