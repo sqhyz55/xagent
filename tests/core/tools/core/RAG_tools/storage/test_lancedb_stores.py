@@ -11,6 +11,8 @@ import pytest
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
     LanceDBMetadataStore,
     LanceDBVectorIndexStore,
+    LanceDBPromptTemplateStore,
+    LanceDBMainPointerStore,
 )
 
 
@@ -590,3 +592,334 @@ async def test_trigger_reindex_async_delegates_to_sync(
     assert result is True
     mock_table.optimize.assert_called_once()
 
+
+
+# ============================================================================
+# PromptTemplateStore Tests (Phase 1A Part 3)
+# ============================================================================
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_prompt_template_store_save_and_get(mock_get_connection: Mock) -> None:
+    """Test saving and retrieving a prompt template."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock empty result for existing check
+    mock_result = Mock()
+    mock_result.empty = True
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBPromptTemplateStore()
+
+    # Save template
+    template_id = store.save_prompt_template(
+        name="test_template",
+        template="Test prompt content",
+        user_id=1,
+    )
+
+    assert template_id is not None
+    mock_table.add.assert_called_once()
+
+    # Mock get result
+    mock_row = Mock()
+    mock_row.__getitem__ = lambda self, key: {
+        "id": template_id,
+        "name": "test_template",
+        "template": "Test prompt content",
+        "version": 1,
+        "is_latest": True,
+        "metadata": "",
+        "user_id": 1,
+        "created_at": None,
+        "updated_at": None,
+    }.get(key)
+
+    mock_get_result = Mock()
+    mock_get_result.empty = False
+    mock_get_result.iloc = [mock_row]
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_get_result
+    )
+
+    # Get template
+    template = store.get_prompt_template(template_id, user_id=1)
+    assert template is not None
+    assert template["name"] == "test_template"
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_prompt_template_store_get_latest(mock_get_connection: Mock) -> None:
+    """Test getting the latest version of a template by name."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock result
+    mock_row = Mock()
+    mock_row.__getitem__ = lambda self, key: {
+        "id": "test-id",
+        "name": "test_template",
+        "template": "Latest content",
+        "version": 2,
+        "is_latest": True,
+        "metadata": "",
+        "user_id": 1,
+        "created_at": None,
+        "updated_at": None,
+    }.get(key)
+
+    mock_result = Mock()
+    mock_result.empty = False
+    mock_result.iloc = [mock_row]
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBPromptTemplateStore()
+
+    template = store.get_latest_prompt_template("test_template", user_id=1)
+    assert template is not None
+    assert template["version"] == 2
+    assert template["template"] == "Latest content"
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_prompt_template_store_delete(mock_get_connection: Mock) -> None:
+    """Test deleting a prompt template."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock existing template
+    mock_result = Mock()
+    mock_result.empty = False
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBPromptTemplateStore()
+
+    result = store.delete_prompt_template("test-id", user_id=1)
+    assert result is True
+    mock_table.delete.assert_called_once()
+
+
+# ============================================================================
+# MainPointerStore Tests (Phase 1A Part 3)
+# ============================================================================
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_main_pointer_store_set_and_get(mock_get_connection: Mock) -> None:
+    """Test setting and getting a main pointer."""
+    import pandas as pd
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock no existing pointer
+    mock_result = Mock()
+    mock_result.empty = True
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBMainPointerStore()
+
+    # Set pointer
+    store.set_main_pointer(
+        collection="test_collection",
+        doc_id="test_doc",
+        step_type="parse",
+        semantic_id="parse-123",
+        technical_id="hash-456",
+    )
+
+    # Verify merge_insert was called
+    mock_table.merge_insert.assert_called_once()
+
+    # Mock get result
+    mock_row = {
+        "collection": "test_collection",
+        "doc_id": "test_doc",
+        "step_type": "parse",
+        "model_tag": "",
+        "semantic_id": "parse-123",
+        "technical_id": "hash-456",
+        "created_at": pd.Timestamp.now(tz="UTC"),
+        "updated_at": pd.Timestamp.now(tz="UTC"),
+        "operator": "unknown",
+    }
+
+    mock_get_result = Mock()
+    mock_get_result.empty = False
+    mock_get_result.__len__ = lambda self: 1
+
+    # Create mock row with __getitem__ support
+    mock_row_obj = Mock()
+    mock_row_obj.__getitem__ = lambda self, key: mock_row[key]
+
+    mock_get_result.iloc = [mock_row_obj]
+    mock_get_result.sort_values.return_value = mock_get_result
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_get_result
+    )
+
+    # Get pointer
+    pointer = store.get_main_pointer("test_collection", "test_doc", "parse")
+    assert pointer is not None
+    assert pointer["semantic_id"] == "parse-123"
+    assert pointer["technical_id"] == "hash-456"
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_main_pointer_store_user_id_warning(mock_get_connection: Mock, caplog) -> None:
+    """Test that user_id parameter triggers a warning."""
+    import logging
+    import pandas as pd
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock no existing pointer
+    mock_result = Mock()
+    mock_result.empty = True
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBMainPointerStore()
+
+    # Set pointer with user_id (should log warning)
+    with caplog.at_level(logging.WARNING):
+        store.set_main_pointer(
+            collection="test_collection",
+            doc_id="test_doc",
+            step_type="parse",
+            semantic_id="parse-123",
+            technical_id="hash-456",
+            user_id=1,
+        )
+
+    # Verify warning was logged
+    assert any(
+        "user_id parameter provided" in record.message
+        for record in caplog.records
+        if record.levelname == "WARNING"
+    )
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_main_pointer_store_list(mock_get_connection: Mock) -> None:
+    """Test listing main pointers."""
+    import pandas as pd
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock count_rows > 0
+    mock_table.search.return_value.where.return_value.count_rows.return_value = 1
+
+    # Mock result
+    mock_row_data = {
+        "collection": "test_collection",
+        "doc_id": "test_doc",
+        "step_type": "parse",
+        "model_tag": "",
+        "semantic_id": "parse-123",
+        "technical_id": "hash-456",
+        "created_at": pd.Timestamp.now(tz="UTC"),
+        "updated_at": pd.Timestamp.now(tz="UTC"),
+        "operator": "unknown",
+    }
+
+    mock_df = Mock()
+    mock_df.iterrows.return_value = [(None, mock_row_data)]
+    mock_df.empty = False
+    mock_table.search.return_value.where.return_value.limit.return_value.to_pandas.return_value = (
+        mock_df
+    )
+
+    store = LanceDBMainPointerStore()
+
+    pointers = store.list_main_pointers("test_collection")
+    assert len(pointers) == 1
+    assert pointers[0]["semantic_id"] == "parse-123"
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_main_pointer_store_delete(mock_get_connection: Mock) -> None:
+    """Test deleting a main pointer."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock existing pointer
+    mock_result = Mock()
+    mock_result.empty = False
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBMainPointerStore()
+
+    result = store.delete_main_pointer(
+        "test_collection", "test_doc", "parse"
+    )
+    assert result is True
+    mock_table.delete.assert_called_once()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_main_pointer_store_delete_not_found(mock_get_connection: Mock) -> None:
+    """Test deleting a non-existent pointer returns False."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock no existing pointer
+    mock_result = Mock()
+    mock_result.empty = True
+    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+        mock_result
+    )
+
+    store = LanceDBMainPointerStore()
+
+    result = store.delete_main_pointer(
+        "test_collection", "test_doc", "parse"
+    )
+    assert result is False
+    mock_table.delete.assert_not_called()

@@ -18,8 +18,9 @@ from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ..core.schemas import CollectionInfo
 from ..LanceDB.schema_manager import ensure_documents_table
 from ..utils.lancedb_query_utils import query_to_list
-from ..utils.string_utils import escape_lancedb_string
+from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
+from .lancedb_filter_utils import format_value, translate_condition, translate_filter_expression
 from .contracts import (
     DocumentRecord,
     FilterCondition,
@@ -863,67 +864,17 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         is_admin: bool = False,
     ) -> Optional[str]:
         """Convert abstract filter expression to LanceDB SQL syntax."""
-
-        def translate(expr: FilterExpression) -> str:
-            if isinstance(expr, FilterCondition):
-                return self._translate_condition(expr)
-            elif isinstance(expr, tuple):
-                # AND combination
-                return " AND ".join(f"({translate(e)})" for e in expr)
-            elif isinstance(expr, list):
-                # OR combination
-                return " OR ".join(f"({translate(e)})" for e in expr)
-            else:
-                raise ValueError(f"Unsupported filter expression: {type(expr)}")
-
         if not filters:
             # Still apply user filter for multi-tenancy
             return UserPermissions.get_user_filter(user_id, is_admin)
 
-        backend_filter = translate(filters)
+        backend_filter = translate_filter_expression(filters)
 
         # Combine with user filter
         user_filter = UserPermissions.get_user_filter(user_id, is_admin)
         if user_filter:
             return f"({backend_filter}) AND ({user_filter})"
         return backend_filter
-
-    def _translate_condition(self, condition: FilterCondition) -> str:
-        """Translate single condition to LanceDB syntax."""
-        field = condition.field
-        op = condition.operator
-        value = condition.value
-
-        if op == FilterOperator.EQ:
-            return f"{field} == {self._format_value(value)}"
-        elif op == FilterOperator.NE:
-            return f"{field} != {self._format_value(value)}"
-        elif op == FilterOperator.GT:
-            return f"{field} > {self._format_value(value)}"
-        elif op == FilterOperator.GTE:
-            return f"{field} >= {self._format_value(value)}"
-        elif op == FilterOperator.LT:
-            return f"{field} < {self._format_value(value)}"
-        elif op == FilterOperator.LTE:
-            return f"{field} <= {self._format_value(value)}"
-        elif op == FilterOperator.IN:
-            values = ", ".join(self._format_value(v) for v in value)
-            return f"{field} IN ({values})"
-        elif op == FilterOperator.CONTAINS:
-            return f"{field} LIKE '%{escape_lancedb_string(value)}%'"
-        else:
-            raise ValueError(f"Unsupported operator: {op}")
-
-    def _format_value(self, value: Any) -> str:
-        """Format value for LanceDB."""
-        if isinstance(value, bool):
-            return "TRUE" if value else "FALSE"
-        elif isinstance(value, (int, float)):
-            return str(value)
-        elif value is None:
-            return "NULL"
-        else:
-            return f"'{escape_lancedb_string(value)}'"
 
     def upsert_documents(self, records: List[Dict[str, Any]]) -> None:
         """Upsert document records to LanceDB.
@@ -1618,11 +1569,256 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
     """LanceDB implementation for prompt template management.
 
     Manages prompt_templates table for storing and retrieving prompt templates.
-
-    TODO: Implement in Phase 2.3
     """
 
-    pass
+    def __init__(self) -> None:
+        self._sync_conn: Optional[DBConnection] = None
+
+    def _get_sync_connection(self) -> DBConnection:
+        """Get or create sync connection."""
+        if self._sync_conn is None:
+            self._sync_conn = get_connection_from_env()
+        return self._sync_conn
+
+    def _ensure_table(self) -> None:
+        """Ensure prompt_templates table exists."""
+        from ..LanceDB.schema_manager import ensure_prompt_templates_table
+
+        conn = self._get_sync_connection()
+        ensure_prompt_templates_table(conn)
+
+    # --- Sync methods ---
+
+    def save_prompt_template(
+        self,
+        name: str,
+        template: str,
+        user_id: Optional[int] = None,
+        metadata: Optional[str] = None,
+    ) -> str:
+        """Save or update a prompt template (sync)."""
+        import uuid
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        # Generate new template ID
+        template_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        # Check for existing templates with same name to get next version
+        base_filter = f"name == '{escape_lancedb_string(name)}'"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        existing = table.search().where(base_filter).to_pandas()
+        if not existing.empty:
+            max_version = existing["version"].max()
+            new_version = max_version + 1
+
+            # Mark previous versions as not latest
+            for _, row in existing.iterrows():
+                if row["is_latest"]:
+                    table.update(
+                        where=f"id == '{row['id']}'",
+                        values={"is_latest": False},
+                    )
+        else:
+            new_version = 1
+
+        # Create new template record
+        record = {
+            "id": template_id,
+            "name": name,
+            "template": template,
+            "version": new_version,
+            "is_latest": True,
+            "metadata": metadata or "",
+            "user_id": user_id or 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        table.add([record])
+        logger.info("Saved prompt template: %s (version %d)", name, new_version)
+        return template_id
+
+    def get_prompt_template(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a prompt template by ID (sync)."""
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        base_filter = f"id == '{escape_lancedb_string(template_id)}'"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        result = table.search().where(base_filter).to_pandas()
+        if result.empty:
+            return None
+
+        row = result.iloc[0]
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "template": row["template"],
+            "version": int(row["version"]),
+            "is_latest": bool(row["is_latest"]),
+            "metadata": row["metadata"],
+            "user_id": int(row["user_id"]) if row["user_id"] else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def get_latest_prompt_template(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get the latest version of a prompt template by name (sync)."""
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        base_filter = f"name == '{escape_lancedb_string(name)}' AND is_latest == true"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        result = table.search().where(base_filter).to_pandas()
+        if result.empty:
+            return None
+
+        row = result.iloc[0]
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "template": row["template"],
+            "version": int(row["version"]),
+            "is_latest": bool(row["is_latest"]),
+            "metadata": row["metadata"],
+            "user_id": int(row["user_id"]) if row["user_id"] else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_prompt_templates(
+        self,
+        name_filter: Optional[str] = None,
+        latest_only: bool = False,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List prompt templates with optional filtering (sync)."""
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        filters = []
+        if name_filter:
+            filters.append(f"name LIKE '%{escape_lancedb_string(name_filter)}%'")
+        if latest_only:
+            filters.append("is_latest == true")
+        if user_id is not None:
+            filters.append(f"user_id == {user_id}")
+
+        filter_expr = " AND ".join(filters) if filters else None
+
+        query = table.search()
+        if filter_expr:
+            query = query.where(filter_expr)
+
+        result = query.limit(limit).to_pandas()
+        templates = []
+        for _, row in result.iterrows():
+            templates.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "template": row["template"],
+                    "version": int(row["version"]),
+                    "is_latest": bool(row["is_latest"]),
+                    "metadata": row["metadata"],
+                    "user_id": int(row["user_id"]) if row["user_id"] else None,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+
+        return templates
+
+    def delete_prompt_template(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Delete a prompt template by ID (sync)."""
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        base_filter = f"id == '{escape_lancedb_string(template_id)}'"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        # Check if exists
+        result = table.search().where(base_filter).to_pandas()
+        if result.empty:
+            return False
+
+        table.delete(base_filter)
+        logger.info("Deleted prompt template: %s", template_id)
+        return True
+
+    # --- Async methods (delegate to sync) ---
+
+    async def save_prompt_template_async(
+        self,
+        name: str,
+        template: str,
+        user_id: Optional[int] = None,
+        metadata: Optional[str] = None,
+    ) -> str:
+        """Async version of save_prompt_template."""
+        return self.save_prompt_template(name, template, user_id, metadata)
+
+    async def get_prompt_template_async(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of get_prompt_template."""
+        return self.get_prompt_template(template_id, user_id)
+
+    async def get_latest_prompt_template_async(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of get_latest_prompt_template."""
+        return self.get_latest_prompt_template(name, user_id)
+
+    async def list_prompt_templates_async(
+        self,
+        name_filter: Optional[str] = None,
+        latest_only: bool = False,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Async version of list_prompt_templates."""
+        return self.list_prompt_templates(name_filter, latest_only, user_id, limit)
+
+    async def delete_prompt_template_async(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Async version of delete_prompt_template."""
+        return self.delete_prompt_template(template_id, user_id)
 
 
 class LanceDBMainPointerStore(MainPointerStore):
@@ -1631,7 +1827,335 @@ class LanceDBMainPointerStore(MainPointerStore):
     Manages main_pointers table for tracking current versions across
     processing stages (parse, chunk, embed).
 
-    TODO: Implement in Phase 2.4
+    NOTE: user_id parameter is logged but not used, as main_pointers table
+    schema does not include user_id field. Schema migration required for
+    multi-tenancy support.
     """
 
-    pass
+    def __init__(self) -> None:
+        self._sync_conn: Optional[DBConnection] = None
+
+    def _get_sync_connection(self) -> DBConnection:
+        """Get or create sync connection."""
+        if self._sync_conn is None:
+            self._sync_conn = get_connection_from_env()
+        return self._sync_conn
+
+    def _ensure_table(self) -> None:
+        """Ensure main_pointers table exists."""
+        from ..LanceDB.schema_manager import ensure_main_pointers_table
+
+        conn = self._get_sync_connection()
+        ensure_main_pointers_table(conn)
+
+    def _normalize_model_tag(self, model_tag: Optional[str]) -> str:
+        """Normalize model_tag to empty string if None."""
+        return model_tag if model_tag is not None else ""
+
+    # --- Sync methods ---
+
+    def set_main_pointer(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        semantic_id: str,
+        technical_id: str,
+        model_tag: Optional[str] = None,
+        operator: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Set or update a main pointer (sync)."""
+        if user_id is not None:
+            logger.warning(
+                "user_id parameter provided to set_main_pointer but "
+                "main_pointers table does not have user_id field. "
+                "Schema migration required for multi-tenancy support."
+            )
+
+        import pandas as pd
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("main_pointers")
+
+        normalized_tag = self._normalize_model_tag(model_tag)
+        now = pd.Timestamp.now(tz="UTC")
+
+        # Check if pointer already exists to preserve created_at
+        existing = self.get_main_pointer(collection, doc_id, step_type, model_tag)
+
+        if existing:
+            created_at = existing["created_at"]
+
+            # Fix-up: normalize NULL model_tag to "" in DB
+            if normalized_tag == "":
+                base_filter = self._build_base_filter(collection, doc_id, step_type)
+                null_filter = f"{base_filter} AND model_tag IS NULL"
+                try:
+                    table.update(where=null_filter, values={"model_tag": ""})
+                except Exception as update_err:
+                    logger.warning("Failed to normalize NULL model_tag: %s", update_err)
+        else:
+            created_at = now
+
+        # Prepare data for merge_insert
+        update_data = {
+            "collection": [collection],
+            "doc_id": [doc_id],
+            "step_type": [step_type],
+            "model_tag": [normalized_tag],
+            "semantic_id": [semantic_id],
+            "technical_id": [technical_id],
+            "created_at": [created_at],
+            "updated_at": [now],
+            "operator": [operator or "unknown"],
+        }
+        df = pd.DataFrame(update_data)
+
+        (
+            table.merge_insert(on=["collection", "doc_id", "step_type", "model_tag"])
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(df)
+        )
+
+        logger.info(
+            "Set main pointer for %s/%s/%s to %s (semantic: %s)",
+            collection,
+            doc_id,
+            step_type,
+            technical_id,
+            semantic_id,
+        )
+
+    def get_main_pointer(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a main pointer (sync)."""
+        if user_id is not None:
+            logger.warning(
+                "user_id parameter provided to get_main_pointer but "
+                "main_pointers table does not have user_id field. "
+                "Schema migration required for multi-tenancy support."
+            )
+
+        import pandas as pd
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("main_pointers")
+
+        # Build filter expression using FilterCondition
+        base_conditions: List[FilterCondition] = [
+            FilterCondition(field="collection", operator=FilterOperator.EQ, value=collection),
+            FilterCondition(field="doc_id", operator=FilterOperator.EQ, value=doc_id),
+            FilterCondition(field="step_type", operator=FilterOperator.EQ, value=step_type),
+        ]
+
+        normalized_tag = self._normalize_model_tag(model_tag)
+        if normalized_tag == "":
+            # Check for both empty string AND NULL (backward compatibility)
+            model_tag_null_cond = FilterCondition(
+                field="model_tag", operator=FilterOperator.IS_NULL, value=None
+            )
+            model_tag_empty_cond = FilterCondition(
+                field="model_tag", operator=FilterOperator.EQ, value=""
+            )
+            # Combine as: (base) AND (model_tag IS NULL OR model_tag == '')
+            model_tag_filter = [model_tag_null_cond, model_tag_empty_cond]  # OR list
+            filter_expr: FilterExpression = (*base_conditions, model_tag_filter)  # AND tuple
+        else:
+            base_conditions.append(
+                FilterCondition(field="model_tag", operator=FilterOperator.EQ, value=normalized_tag)
+            )
+            filter_expr = tuple(base_conditions)  # AND tuple
+
+        # Translate to LanceDB syntax using shared utility
+        filter_str = translate_filter_expression(filter_expr)
+
+        result = table.search().where(filter_str).to_pandas()
+
+        if result.empty:
+            return None
+
+        # Return the first result, preferring non-NULL model_tag if multiple found
+        if len(result) > 1:
+            result = result.sort_values("model_tag", ascending=False)
+
+        row = result.iloc[0]
+        return {
+            "collection": row["collection"],
+            "doc_id": row["doc_id"],
+            "step_type": row["step_type"],
+            "model_tag": row["model_tag"] if pd.notna(row["model_tag"]) else None,
+            "semantic_id": row["semantic_id"],
+            "technical_id": row["technical_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "operator": row["operator"],
+        }
+
+    def list_main_pointers(
+        self,
+        collection: str,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List main pointers (sync)."""
+        if user_id is not None:
+            logger.warning(
+                "user_id parameter provided to list_main_pointers but "
+                "main_pointers table does not have user_id field. "
+                "Schema migration required for multi-tenancy support."
+            )
+
+        import pandas as pd
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("main_pointers")
+
+        filters_dict = {"collection": collection}
+        if doc_id is not None:
+            filters_dict["doc_id"] = doc_id
+
+        filter_expr = build_lancedb_filter_expression(filters_dict)
+
+        # First check if any pointers exist using efficient count_rows
+        if table.search().where(filter_expr).count_rows() == 0:
+            return []
+
+        result = table.search().where(filter_expr).limit(limit).to_pandas()
+
+        pointers = []
+        for _, row in result.iterrows():
+            pointers.append(
+                {
+                    "collection": row["collection"],
+                    "doc_id": row["doc_id"],
+                    "step_type": row["step_type"],
+                    "model_tag": row["model_tag"] if pd.notna(row["model_tag"]) else None,
+                    "semantic_id": row["semantic_id"],
+                    "technical_id": row["technical_id"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "operator": row["operator"],
+                }
+            )
+
+        return pointers
+
+    def delete_main_pointer(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Delete a main pointer (sync)."""
+        if user_id is not None:
+            logger.warning(
+                "user_id parameter provided to delete_main_pointer but "
+                "main_pointers table does not have user_id field. "
+                "Schema migration required for multi-tenancy support."
+            )
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("main_pointers")
+
+        # Build filter expression using FilterCondition
+        base_conditions: List[FilterCondition] = [
+            FilterCondition(field="collection", operator=FilterOperator.EQ, value=collection),
+            FilterCondition(field="doc_id", operator=FilterOperator.EQ, value=doc_id),
+            FilterCondition(field="step_type", operator=FilterOperator.EQ, value=step_type),
+        ]
+
+        normalized_tag = self._normalize_model_tag(model_tag)
+        if normalized_tag == "":
+            # Check for both empty string AND NULL (backward compatibility)
+            model_tag_null_cond = FilterCondition(
+                field="model_tag", operator=FilterOperator.IS_NULL, value=None
+            )
+            model_tag_empty_cond = FilterCondition(
+                field="model_tag", operator=FilterOperator.EQ, value=""
+            )
+            # Combine as: (base) AND (model_tag IS NULL OR model_tag == '')
+            model_tag_filter = [model_tag_null_cond, model_tag_empty_cond]  # OR list
+            filter_expr: FilterExpression = (*base_conditions, model_tag_filter)  # AND tuple
+        else:
+            base_conditions.append(
+                FilterCondition(field="model_tag", operator=FilterOperator.EQ, value=normalized_tag)
+            )
+            filter_expr = tuple(base_conditions)  # AND tuple
+
+        # Translate to LanceDB syntax using shared utility
+        filter_str = translate_filter_expression(filter_expr)
+
+        # Check if exists
+        result = table.search().where(filter_str).to_pandas()
+        if result.empty:
+            return False
+
+        table.delete(filter_str)
+        logger.info("Deleted main pointer for %s/%s/%s", collection, doc_id, step_type)
+        return True
+
+    # --- Async methods (delegate to sync) ---
+
+    async def set_main_pointer_async(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        semantic_id: str,
+        technical_id: str,
+        model_tag: Optional[str] = None,
+        operator: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Async version of set_main_pointer."""
+        return self.set_main_pointer(
+            collection, doc_id, step_type, semantic_id, technical_id,
+            model_tag, operator, user_id
+        )
+
+    async def get_main_pointer_async(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of get_main_pointer."""
+        return self.get_main_pointer(collection, doc_id, step_type, model_tag, user_id)
+
+    async def list_main_pointers_async(
+        self,
+        collection: str,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Async version of list_main_pointers."""
+        return self.list_main_pointers(collection, doc_id, user_id, limit)
+
+    async def delete_main_pointer_async(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Async version of delete_main_pointer."""
+        return self.delete_main_pointer(collection, doc_id, step_type, model_tag, user_id)

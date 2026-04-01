@@ -200,6 +200,8 @@ class FilterOperator(str, Enum):
     LTE = "lte"  # Less than or equal
     IN = "in"  # In list
     CONTAINS = "contains"  # String contains
+    IS_NULL = "is_null"  # Is NULL
+    IS_NOT_NULL = "is_not_null"  # Is not NULL
 
 
 @dataclass(frozen=True)
@@ -943,8 +945,139 @@ class PromptTemplateStore(ABC):
     Phase 1A Option C: Hybrid sync/async methods for gradual migration.
     """
 
-    # TODO: Implement contract methods
-    # This will be implemented in Phase 2.3
+    @abstractmethod
+    def save_prompt_template(
+        self,
+        name: str,
+        template: str,
+        user_id: Optional[int] = None,
+        metadata: Optional[str] = None,
+    ) -> str:
+        """Save or update a prompt template.
+
+        Args:
+            name: Template name (used for version grouping)
+            template: Template content
+            user_id: User ID for multi-tenancy
+            metadata: Optional metadata as JSON string
+
+        Returns:
+            Template ID (UUID string)
+        """
+
+    @abstractmethod
+    def get_prompt_template(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a prompt template by ID.
+
+        Args:
+            template_id: Template UUID
+            user_id: User ID for multi-tenancy
+
+        Returns:
+            Template data dict or None if not found
+        """
+
+    @abstractmethod
+    def get_latest_prompt_template(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get the latest version of a prompt template by name.
+
+        Args:
+            name: Template name
+            user_id: User ID for multi-tenancy
+
+        Returns:
+            Template data dict or None if not found
+        """
+
+    @abstractmethod
+    def list_prompt_templates(
+        self,
+        name_filter: Optional[str] = None,
+        latest_only: bool = False,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List prompt templates with optional filtering.
+
+        Args:
+            name_filter: Filter by template name (partial match)
+            latest_only: Only return latest versions
+            user_id: User ID for multi-tenancy
+            limit: Maximum results to return
+
+        Returns:
+            List of template data dicts
+        """
+
+    @abstractmethod
+    def delete_prompt_template(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Delete a prompt template by ID.
+
+        Args:
+            template_id: Template UUID
+            user_id: User ID for multi-tenancy
+
+        Returns:
+            True if deleted, False if not found
+        """
+
+    # --- Async methods (delegate to sync for Phase 1A) ---
+
+    @abstractmethod
+    async def save_prompt_template_async(
+        self,
+        name: str,
+        template: str,
+        user_id: Optional[int] = None,
+        metadata: Optional[str] = None,
+    ) -> str:
+        """Async version of save_prompt_template."""
+
+    @abstractmethod
+    async def get_prompt_template_async(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of get_prompt_template."""
+
+    @abstractmethod
+    async def get_latest_prompt_template_async(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of get_latest_prompt_template."""
+
+    @abstractmethod
+    async def list_prompt_templates_async(
+        self,
+        name_filter: Optional[str] = None,
+        latest_only: bool = False,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Async version of list_prompt_templates."""
+
+    @abstractmethod
+    async def delete_prompt_template_async(
+        self,
+        template_id: str,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Async version of delete_prompt_template."""
 
 
 class MainPointerStore(ABC):
@@ -954,7 +1087,147 @@ class MainPointerStore(ABC):
     processing stages (parse, chunk, embed).
 
     Phase 1A Option C: Hybrid sync/async methods for gradual migration.
+
+    NOTE: user_id parameter is included for API consistency but is not
+    currently stored in the main_pointers table schema. A schema migration
+    is required to add user_id support for multi-tenancy.
     """
 
-    # TODO: Implement contract methods
-    # This will be implemented in Phase 2.4
+    @abstractmethod
+    def set_main_pointer(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        semantic_id: str,
+        technical_id: str,
+        model_tag: Optional[str] = None,
+        operator: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Set or update a main pointer for a document.
+
+        Args:
+            collection: Collection name
+            doc_id: Document ID
+            step_type: Processing stage (parse, chunk, embed)
+            semantic_id: Semantic identifier for the version (e.g., parse_id)
+            technical_id: Technical identifier/hash for the version
+            model_tag: Optional model tag for model-specific pointers
+            operator: Optional operator who made the change
+            user_id: Optional user ID (not stored, reserved for future use)
+        """
+
+    @abstractmethod
+    def get_main_pointer(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a main pointer for a document.
+
+        Args:
+            collection: Collection name
+            doc_id: Document ID
+            step_type: Processing stage (parse, chunk, embed)
+            model_tag: Optional model tag for model-specific pointers
+            user_id: Optional user ID (not used, reserved for future)
+
+        Returns:
+            Pointer data dict with keys: collection, doc_id, step_type,
+            model_tag, semantic_id, technical_id, created_at, updated_at,
+            operator. Returns None if not found.
+        """
+
+    @abstractmethod
+    def list_main_pointers(
+        self,
+        collection: str,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List main pointers for a collection.
+
+        Args:
+            collection: Collection name
+            doc_id: Optional document ID filter
+            user_id: Optional user ID (not used, reserved for future)
+            limit: Maximum results to return
+
+        Returns:
+            List of pointer data dicts
+        """
+
+    @abstractmethod
+    def delete_main_pointer(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Delete a main pointer.
+
+        Args:
+            collection: Collection name
+            doc_id: Document ID
+            step_type: Processing stage (parse, chunk, embed)
+            model_tag: Optional model tag for model-specific pointers
+            user_id: Optional user ID (not used, reserved for future)
+
+        Returns:
+            True if deleted, False if not found
+        """
+
+    # --- Async methods (delegate to sync for Phase 1A) ---
+
+    @abstractmethod
+    async def set_main_pointer_async(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        semantic_id: str,
+        technical_id: str,
+        model_tag: Optional[str] = None,
+        operator: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Async version of set_main_pointer."""
+
+    @abstractmethod
+    async def get_main_pointer_async(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of get_main_pointer."""
+
+    @abstractmethod
+    async def list_main_pointers_async(
+        self,
+        collection: str,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Async version of list_main_pointers."""
+
+    @abstractmethod
+    async def delete_main_pointer_async(
+        self,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Async version of delete_main_pointer."""
