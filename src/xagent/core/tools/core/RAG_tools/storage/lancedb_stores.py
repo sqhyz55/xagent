@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence, cast
 
 import lancedb
 import pyarrow as pa  # type: ignore
@@ -14,13 +14,12 @@ from lancedb.db import DBConnection
 
 from xagent.providers.vector_store.lancedb import get_connection_from_env
 
-from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
+from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
 from ..core.schemas import CollectionInfo
 from ..LanceDB.schema_manager import ensure_documents_table
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
-from .lancedb_filter_utils import format_value, translate_condition, translate_filter_expression
 from .contracts import (
     DocumentRecord,
     FilterCondition,
@@ -32,7 +31,9 @@ from .contracts import (
     PromptTemplateStore,
     VectorIndexStore,
     build_filter_from_dict,
-    validate_field_name,
+)
+from .lancedb_filter_utils import (
+    translate_filter_expression,
 )
 
 logger = logging.getLogger(__name__)
@@ -1348,8 +1349,8 @@ class LanceDBIngestionStatusStore(IngestionStatusStore):
         if self._async_conn is None:
             async with self._async_lock:
                 if self._async_conn is None:
-                    self._async_conn = await lancedb.connect_async(
-                        get_connection_from_env().uri
+                    self._async_conn = await lancedb.connect_async(  # type: ignore[attr-defined]
+                        get_connection_from_env().uri  # type: ignore[attr-defined]
                     )
         return self._async_conn
 
@@ -1414,9 +1415,7 @@ class LanceDBIngestionStatusStore(IngestionStatusStore):
             table = conn.open_table("ingestion_runs")
 
             # Build filter expression
-            filter_expr = self._build_load_filter(
-                collection, doc_id, user_id, is_admin
-            )
+            filter_expr = self._build_load_filter(collection, doc_id, user_id, is_admin)
 
             # Execute query
             search = table.search()
@@ -1424,7 +1423,7 @@ class LanceDBIngestionStatusStore(IngestionStatusStore):
                 search = search.where(filter_expr)
             df = search.to_pandas()
 
-            return df.to_dict("records")
+            return cast(List[Dict[str, Any]], df.to_dict("records"))
 
         except Exception as e:
             logger.error(f"Failed to load ingestion status: {e}")
@@ -1788,9 +1787,7 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
             remaining_versions = table.search().where(name_filter).to_pandas()
             if not remaining_versions.empty:
                 max_version = remaining_versions["version"].max()
-                update_filter = (
-                    f"{name_filter} AND version == {max_version}"
-                )
+                update_filter = f"{name_filter} AND version == {max_version}"
                 table.update(where=update_filter, values={"is_latest": True})
 
         logger.info("Deleted prompt template: %s", template_id)
@@ -1819,7 +1816,10 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         # Update metadata
         table.update(
             where=base_filter,
-            values={"metadata": metadata or "", "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)},
+            values={
+                "metadata": metadata or "",
+                "updated_at": datetime.now(timezone.utc).replace(tzinfo=None),
+            },
         )
         logger.info("Updated metadata for prompt template: %s", template_id)
 
@@ -1852,7 +1852,9 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
             version_filter = f"{base_filter} AND version == {version}"
             result = table.search().where(version_filter).to_pandas()
             if result.empty:
-                raise DocumentNotFoundError(f"Prompt template '{name}' version {version} not found.")
+                raise DocumentNotFoundError(
+                    f"Prompt template '{name}' version {version} not found."
+                )
 
             was_latest = result.iloc[0]["is_latest"]
             table.delete(version_filter)
@@ -2052,19 +2054,7 @@ class LanceDBMainPointerStore(MainPointerStore):
         # Check if pointer already exists to preserve created_at
         existing = self.get_main_pointer(collection, doc_id, step_type, model_tag)
 
-        if existing:
-            created_at = existing["created_at"]
-
-            # Fix-up: normalize NULL model_tag to "" in DB
-            if normalized_tag == "":
-                base_filter = self._build_base_filter(collection, doc_id, step_type)
-                null_filter = f"{base_filter} AND model_tag IS NULL"
-                try:
-                    table.update(where=null_filter, values={"model_tag": ""})
-                except Exception as update_err:
-                    logger.warning("Failed to normalize NULL model_tag: %s", update_err)
-        else:
-            created_at = now
+        created_at = existing["created_at"] if existing else now
 
         # Prepare data for merge_insert
         update_data = {
@@ -2120,9 +2110,13 @@ class LanceDBMainPointerStore(MainPointerStore):
 
         # Build filter expression using FilterCondition
         base_conditions: List[FilterCondition] = [
-            FilterCondition(field="collection", operator=FilterOperator.EQ, value=collection),
+            FilterCondition(
+                field="collection", operator=FilterOperator.EQ, value=collection
+            ),
             FilterCondition(field="doc_id", operator=FilterOperator.EQ, value=doc_id),
-            FilterCondition(field="step_type", operator=FilterOperator.EQ, value=step_type),
+            FilterCondition(
+                field="step_type", operator=FilterOperator.EQ, value=step_type
+            ),
         ]
 
         normalized_tag = self._normalize_model_tag(model_tag)
@@ -2135,11 +2129,19 @@ class LanceDBMainPointerStore(MainPointerStore):
                 field="model_tag", operator=FilterOperator.EQ, value=""
             )
             # Combine as: (base) AND (model_tag IS NULL OR model_tag == '')
-            model_tag_filter = [model_tag_null_cond, model_tag_empty_cond]  # OR list
-            filter_expr: FilterExpression = (*base_conditions, model_tag_filter)  # AND tuple
+            model_tag_filter: FilterExpression = (
+                model_tag_null_cond,
+                model_tag_empty_cond,
+            )  # OR tuple
+            filter_expr: FilterExpression = (
+                *base_conditions,
+                model_tag_filter,
+            )  # AND tuple
         else:
             base_conditions.append(
-                FilterCondition(field="model_tag", operator=FilterOperator.EQ, value=normalized_tag)
+                FilterCondition(
+                    field="model_tag", operator=FilterOperator.EQ, value=normalized_tag
+                )
             )
             filter_expr = tuple(base_conditions)  # AND tuple
 
@@ -2208,7 +2210,9 @@ class LanceDBMainPointerStore(MainPointerStore):
                     "collection": row["collection"],
                     "doc_id": row["doc_id"],
                     "step_type": row["step_type"],
-                    "model_tag": row["model_tag"] if pd.notna(row["model_tag"]) else None,
+                    "model_tag": row["model_tag"]
+                    if pd.notna(row["model_tag"])
+                    else None,
                     "semantic_id": row["semantic_id"],
                     "technical_id": row["technical_id"],
                     "created_at": row["created_at"],
@@ -2241,9 +2245,13 @@ class LanceDBMainPointerStore(MainPointerStore):
 
         # Build filter expression using FilterCondition
         base_conditions: List[FilterCondition] = [
-            FilterCondition(field="collection", operator=FilterOperator.EQ, value=collection),
+            FilterCondition(
+                field="collection", operator=FilterOperator.EQ, value=collection
+            ),
             FilterCondition(field="doc_id", operator=FilterOperator.EQ, value=doc_id),
-            FilterCondition(field="step_type", operator=FilterOperator.EQ, value=step_type),
+            FilterCondition(
+                field="step_type", operator=FilterOperator.EQ, value=step_type
+            ),
         ]
 
         normalized_tag = self._normalize_model_tag(model_tag)
@@ -2256,11 +2264,19 @@ class LanceDBMainPointerStore(MainPointerStore):
                 field="model_tag", operator=FilterOperator.EQ, value=""
             )
             # Combine as: (base) AND (model_tag IS NULL OR model_tag == '')
-            model_tag_filter = [model_tag_null_cond, model_tag_empty_cond]  # OR list
-            filter_expr: FilterExpression = (*base_conditions, model_tag_filter)  # AND tuple
+            model_tag_filter: FilterExpression = (
+                model_tag_null_cond,
+                model_tag_empty_cond,
+            )  # OR tuple
+            filter_expr: FilterExpression = (
+                *base_conditions,
+                model_tag_filter,
+            )  # AND tuple
         else:
             base_conditions.append(
-                FilterCondition(field="model_tag", operator=FilterOperator.EQ, value=normalized_tag)
+                FilterCondition(
+                    field="model_tag", operator=FilterOperator.EQ, value=normalized_tag
+                )
             )
             filter_expr = tuple(base_conditions)  # AND tuple
 
@@ -2291,8 +2307,14 @@ class LanceDBMainPointerStore(MainPointerStore):
     ) -> None:
         """Async version of set_main_pointer."""
         return self.set_main_pointer(
-            collection, doc_id, step_type, semantic_id, technical_id,
-            model_tag, operator, user_id
+            collection,
+            doc_id,
+            step_type,
+            semantic_id,
+            technical_id,
+            model_tag,
+            operator,
+            user_id,
         )
 
     async def get_main_pointer_async(
@@ -2325,4 +2347,6 @@ class LanceDBMainPointerStore(MainPointerStore):
         user_id: Optional[int] = None,
     ) -> bool:
         """Async version of delete_main_pointer."""
-        return self.delete_main_pointer(collection, doc_id, step_type, model_tag, user_id)
+        return self.delete_main_pointer(
+            collection, doc_id, step_type, model_tag, user_id
+        )

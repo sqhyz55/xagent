@@ -257,8 +257,9 @@ class TestParseDocumentFallback:
         self, temp_lancedb_dir, test_collection
     ) -> None:
         """Test parse_document uses iter_batches with Arrow RecordBatch."""
-        import pandas as pd
         from unittest.mock import MagicMock, patch
+
+        import pandas as pd
 
         from xagent.core.tools.core.RAG_tools.parse.parse_document import (
             _get_document_from_db,
@@ -309,8 +310,9 @@ class TestParseDocumentFallback:
         self, temp_lancedb_dir, test_collection
     ) -> None:
         """Test parse_document handles batch data correctly."""
-        import pandas as pd
         from unittest.mock import MagicMock, patch
+
+        import pandas as pd
 
         from xagent.core.tools.core.RAG_tools.parse.parse_document import (
             _get_document_from_db,
@@ -361,8 +363,9 @@ class TestParseDocumentFallback:
         self, temp_lancedb_dir, test_collection
     ) -> None:
         """Test parse_document handles batch data correctly via iter_batches."""
-        import pandas as pd
         from unittest.mock import MagicMock, patch
+
+        import pandas as pd
 
         from xagent.core.tools.core.RAG_tools.parse.parse_document import (
             _get_document_from_db,

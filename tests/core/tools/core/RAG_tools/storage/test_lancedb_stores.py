@@ -2,17 +2,15 @@
 
 import asyncio
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
-    LanceDBMetadataStore,
-    LanceDBVectorIndexStore,
-    LanceDBPromptTemplateStore,
     LanceDBMainPointerStore,
+    LanceDBMetadataStore,
+    LanceDBPromptTemplateStore,
+    LanceDBVectorIndexStore,
 )
 
 
@@ -256,7 +254,9 @@ def test_upsert_embeddings_merge_insert_success(mock_get_connection: Mock) -> No
     store.upsert_embeddings("text_embedding_v4", records)
 
     # Verify merge_insert was called
-    mock_table.merge_insert.assert_called_once_with(["collection", "doc_id", "chunk_id"])
+    mock_table.merge_insert.assert_called_once_with(
+        ["collection", "doc_id", "chunk_id"]
+    )
     mock_merge_insert.when_matched_update_all.assert_called_once()
     mock_when_matched.when_not_matched_insert_all.assert_called_once()
     mock_when_not_matched.execute.assert_called_once()
@@ -268,7 +268,9 @@ def test_upsert_embeddings_merge_insert_success(mock_get_connection: Mock) -> No
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
-def test_upsert_embeddings_merge_insert_fallback_to_add(mock_get_connection: Mock) -> None:
+def test_upsert_embeddings_merge_insert_fallback_to_add(
+    mock_get_connection: Mock,
+) -> None:
     """Test fallback to add() when merge_insert fails with recoverable error."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
@@ -313,7 +315,9 @@ def test_upsert_embeddings_merge_insert_fallback_to_add(mock_get_connection: Moc
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
-def test_upsert_embeddings_non_recoverable_error_no_fallback(mock_get_connection: Mock) -> None:
+def test_upsert_embeddings_non_recoverable_error_no_fallback(
+    mock_get_connection: Mock,
+) -> None:
     """Test that non-recoverable errors (schema, type mismatch) do not fallback."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
@@ -568,7 +572,9 @@ async def test_should_reindex_async_delegates_to_sync(
     )
 
     # Async version should delegate to sync
-    result = await store.should_reindex_async("embeddings_test", total_upserted=10, policy=policy)
+    result = await store.should_reindex_async(
+        "embeddings_test", total_upserted=10, policy=policy
+    )
     assert result is True  # Smart reindex triggers due to high unindexed ratio
 
 
@@ -591,7 +597,6 @@ async def test_trigger_reindex_async_delegates_to_sync(
     result = await store.trigger_reindex_async("embeddings_test")
     assert result is True
     mock_table.optimize.assert_called_once()
-
 
 
 # ============================================================================
@@ -808,7 +813,6 @@ def test_main_pointer_store_set_and_get(mock_get_connection: Mock) -> None:
 def test_main_pointer_store_user_id_warning(mock_get_connection: Mock, caplog) -> None:
     """Test that user_id parameter triggers a warning."""
     import logging
-    import pandas as pd
 
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
@@ -874,9 +878,7 @@ def test_main_pointer_store_list(mock_get_connection: Mock) -> None:
     mock_df = Mock()
     mock_df.iterrows.return_value = [(None, mock_row_data)]
     mock_df.empty = False
-    mock_table.search.return_value.where.return_value.limit.return_value.to_pandas.return_value = (
-        mock_df
-    )
+    mock_table.search.return_value.where.return_value.limit.return_value.to_pandas.return_value = mock_df
 
     store = LanceDBMainPointerStore()
 
@@ -904,9 +906,7 @@ def test_main_pointer_store_delete(mock_get_connection: Mock) -> None:
 
     store = LanceDBMainPointerStore()
 
-    result = store.delete_main_pointer(
-        "test_collection", "test_doc", "parse"
-    )
+    result = store.delete_main_pointer("test_collection", "test_doc", "parse")
     assert result is True
     mock_table.delete.assert_called_once()
 
@@ -930,8 +930,6 @@ def test_main_pointer_store_delete_not_found(mock_get_connection: Mock) -> None:
 
     store = LanceDBMainPointerStore()
 
-    result = store.delete_main_pointer(
-        "test_collection", "test_doc", "parse"
-    )
+    result = store.delete_main_pointer("test_collection", "test_doc", "parse")
     assert result is False
     mock_table.delete.assert_not_called()

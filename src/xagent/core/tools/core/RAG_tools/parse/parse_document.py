@@ -31,7 +31,6 @@ from ..core.schemas import (
     ParseMethod,
 )
 from ..storage.factory import get_vector_index_store
-from ..storage.contracts import build_filter_from_dict
 from ..utils.hash_utils import compute_parse_hash, get_parse_params_whitelist
 
 logger = logging.getLogger(__name__)

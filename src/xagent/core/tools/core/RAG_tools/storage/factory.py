@@ -13,12 +13,12 @@ import threading
 from typing import Optional
 
 from .contracts import (
+    IngestionStatusStore,
     KBWriteCoordinator,
     MainPointerStore,
     MetadataStore,
     PromptTemplateStore,
     VectorIndexStore,
-    IngestionStatusStore,
 )
 from .lancedb_stores import (
     LanceDBIngestionStatusStore,

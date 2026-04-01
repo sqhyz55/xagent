@@ -21,39 +21,81 @@ from typing import (
     runtime_checkable,
 )
 
-from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
+from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
 from ..core.schemas import CollectionInfo
-from ..core.config import IndexPolicy
-
 
 # Field name whitelist for filter validation
 # Derived from all LanceDB table schemas in schema_manager.py
-_VALID_FILTER_FIELDS = frozenset({
-    # documents table
-    "collection", "doc_id", "source_path", "file_type", "content_hash",
-    "uploaded_at", "title", "language", "user_id",
-    # parses table
-    "parse_hash", "parser", "created_at", "params_json",
-    # chunks table
-    "chunk_id", "index", "page_number", "section", "anchor", "json_path",
-    "chunk_hash", "config_hash", "metadata",
-    # embeddings table
-    "model", "vector_dimension", "vector",
-    # ingestion_runs table
-    "status", "message", "updated_at",
-    # main_pointers table
-    "step_type", "model_tag", "semantic_id", "technical_id", "operator",
-    # prompt_templates table
-    "id", "name", "template", "version", "is_latest",
-    # collection_metadata table
-    "name", "schema_version", "embedding_model_id", "embedding_dimension",
-    "documents", "processed_documents", "parses", "chunks", "embeddings",
-    "document_names", "collection_locked", "allow_mixed_parse_methods",
-    "skip_config_validation", "ingestion_config", "created_at", "updated_at",
-    "last_accessed_at", "extra_metadata",
-    # collection_config table
-    "config_json",
-})
+_VALID_FILTER_FIELDS = frozenset(
+    {
+        # documents table
+        "collection",
+        "doc_id",
+        "source_path",
+        "file_type",
+        "content_hash",
+        "uploaded_at",
+        "title",
+        "language",
+        "user_id",
+        # parses table
+        "parse_hash",
+        "parser",
+        "created_at",
+        "params_json",
+        # chunks table
+        "chunk_id",
+        "index",
+        "page_number",
+        "section",
+        "anchor",
+        "json_path",
+        "chunk_hash",
+        "config_hash",
+        "metadata",
+        # embeddings table
+        "model",
+        "vector_dimension",
+        "vector",
+        # ingestion_runs table
+        "status",
+        "message",
+        "updated_at",
+        # main_pointers table
+        "step_type",
+        "model_tag",
+        "semantic_id",
+        "technical_id",
+        "operator",
+        # prompt_templates table
+        "id",
+        "name",
+        "template",
+        "version",
+        "is_latest",
+        # collection_metadata table
+        "name",
+        "schema_version",
+        "embedding_model_id",
+        "embedding_dimension",
+        "documents",
+        "processed_documents",
+        "parses",
+        "chunks",
+        "embeddings",
+        "document_names",
+        "collection_locked",
+        "allow_mixed_parse_methods",
+        "skip_config_validation",
+        "ingestion_config",
+        "created_at",
+        "updated_at",
+        "last_accessed_at",
+        "extra_metadata",
+        # collection_config table
+        "config_json",
+    }
+)
 
 
 def validate_field_name(field: str) -> None:

@@ -38,6 +38,7 @@ class TestMainPointerManager:
 
         # Clean up temp directory
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     @patch(

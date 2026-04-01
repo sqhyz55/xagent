@@ -9,7 +9,6 @@ for basic operations while preserving complex business logic.
 
 import json
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import (
@@ -99,7 +98,9 @@ def create_prompt_template(
             updated_at=template_data["updated_at"],
         )
 
-        logger.info(f"Created prompt template '{name}' version {prompt_template.version}")
+        logger.info(
+            f"Created prompt template '{name}' version {prompt_template.version}"
+        )
         return prompt_template
 
     except (ConfigurationError, DatabaseOperationError):
@@ -145,9 +146,14 @@ def read_prompt_template(
             # Search by ID
             template_data = store.get_prompt_template(prompt_id, user_id=None)
             if template_data is None:
-                raise DocumentNotFoundError(f"Prompt template with ID '{prompt_id}' not found.")
+                raise DocumentNotFoundError(
+                    f"Prompt template with ID '{prompt_id}' not found."
+                )
         else:
             # Search by name
+            assert (
+                name is not None
+            )  # Type narrowing: name must be provided if prompt_id is None
             name = name.strip() if name else name
             if version is not None:
                 # Get specific version - need to search through list
@@ -157,7 +163,11 @@ def read_prompt_template(
                     user_id=None,
                     limit=100,
                 )
-                matching = [t for t in templates if t["name"] == name and t["version"] == version]
+                matching = [
+                    t
+                    for t in templates
+                    if t["name"] == name and t["version"] == version
+                ]
                 if not matching:
                     raise DocumentNotFoundError(
                         f"Prompt template with name '{name}' version {version} not found."
@@ -167,7 +177,9 @@ def read_prompt_template(
                 # Get latest version
                 template_data = store.get_latest_prompt_template(name, user_id=None)
                 if template_data is None:
-                    raise DocumentNotFoundError(f"Prompt template with name '{name}' not found.")
+                    raise DocumentNotFoundError(
+                        f"Prompt template with name '{name}' not found."
+                    )
 
         # Convert to PromptTemplate
         return PromptTemplate(
@@ -373,6 +385,9 @@ def delete_prompt_template(
             return True
         else:
             # Normalize name
+            assert (
+                name is not None
+            )  # Type narrowing: name must be provided if prompt_id is None
             name = name.strip() if name else name
             # Delete by name using store method (handles version management automatically)
             store.delete_by_name(name=name, version=version, user_id=None)

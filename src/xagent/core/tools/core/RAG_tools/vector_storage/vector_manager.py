@@ -17,13 +17,12 @@ import os
 import time
 from typing import Any, Dict, List, Optional, cast
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from ..core.config import (
     DEFAULT_LANCEDB_BATCH_DELAY_MS,
     DEFAULT_LANCEDB_BATCH_SIZE,
-    IndexPolicy,
 )
 from ..core.exceptions import (
     ConfigurationError,

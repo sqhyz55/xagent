@@ -5,8 +5,8 @@ Shared functions for converting abstract filter expressions to LanceDB syntax.
 
 from typing import Any
 
-from .contracts import FilterCondition, FilterExpression, FilterOperator
 from ..utils.string_utils import escape_lancedb_string
+from .contracts import FilterCondition, FilterExpression, FilterOperator
 
 
 def translate_condition(condition: FilterCondition) -> str:
@@ -79,13 +79,9 @@ def translate_filter_expression(expr: FilterExpression) -> str:
         return translate_condition(expr)
     elif isinstance(expr, tuple):
         # AND combination
-        return " AND ".join(
-            f"({translate_filter_expression(e)})" for e in expr
-        )
+        return " AND ".join(f"({translate_filter_expression(e)})" for e in expr)
     elif isinstance(expr, list):
         # OR combination
-        return " OR ".join(
-            f"({translate_filter_expression(e)})" for e in expr
-        )
+        return " OR ".join(f"({translate_filter_expression(e)})" for e in expr)
     else:
         raise ValueError(f"Unsupported filter expression: {type(expr)}")

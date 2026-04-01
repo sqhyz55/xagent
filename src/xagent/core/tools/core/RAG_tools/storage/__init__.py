@@ -12,6 +12,7 @@ from .contracts import (
     VectorIndexStore,
 )
 from .factory import (
+    StorageFactory,
     get_ingestion_status_store,
     get_kb_write_coordinator,
     get_main_pointer_store,
@@ -19,7 +20,6 @@ from .factory import (
     get_prompt_template_store,
     get_vector_index_store,
     reset_kb_write_coordinator,
-    StorageFactory,
 )
 
 __all__ = [

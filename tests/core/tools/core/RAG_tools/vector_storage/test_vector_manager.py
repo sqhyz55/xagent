@@ -369,7 +369,6 @@ class TestWriteVectorsToDb:
             # Verify upsert_embeddings was called on vector store
             mock_vector_store.upsert_embeddings.assert_called_once()
             call_args = mock_vector_store.upsert_embeddings.call_args
-            model_tag_arg = call_args[0][0]
             records_arg = call_args[0][1]
 
             # Verify the records contain the malicious input (properly escaped by LanceDB)
@@ -439,10 +438,10 @@ class TestWriteVectorsToDb:
         """
         from unittest.mock import MagicMock, patch
 
-        from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
         from xagent.core.tools.core.RAG_tools.core.exceptions import (
             DatabaseOperationError,
         )
+        from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
 
         # Create mock vector store that raises error
         mock_vector_store = MagicMock()
@@ -466,7 +465,9 @@ class TestWriteVectorsToDb:
             )
 
             # ValueError is wrapped in DatabaseOperationError by outer exception handler
-            with pytest.raises(DatabaseOperationError, match="Failed to write embeddings"):
+            with pytest.raises(
+                DatabaseOperationError, match="Failed to write embeddings"
+            ):
                 write_vectors_to_db(
                     collection=test_collection,
                     embeddings=[embedding],
@@ -511,7 +512,9 @@ class TestWriteVectorsToDb:
             )
 
             # TypeError is wrapped in DatabaseOperationError by outer exception handler
-            with pytest.raises(DatabaseOperationError, match="Failed to write embeddings"):
+            with pytest.raises(
+                DatabaseOperationError, match="Failed to write embeddings"
+            ):
                 write_vectors_to_db(
                     collection=test_collection,
                     embeddings=[embedding],
@@ -556,7 +559,9 @@ class TestWriteVectorsToDb:
             )
 
             # ValueError is wrapped in DatabaseOperationError by outer exception handler
-            with pytest.raises(DatabaseOperationError, match="Failed to write embeddings"):
+            with pytest.raises(
+                DatabaseOperationError, match="Failed to write embeddings"
+            ):
                 write_vectors_to_db(
                     collection=test_collection,
                     embeddings=[embedding],
@@ -1126,6 +1131,7 @@ class TestWriteVectorsToDb:
             assert mock_vector_store.create_index.call_count == 2
             # Overall status should reflect aggregation (index_building takes precedence)
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexOperation
+
             assert result.index_status == IndexOperation.CREATED.value
 
             # index_building should take priority over failed
@@ -1291,7 +1297,6 @@ class TestValidateQueryVectorExtended:
 
         # Manually insert a record with known dimension
         table = conn.open_table(f"embeddings_{model_tag}")
-        import pandas as pd
 
         test_record = {
             "collection": test_collection,
@@ -1365,8 +1370,6 @@ class TestValidateQueryVectorExtended:
         # Create table and add test data
         ensure_embeddings_table(conn, model_tag)
         table = conn.open_table(f"embeddings_{model_tag}")
-
-        import pandas as pd
 
         test_record = {
             "collection": test_collection,
@@ -1469,6 +1472,7 @@ class TestReindexingFunctionality:
             assert result.upsert_count == 1
             # Verify index status reflects building state
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexOperation
+
             assert result.index_status == IndexOperation.CREATED.value
 
     def test_write_vectors_reindex_policy_configuration(
@@ -1477,7 +1481,6 @@ class TestReindexingFunctionality:
         """Test write_vectors_to_db with different reindex policy configurations (Phase 1A: using storage abstraction)."""
         from unittest.mock import MagicMock, patch
 
-        from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
         from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
 
         # Create mock vector store
@@ -1487,69 +1490,6 @@ class TestReindexingFunctionality:
         mock_vector_store.upsert_embeddings.return_value = None
         # Mock create_index to return index_building status
         mock_vector_store.create_index.return_value = "index_building"
-
-        # Test with custom policy
-        custom_policy = IndexPolicy(
-            reindex_batch_size=500,
-            enable_immediate_reindex=True,
-            enable_smart_reindex=False,
-        )
-
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
-                return_value=mock_vector_store,
-            ),
-        ):
-            embedding = ChunkEmbeddingData(
-                collection=test_collection,
-                doc_id="test_doc",
-                chunk_id="test_chunk",
-                parse_hash="test_parse",
-                model="test_model",
-                vector=[0.1, 0.2],
-                text="test text",
-                chunk_hash="test_hash",
-            )
-
-            result = write_vectors_to_db(
-                collection=test_collection,
-                embeddings=[embedding],
-                create_index=True,
-            )
-
-            # Verify upsert_embeddings was called
-            mock_vector_store.upsert_embeddings.assert_called_once()
-            # Verify create_index was called
-            mock_vector_store.create_index.assert_called_once()
-            assert result.upsert_count == 1
-
-            assert result.upsert_count == 1
-            assert result.index_status == "created"
-
-    def test_write_vectors_reindex_policy_configuration(
-        self, temp_lancedb_dir, test_collection
-    ):
-        """Test write_vectors_to_db with different reindex policy configurations (Phase 1A: using storage abstraction)."""
-        from unittest.mock import MagicMock, patch
-
-        from xagent.core.tools.core.RAG_tools.core.config import IndexPolicy
-        from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
-
-        # Create mock vector store
-        mock_vector_store = MagicMock()
-
-        # Mock upsert_embeddings to succeed
-        mock_vector_store.upsert_embeddings.return_value = None
-        # Mock create_index to return index_building status
-        mock_vector_store.create_index.return_value = "index_building"
-
-        # Test with custom policy
-        custom_policy = IndexPolicy(
-            reindex_batch_size=500,
-            enable_immediate_reindex=True,
-            enable_smart_reindex=False,
-        )
 
         with (
             patch(
