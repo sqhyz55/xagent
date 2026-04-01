@@ -705,11 +705,23 @@ def test_prompt_template_store_delete(mock_get_connection: Mock) -> None:
     mock_conn.open_table.return_value = mock_table
 
     # Mock existing template
+    mock_row = {"is_latest": True, "name": "test-template"}
+    mock_row_obj = Mock()
+    mock_row_obj.__getitem__ = lambda self, key: mock_row[key]
     mock_result = Mock()
     mock_result.empty = False
+    mock_result.iloc = [mock_row_obj]
+    mock_result.__len__ = lambda self: 1
     mock_table.search.return_value.where.return_value.to_pandas.return_value = (
         mock_result
     )
+    # Mock remaining versions after delete (empty for this test)
+    mock_result_empty = Mock()
+    mock_result_empty.empty = True
+    mock_table.search.return_value.where.return_value.to_pandas.side_effect = [
+        mock_result,
+        mock_result_empty,
+    ]
 
     store = LanceDBPromptTemplateStore()
 

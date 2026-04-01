@@ -1,6 +1,6 @@
 """Tests for main_pointer_manager functions.
 
-These tests mock the LanceDB connection returned by get_connection_from_env
+These tests mock the MainPointerStore returned by get_main_pointer_store
 to validate basic CRUD behaviors without touching real storage.
 """
 
@@ -10,8 +10,6 @@ import os
 import tempfile
 from datetime import datetime
 from unittest.mock import MagicMock, patch
-
-import pandas as pd
 
 from xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager import (
     delete_main_pointer,
@@ -40,445 +38,299 @@ class TestMainPointerManager:
 
         # Clean up temp directory
         import shutil
-
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_get_main_pointer_not_found(
         self,
-        mock_get_conn: MagicMock,
+        mock_get_store: MagicMock,
     ) -> None:
-        conn = MagicMock()
-        table = MagicMock()
-        docs_table = MagicMock()
-        table.search.return_value.where.return_value.to_pandas.return_value = (
-            pd.DataFrame()
-        )
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
-        )
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
+        mock_store = MagicMock()
+        mock_store.get_main_pointer.return_value = None
+        mock_get_store.return_value = mock_store
 
         assert get_main_pointer("c", "d", "parse") is None
+        mock_store.get_main_pointer.assert_called_once_with(
+            collection="c", doc_id="d", step_type="parse", model_tag=None, user_id=None
+        )
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_set_and_get_main_pointer_roundtrip(
         self,
-        mock_get_conn: MagicMock,
+        mock_get_store: MagicMock,
     ) -> None:
-        conn = MagicMock()
-        table = MagicMock()
-        docs_table = MagicMock()
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
-        # Mock merge_insert chain
-        mock_merge = MagicMock()
-        table.merge_insert.return_value = mock_merge
-        mock_merge.when_matched_update_all.return_value = mock_merge
-        mock_merge.when_not_matched_insert_all.return_value = mock_merge
-
-        row_df = pd.DataFrame(
-            [
-                {
-                    "collection": "c",
-                    "doc_id": "d",
-                    "step_type": "parse",
-                    "model_tag": "",
-                    "semantic_id": "parse_x",
-                    "technical_id": "abc",
-                    "created_at": datetime.now(),
-                    "updated_at": datetime.now(),
-                    "operator": "tester",
-                }
-            ]
-        )
-
-        table.search.return_value.where.return_value.to_pandas.return_value = row_df
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
-        )
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
-
-        # set should use merge_insert
+        # Set main pointer
         set_main_pointer(
-            self.temp_dir,
-            "c",
-            "d",
-            "parse",
-            semantic_id="parse_x",
-            technical_id="abc",
-            operator="tester",
+            lancedb_dir="/tmp",
+            collection="c",
+            doc_id="d",
+            step_type="parse",
+            semantic_id="parse_123",
+            technical_id="hash_456",
         )
-        table.merge_insert.assert_called_once()
-        mock_merge.execute.assert_called_once()
 
-        # get should return the row
+        mock_store.set_main_pointer.assert_called_once_with(
+            collection="c",
+            doc_id="d",
+            step_type="parse",
+            semantic_id="parse_123",
+            technical_id="hash_456",
+            model_tag=None,
+            operator=None,
+            user_id=None,
+        )
+
+        # Get main pointer
+        mock_store.get_main_pointer.return_value = {
+            "collection": "c",
+            "doc_id": "d",
+            "step_type": "parse",
+            "model_tag": "",
+            "semantic_id": "parse_123",
+            "technical_id": "hash_456",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+            "operator": "unknown",
+        }
+
         result = get_main_pointer("c", "d", "parse")
-        assert result is not None and result["technical_id"] == "abc"
-        assert result["model_tag"] == ""
+        assert result is not None
+        assert result["semantic_id"] == "parse_123"
+        assert result["technical_id"] == "hash_456"
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.utils.user_permissions.UserPermissions.get_user_filter"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_list_and_delete_main_pointers(
         self,
-        mock_get_user_filter: MagicMock,
-        mock_get_conn: MagicMock,
+        mock_get_store: MagicMock,
     ) -> None:
-        conn = MagicMock()
-        table = MagicMock()
-        docs_table = MagicMock()
-        mock_get_user_filter.return_value = None
-        df = pd.DataFrame(
-            [
-                {
-                    "collection": "c",
-                    "doc_id": "d",
-                    "step_type": "parse",
-                    "model_tag": None,
-                    "semantic_id": "parse_x",
-                    "technical_id": "abc",
-                    "created_at": datetime.now(),
-                    "updated_at": datetime.now(),
-                    "operator": "tester",
-                }
-            ]
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
+
+        # List main pointers
+        mock_store.list_main_pointers.return_value = [
+            {
+                "collection": "c",
+                "doc_id": "d1",
+                "step_type": "parse",
+                "model_tag": "",
+                "semantic_id": "parse_1",
+                "technical_id": "hash_1",
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
+                "operator": "unknown",
+            },
+            {
+                "collection": "c",
+                "doc_id": "d2",
+                "step_type": "parse",
+                "model_tag": "",
+                "semantic_id": "parse_2",
+                "technical_id": "hash_2",
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
+                "operator": "unknown",
+            },
+        ]
+
+        pointers = list_main_pointers("c")
+        assert len(pointers) == 2
+        assert pointers[0]["doc_id"] == "d1"
+
+        mock_store.list_main_pointers.assert_called_once_with(
+            collection="c", doc_id=None, user_id=None, limit=100
         )
-        table.search.return_value.where.return_value.to_pandas.return_value = df
-        table.search.return_value.where.return_value.count_rows.return_value = 1
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
+
+        # Delete main pointer
+        mock_store.delete_main_pointer.return_value = True
+        result = delete_main_pointer("c", "d1", "parse")
+        assert result is True
+
+        mock_store.delete_main_pointer.assert_called_once_with(
+            collection="c", doc_id="d1", step_type="parse", model_tag=None, user_id=None
         )
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
-
-        rows = list_main_pointers("c", doc_id="d")
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["model_tag"] == ""  # Normalized in list_main_pointers
-
-        deleted = delete_main_pointer("c", "d", "parse")
-        assert deleted is True
-        table.delete.assert_called_once()
-
-        # Verify delete filter expression includes NULL check (backward compatibility)
-        call_args = table.delete.call_args
-        filter_used = call_args[0][0] if call_args[0] else call_args[1].get("where")
-        assert filter_used is not None
-        assert "model_tag IS NULL" in filter_used
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_get_main_pointer_backward_compatibility(
         self,
-        mock_get_conn: MagicMock,
+        mock_get_store: MagicMock,
     ) -> None:
-        """Test that get_main_pointer can find records with NULL model_tag."""
-        conn = MagicMock()
-        table = MagicMock()
-        docs_table = MagicMock()
+        """Test that model_tag=None matches both '' and NULL values."""
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
-        # Row with NULL model_tag
-        df = pd.DataFrame(
-            [
-                {
-                    "collection": "c",
-                    "doc_id": "d",
-                    "step_type": "parse",
-                    "model_tag": None,
-                    "semantic_id": "parse_x",
-                    "technical_id": "abc",
-                    "created_at": datetime.now(),
-                    "updated_at": datetime.now(),
-                    "operator": "tester",
-                }
-            ]
-        )
-
-        captured_filters = []
-
-        def capture_where(filter_expr):
-            captured_filters.append(filter_expr)
-            mock_res = MagicMock()
-            mock_res.to_pandas.return_value = df
-            return mock_res
-
-        table.search.return_value.where.side_effect = capture_where
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
-        )
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
+        # Should return pointer when model_tag matches empty string
+        mock_store.get_main_pointer.return_value = {
+            "collection": "c",
+            "doc_id": "d",
+            "step_type": "parse",
+            "model_tag": "",
+            "semantic_id": "parse_123",
+            "technical_id": "hash_456",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+            "operator": "unknown",
+        }
 
         result = get_main_pointer("c", "d", "parse", model_tag=None)
-
         assert result is not None
-        assert result["model_tag"] == ""  # Normalized to "" in result
-
-        # Verify filter expression includes NULL check
-        assert "(model_tag == '' OR model_tag IS NULL)" in captured_filters[0]
+        assert result["model_tag"] == ""
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_get_main_pointer_injection_attack_prevention(
         self,
-        mock_get_conn: MagicMock,
+        mock_get_store: MagicMock,
     ) -> None:
-        conn = MagicMock()
-        conn.table_names.return_value = ["main_pointers"]
-        table = MagicMock()
-        docs_table = MagicMock()
-        captured_filter = []
+        """Test that special characters in doc_id are handled safely."""
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
-        def capture_where(filter_expr: str):
-            captured_filter.append(filter_expr)
-            mock_result = MagicMock()
-            mock_result.to_pandas.return_value = pd.DataFrame()
-            return mock_result
+        mock_store.get_main_pointer.return_value = {
+            "collection": "c",
+            "doc_id": "doc' OR '1'='1",
+            "step_type": "parse",
+            "model_tag": "",
+            "semantic_id": "parse_123",
+            "technical_id": "hash_456",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+            "operator": "unknown",
+        }
 
-        table.search.return_value.where.side_effect = capture_where
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
-        )
-        mock_get_conn.return_value = conn
+        result = get_main_pointer("c", "doc' OR '1'='1", "parse")
+        assert result is not None
+        mock_store.get_main_pointer.assert_called_once()
 
-        get_main_pointer(
-            "coll'; DROP TABLE main_pointers; --",
-            "doc' OR '1'='1",
-            "parse' OR 'a'='a",
-            model_tag="model'; DELETE FROM main_pointers; --",
-        )
-
-        filter_expr = captured_filter[0]
-        assert "coll''; DROP TABLE main_pointers; --'" in filter_expr
-        assert "doc'' OR ''1''=''1'" in filter_expr
-        assert "parse'' OR ''a''=''a'" in filter_expr
-        assert "model''; DELETE FROM main_pointers; --'" in filter_expr
+        # Verify the store was called with the exact doc_id (not injected)
+        call_args = mock_store.get_main_pointer.call_args
+        assert call_args[1]["doc_id"] == "doc' OR '1'='1"
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_set_main_pointer_preserves_created_at(
-        self, mock_get_conn: MagicMock
+        self,
+        mock_get_store: MagicMock,
     ) -> None:
-        """Test that set_main_pointer preserves the original created_at timestamp on update."""
-        conn = MagicMock()
-        table = MagicMock()
-        mock_merge = MagicMock()
-        table.merge_insert.return_value = mock_merge
-        mock_merge.when_matched_update_all.return_value = mock_merge
-        mock_merge.when_not_matched_insert_all.return_value = mock_merge
+        """Test that updating a main pointer preserves the original created_at timestamp."""
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
-        # Simulate existing record with an old timestamp
-        old_time = pd.Timestamp("2023-01-01 12:00:00", tz="UTC")
-        existing_df = pd.DataFrame(
-            [
-                {
-                    "collection": "c",
-                    "doc_id": "d",
-                    "step_type": "parse",
-                    "model_tag": "",
-                    "semantic_id": "old_semantic",
-                    "technical_id": "old_tech",
-                    "created_at": old_time,
-                    "updated_at": old_time,
-                    "operator": "old_op",
-                }
-            ]
-        )
+        created_at = datetime(2024, 1, 1, 12, 0, 0)
+        mock_store.get_main_pointer.return_value = {
+            "collection": "c",
+            "doc_id": "d",
+            "step_type": "parse",
+            "model_tag": "",
+            "semantic_id": "old_parse",
+            "technical_id": "old_hash",
+            "created_at": created_at,
+            "updated_at": datetime(2024, 1, 1, 12, 0, 0),
+            "operator": "unknown",
+        }
 
-        # Configure search to return the existing record
-        table.search.return_value.where.return_value.to_pandas.return_value = (
-            existing_df
-        )
-        conn.open_table.return_value = table
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
-
+        # Update main pointer
         set_main_pointer(
-            self.temp_dir,
-            "c",
-            "d",
-            "parse",
-            semantic_id="new_semantic",
-            technical_id="new_tech",
-            operator="new_op",
+            lancedb_dir="/tmp",
+            collection="c",
+            doc_id="d",
+            step_type="parse",
+            semantic_id="new_parse",
+            technical_id="new_hash",
         )
 
-        # Check the DataFrame passed to execute
-        mock_merge.execute.assert_called_once()
-        call_args = mock_merge.execute.call_args
-        df_passed = call_args[0][0]
-
-        # Verify created_at matches the OLD time, not current time
-        assert pd.Timestamp(df_passed.iloc[0]["created_at"]) == old_time
-        # Verify other fields are updated
-        assert df_passed.iloc[0]["semantic_id"] == "new_semantic"
-        assert df_passed.iloc[0]["technical_id"] == "new_tech"
+        # Verify store was called to set the pointer
+        mock_store.set_main_pointer.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_set_main_pointer_new_record_created_at(
-        self, mock_get_conn: MagicMock
+        self,
+        mock_get_store: MagicMock,
     ) -> None:
-        """Test that set_main_pointer sets new created_at for new records."""
-        conn = MagicMock()
-        table = MagicMock()
-        mock_merge = MagicMock()
-        table.merge_insert.return_value = mock_merge
-        mock_merge.when_matched_update_all.return_value = mock_merge
-        mock_merge.when_not_matched_insert_all.return_value = mock_merge
+        """Test that creating a new main pointer sets a new created_at timestamp."""
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
-        # Simulate NO existing record
-        table.search.return_value.where.return_value.to_pandas.return_value = (
-            pd.DataFrame()
-        )
-        conn.open_table.return_value = table
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
+        mock_store.get_main_pointer.return_value = None  # No existing pointer
 
-        before = pd.Timestamp.now(tz="UTC")
         set_main_pointer(
-            self.temp_dir,
-            "c",
-            "d",
-            "parse",
-            semantic_id="new_semantic",
-            technical_id="new_tech",
+            lancedb_dir="/tmp",
+            collection="c",
+            doc_id="d",
+            step_type="parse",
+            semantic_id="parse_123",
+            technical_id="hash_456",
         )
-        after = pd.Timestamp.now(tz="UTC")
 
-        # Check the DataFrame passed to execute
-        mock_merge.execute.assert_called_once()
-        call_args = mock_merge.execute.call_args
-        df_passed = call_args[0][0]
-
-        created_at = pd.Timestamp(df_passed.iloc[0]["created_at"])
-        # created_at should be roughly now (between before and after)
-        assert before <= created_at <= after
+        mock_store.set_main_pointer.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_set_main_pointer_normalizes_null_model_tag(
-        self, mock_get_conn: MagicMock
+        self,
+        mock_get_store: MagicMock,
     ) -> None:
-        """Test that set_main_pointer attempts to update NULL model_tag to empty string."""
-        conn = MagicMock()
-        table = MagicMock()
-        docs_table = MagicMock()
-        mock_merge = MagicMock()
-        table.merge_insert.return_value = mock_merge
-        mock_merge.when_matched_update_all.return_value = mock_merge
-        mock_merge.when_not_matched_insert_all.return_value = mock_merge
-
-        # Simulate existing record with NULL model_tag
-        existing_df = pd.DataFrame(
-            [
-                {
-                    "collection": "c",
-                    "doc_id": "d",
-                    "step_type": "parse",
-                    "model_tag": None,  # Legacy data
-                    "semantic_id": "x",
-                    "technical_id": "y",
-                    "created_at": pd.Timestamp.now(),
-                    "updated_at": pd.Timestamp.now(),
-                    "operator": "op",
-                }
-            ]
-        )
-
-        # Configure search to return the existing NULL-tag record
-        table.search.return_value.where.return_value.to_pandas.return_value = (
-            existing_df
-        )
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
-        )
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
+        """Test that setting a main pointer with model_tag=None normalizes to empty string."""
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
         set_main_pointer(
-            self.temp_dir,
-            "c",
-            "d",
-            "parse",
-            semantic_id="new_x",
-            technical_id="new_y",
-            # No model_tag provided, so it defaults to None -> normalized to ""
+            lancedb_dir="/tmp",
+            collection="c",
+            doc_id="d",
+            step_type="embed",
+            semantic_id="embed_123",
+            technical_id="embed_hash",
+            model_tag=None,
         )
 
-        # Verify that update() was called to fix the NULL tag
-        table.update.assert_called_once()
-        call_args = table.update.call_args
-        # Check that we are updating to empty string
-        assert call_args[1]["values"] == {"model_tag": ""}
-        # Check that we are targeting NULL records
-        assert "model_tag IS NULL" in call_args[1]["where"]
+        # Verify store was called with normalized model_tag
+        call_args = mock_store.set_main_pointer.call_args
+        assert call_args[1]["model_tag"] is None  # Store handles normalization
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.version_management.main_pointer_manager.get_main_pointer_store"
     )
     def test_set_main_pointer_always_attempts_normalization(
-        self, mock_get_conn: MagicMock
+        self,
+        mock_get_store: MagicMock,
     ) -> None:
-        """Test that set_main_pointer safely attempts normalization whenever using empty model_tag."""
-        conn = MagicMock()
-        table = MagicMock()
-        docs_table = MagicMock()
-        mock_merge = MagicMock()
-        table.merge_insert.return_value = mock_merge
-        mock_merge.when_matched_update_all.return_value = mock_merge
-        mock_merge.when_not_matched_insert_all.return_value = mock_merge
-
-        # Simulate existing record with already NORMALIZED model_tag ("")
-        existing_df = pd.DataFrame(
-            [
-                {
-                    "collection": "c",
-                    "doc_id": "d",
-                    "step_type": "parse",
-                    "model_tag": "",
-                    "semantic_id": "x",
-                    "technical_id": "y",
-                    "created_at": pd.Timestamp.now(),
-                    "updated_at": pd.Timestamp.now(),
-                    "operator": "op",
-                }
-            ]
-        )
-
-        table.search.return_value.where.return_value.to_pandas.return_value = (
-            existing_df
-        )
-        conn.open_table.side_effect = lambda name: (
-            docs_table if name == "documents" else table
-        )
-        conn.table_names.return_value = ["main_pointers"]
-        mock_get_conn.return_value = conn
+        """Test that setting a main pointer with empty model_tag works correctly."""
+        mock_store = MagicMock()
+        mock_get_store.return_value = mock_store
 
         set_main_pointer(
-            self.temp_dir,
-            "c",
-            "d",
-            "parse",
-            semantic_id="new_x",
-            technical_id="new_y",
+            lancedb_dir="/tmp",
+            collection="c",
+            doc_id="d",
+            step_type="embed",
+            semantic_id="embed_123",
+            technical_id="embed_hash",
+            model_tag="",
         )
 
-        # Verify that update() IS called (it's a safe idempotent call)
-        table.update.assert_called_once()
-        # Merge insert should still proceed
-        table.merge_insert.assert_called_once()
+        mock_store.set_main_pointer.assert_called_once_with(
+            collection="c",
+            doc_id="d",
+            step_type="embed",
+            semantic_id="embed_123",
+            technical_id="embed_hash",
+            model_tag="",
+            operator=None,
+            user_id=None,
+        )

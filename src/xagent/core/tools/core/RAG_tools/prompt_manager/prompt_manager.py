@@ -2,6 +2,9 @@
 
 This module provides functions for managing prompt templates
 with full CRUD operations and transparent version management using LanceDB.
+
+Phase 1A Part 2: Refactored to use PromptTemplateStore abstraction layer
+for basic operations while preserving complex business logic.
 """
 
 import json
@@ -9,17 +12,13 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
-
 from ..core.exceptions import (
     ConfigurationError,
     DatabaseOperationError,
     DocumentNotFoundError,
 )
 from ..core.schemas import PromptTemplate
-from ..LanceDB.schema_manager import ensure_prompt_templates_table
-from ..storage.factory import get_metadata_store
-from ..utils.string_utils import escape_lancedb_string
+from ..storage.factory import get_prompt_template_store
 
 logger = logging.getLogger(__name__)
 
@@ -36,47 +35,6 @@ def _serialize_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
     if metadata is None:
         return None
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
-
-
-def _deserialize_metadata(metadata_json: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Deserialize metadata JSON string to dictionary.
-
-    Args:
-        metadata_json: JSON string to deserialize.
-
-    Returns:
-        Metadata dictionary or None.
-    """
-    if metadata_json is None or pd.isna(metadata_json):
-        return None
-    result: Dict[str, Any] = json.loads(metadata_json)
-    return result
-
-
-def _get_prompt_table() -> Any:
-    """Get LanceDB table for prompt templates.
-
-    Returns:
-        LanceDB table instance.
-
-    Raises:
-        DatabaseOperationError: If table access fails.
-    """
-    try:
-        db = get_metadata_store().get_raw_connection()
-        table_name = "prompt_templates"
-
-        # Ensure table exists with proper schema
-        ensure_prompt_templates_table(db)
-
-        # Open and return the table
-        return db.open_table(table_name)
-
-    except Exception as e:
-        logger.error(f"Failed to get prompt templates table: {str(e)}")
-        raise DatabaseOperationError(
-            f"Failed to access prompt templates table: {str(e)}"
-        ) from e
 
 
 # ------------------------- Public Functions -------------------------
@@ -114,46 +72,34 @@ def create_prompt_template(
     name = name.strip()
 
     try:
-        table = _get_prompt_table()
+        store = get_prompt_template_store()
 
-        # Check if a template with this name already exists (using safe filter)
-        # Filter by both collection and name
-        escaped_collection = escape_lancedb_string(collection)
-        escaped_name = escape_lancedb_string(name)
-        collection_name_filter = (
-            f"collection == '{escaped_collection}' AND name == '{escaped_name}'"
-        )
-        existing_templates = table.search().where(collection_name_filter).to_pandas()
-
-        if existing_templates.empty:
-            # Create first version
-            version = 1
-            is_latest = True
-        else:
-            # Create new version - find the highest version number
-            max_version = existing_templates["version"].max()
-            version = max_version + 1
-            is_latest = True
-
-            # Mark all previous versions as not latest
-            table.update(where=collection_name_filter, values={"is_latest": False})
-
-        # Create new prompt template
-        prompt_template = PromptTemplate(
+        # Save template via store (handles version management automatically)
+        template_id = store.save_prompt_template(
             name=name,
             template=template.strip(),
-            version=version,
-            is_latest=is_latest,
+            user_id=None,  # No multi-tenancy in current implementation
             metadata=_serialize_metadata(metadata),
         )
 
-        # Convert to DataFrame for LanceDB insertion, including collection
-        template_dict = prompt_template.model_dump()
-        template_dict["collection"] = collection
-        df = pd.DataFrame([template_dict])
-        table.add(df)
+        # Get the created template to return full PromptTemplate object
+        template_data = store.get_prompt_template(template_id, user_id=None)
+        if template_data is None:
+            raise DatabaseOperationError("Failed to retrieve created template")
 
-        logger.info(f"Created prompt template '{name}' version {version}")
+        prompt_template = PromptTemplate(
+            id=template_data["id"],
+            name=template_data["name"],
+            template=template_data["template"],
+            version=template_data["version"],
+            is_latest=template_data["is_latest"],
+            metadata=template_data["metadata"],
+            user_id=template_data["user_id"],
+            created_at=template_data["created_at"],
+            updated_at=template_data["updated_at"],
+        )
+
+        logger.info(f"Created prompt template '{name}' version {prompt_template.version}")
         return prompt_template
 
     except (ConfigurationError, DatabaseOperationError):
@@ -193,55 +139,47 @@ def read_prompt_template(
         raise ConfigurationError("Either prompt_id or name must be provided.")
 
     try:
-        table = _get_prompt_table()
-        escaped_collection = escape_lancedb_string(collection)
+        store = get_prompt_template_store()
 
         if prompt_id:
-            # Search by ID and collection (using safe filter)
-            escaped_id = escape_lancedb_string(prompt_id)
-            id_filter = f"collection == '{escaped_collection}' AND id == '{escaped_id}'"
-            result = table.search().where(id_filter).to_pandas()
+            # Search by ID
+            template_data = store.get_prompt_template(prompt_id, user_id=None)
+            if template_data is None:
+                raise DocumentNotFoundError(f"Prompt template with ID '{prompt_id}' not found.")
         else:
-            # Normalize name
+            # Search by name
             name = name.strip() if name else name
-            # Search by name and collection
-            escaped_name = escape_lancedb_string(name)
             if version is not None:
-                # Specific version - combine filters safely
-                filter_expr = (
-                    f"collection == '{escaped_collection}' AND "
-                    f"name == '{escaped_name}' AND version == {version}"
+                # Get specific version - need to search through list
+                templates = store.list_prompt_templates(
+                    name_filter=name,
+                    latest_only=False,
+                    user_id=None,
+                    limit=100,
                 )
-                result = table.search().where(filter_expr).to_pandas()
+                matching = [t for t in templates if t["name"] == name and t["version"] == version]
+                if not matching:
+                    raise DocumentNotFoundError(
+                        f"Prompt template with name '{name}' version {version} not found."
+                    )
+                template_data = matching[0]
             else:
-                # Latest version - combine filters safely
-                filter_expr = (
-                    f"collection == '{escaped_collection}' AND "
-                    f"name == '{escaped_name}' AND is_latest == true"
-                )
-                result = table.search().where(filter_expr).to_pandas()
-
-        if result.empty:
-            identifier = (
-                f"ID '{prompt_id}'"
-                if prompt_id
-                else f"name '{name}'"
-                + (f" version {version}" if version else " (latest)")
-            )
-            raise DocumentNotFoundError(f"Prompt template with {identifier} not found.")
+                # Get latest version
+                template_data = store.get_latest_prompt_template(name, user_id=None)
+                if template_data is None:
+                    raise DocumentNotFoundError(f"Prompt template with name '{name}' not found.")
 
         # Convert to PromptTemplate
-        row = result.iloc[0]
-        # Note: metadata is stored as JSON string internally, keep it as is
         return PromptTemplate(
-            id=str(row["id"]),
-            name=row["name"],
-            template=row["template"],
-            version=int(row["version"]),
-            is_latest=bool(row["is_latest"]),
-            metadata=row["metadata"] if pd.notna(row["metadata"]) else None,
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
+            id=template_data["id"],
+            name=template_data["name"],
+            template=template_data["template"],
+            version=template_data["version"],
+            is_latest=template_data["is_latest"],
+            metadata=template_data["metadata"],
+            user_id=template_data["user_id"],
+            created_at=template_data["created_at"],
+            updated_at=template_data["updated_at"],
         )
 
     except (ConfigurationError, DocumentNotFoundError):
@@ -314,79 +252,74 @@ def update_prompt_template(
         current_template = read_prompt_template(
             collection=collection, prompt_id=prompt_id
         )
-        table = _get_prompt_table()
-        escaped_collection = escape_lancedb_string(collection)
 
         if template is not None:
             # Template content changed - create new version
             if not template.strip():
                 raise ConfigurationError("Template content cannot be empty.")
 
-            # Find the highest version number for this name to avoid version conflicts
-            escaped_name = escape_lancedb_string(current_template.name)
-            name_filter = (
-                f"collection == '{escaped_collection}' AND name == '{escaped_name}'"
-            )
-            all_versions = table.search().where(name_filter).to_pandas()
-            max_version = all_versions["version"].max() if not all_versions.empty else 0
-            new_version = max_version + 1
-
-            # Mark all previous versions as not latest
-            table.update(where=name_filter, values={"is_latest": False})
-
-            # Create new version
-            # Serialize the new metadata if provided, otherwise use current template's metadata
+            # Create new version using store (handles version management automatically)
             new_metadata = (
                 _serialize_metadata(metadata)
                 if metadata is not None
                 else current_template.metadata
             )
-            updated_template = PromptTemplate(
+            new_template_id = get_prompt_template_store().save_prompt_template(
                 name=current_template.name,
                 template=template.strip(),
-                version=new_version,
-                is_latest=True,
+                user_id=None,
                 metadata=new_metadata,
             )
 
-            # Insert new version, including collection
-            template_dict = updated_template.model_dump()
-            template_dict["collection"] = collection
-            df = pd.DataFrame([template_dict])
-            table.add(df)
+            # Get the created template
+            new_template_data = get_prompt_template_store().get_prompt_template(
+                new_template_id, user_id=None
+            )
+            if new_template_data is None:
+                raise DatabaseOperationError("Failed to retrieve updated template")
+
+            updated_template = PromptTemplate(
+                id=new_template_data["id"],
+                name=new_template_data["name"],
+                template=new_template_data["template"],
+                version=new_template_data["version"],
+                is_latest=new_template_data["is_latest"],
+                metadata=new_template_data["metadata"],
+                user_id=new_template_data["user_id"],
+                created_at=new_template_data["created_at"],
+                updated_at=new_template_data["updated_at"],
+            )
 
             logger.info(
-                f"Created new version {new_version} for prompt template '{current_template.name}'"
+                f"Created new version {updated_template.version} for prompt template '{current_template.name}'"
             )
             return updated_template
 
         else:
-            # Only metadata changed - update current version
-            metadata_json = _serialize_metadata(metadata)
-            updated_template = PromptTemplate(
-                id=current_template.id,
-                name=current_template.name,
-                template=current_template.template,
-                version=current_template.version,
-                is_latest=current_template.is_latest,
-                metadata=metadata_json,
-                created_at=current_template.created_at,
-                updated_at=datetime.utcnow(),
+            # Only metadata changed - update in-place using store method
+            new_metadata = _serialize_metadata(metadata)
+            updated_data = get_prompt_template_store().update_metadata(
+                template_id=prompt_id,
+                metadata=new_metadata,
+                user_id=None,
             )
+            if updated_data is None:
+                raise DatabaseOperationError("Failed to retrieve updated template")
 
-            # Update the existing record (using safe filter with collection)
-            escaped_id = escape_lancedb_string(prompt_id)
-            id_filter = f"collection == '{escaped_collection}' AND id == '{escaped_id}'"
-            table.update(
-                where=id_filter,
-                values={
-                    "metadata": metadata_json,
-                    "updated_at": updated_template.updated_at,
-                },
+            updated_template = PromptTemplate(
+                id=updated_data["id"],
+                name=updated_data["name"],
+                template=updated_data["template"],
+                version=updated_data["version"],
+                is_latest=updated_data["is_latest"],
+                metadata=updated_data["metadata"],
+                user_id=updated_data["user_id"],
+                created_at=updated_data["created_at"],
+                updated_at=updated_data["updated_at"],
             )
 
             logger.info(
-                f"Updated metadata for prompt template '{current_template.name}' version {current_template.version}"
+                f"Updated metadata for prompt template '{current_template.name}' (version {updated_template.version})"
             )
             return updated_template
 
@@ -427,95 +360,27 @@ def delete_prompt_template(
         raise ConfigurationError("Either prompt_id or name must be provided.")
 
     try:
-        table = _get_prompt_table()
-        escaped_collection = escape_lancedb_string(collection)
+        store = get_prompt_template_store()
 
         if prompt_id:
-            # Delete specific template by ID and collection (using safe filter)
-            escaped_id = escape_lancedb_string(prompt_id)
-            id_filter = f"collection == '{escaped_collection}' AND id == '{escaped_id}'"
-            result = table.search().where(id_filter).to_pandas()
-            if result.empty:
+            # Delete by ID
+            result = store.delete_prompt_template(template_id=prompt_id, user_id=None)
+            if not result:
                 raise DocumentNotFoundError(
                     f"Prompt template with ID '{prompt_id}' not found."
                 )
-
-            # Check if this was the latest version and get the name
-            was_latest = result.iloc[0]["is_latest"]
-            template_name = result.iloc[0]["name"]
-
-            table.delete(id_filter)
-
-            # If we deleted the latest version, update the latest flag for the remaining versions
-            if was_latest:
-                escaped_name = escape_lancedb_string(template_name)
-                name_filter = (
-                    f"collection == '{escaped_collection}' AND name == '{escaped_name}'"
-                )
-                remaining_versions = table.search().where(name_filter).to_pandas()
-                if not remaining_versions.empty:
-                    max_version = remaining_versions["version"].max()
-                    update_filter = (
-                        f"collection == '{escaped_collection}' AND "
-                        f"name == '{escaped_name}' AND version == {max_version}"
-                    )
-                    table.update(where=update_filter, values={"is_latest": True})
-
             logger.info(f"Deleted prompt template with ID '{prompt_id}'")
             return True
-
         else:
             # Normalize name
             name = name.strip() if name else name
-            escaped_name = escape_lancedb_string(name)
-            # Delete by name and collection
+            # Delete by name using store method (handles version management automatically)
+            store.delete_by_name(name=name, version=version, user_id=None)
             if version is not None:
-                # Delete specific version
-                version_filter = (
-                    f"collection == '{escaped_collection}' AND "
-                    f"name == '{escaped_name}' AND version == {version}"
-                )
-                result = table.search().where(version_filter).to_pandas()
-                if result.empty:
-                    raise DocumentNotFoundError(
-                        f"Prompt template '{name}' version {version} not found."
-                    )
-
-                # Check if this was the latest version
-                was_latest = result.iloc[0]["is_latest"]
-
-                table.delete(version_filter)
-
-                # If we deleted the latest version, update the latest flag
-                if was_latest:
-                    name_filter = (
-                        f"collection == '{escaped_collection}' AND "
-                        f"name == '{escaped_name}'"
-                    )
-                    remaining_versions = table.search().where(name_filter).to_pandas()
-                    if not remaining_versions.empty:
-                        # Find the highest remaining version and mark it as latest
-                        max_version = remaining_versions["version"].max()
-                        update_filter = (
-                            f"collection == '{escaped_collection}' AND "
-                            f"name == '{escaped_name}' AND version == {max_version}"
-                        )
-                        table.update(where=update_filter, values={"is_latest": True})
-
                 logger.info(f"Deleted prompt template '{name}' version {version}")
-                return True
             else:
-                # Delete all versions
-                name_filter = (
-                    f"collection == '{escaped_collection}' AND name == '{escaped_name}'"
-                )
-                result = table.search().where(name_filter).to_pandas()
-                if result.empty:
-                    raise DocumentNotFoundError(f"Prompt template '{name}' not found.")
-
-                table.delete(name_filter)
                 logger.info(f"Deleted all versions of prompt template '{name}'")
-                return True
+            return True
 
     except (ConfigurationError, DocumentNotFoundError):
         raise
@@ -553,44 +418,36 @@ def list_prompt_templates(
         raise ConfigurationError("Collection name cannot be empty.")
 
     try:
-        table = _get_prompt_table()
-        escaped_collection = escape_lancedb_string(collection)
-
-        # Build filter conditions safely, always include collection filter
-        filters = [f"collection == '{escaped_collection}'"]
-
-        if name_filter:
-            # Use safe escaping for partial match
-            escaped_name = escape_lancedb_string(name_filter)
-            filters.append(f"name LIKE '%{escaped_name}%'")
-
-        if latest_only:
-            filters.append("is_latest == true")
+        store = get_prompt_template_store()
 
         # Note: metadata filtering would require more complex logic
-        # For now, we'll implement basic filtering
         if metadata_filter:
             logger.warning("Metadata filtering is not yet implemented")
 
-        # Combine filters
-        where_clause = " AND ".join(filters)
-        result = table.search().where(where_clause).limit(limit).to_pandas()
+        # Use store method to list templates
+        templates_data = store.list_prompt_templates(
+            name_filter=name_filter,
+            latest_only=latest_only,
+            user_id=None,
+            limit=limit,
+        )
 
         # Convert to PromptTemplate objects
         templates = []
-        for _, row in result.iterrows():
-            # Note: metadata is stored as JSON string, keep it as is
-            template = PromptTemplate(
-                id=str(row["id"]),
-                name=row["name"],
-                template=row["template"],
-                version=int(row["version"]),
-                is_latest=bool(row["is_latest"]),
-                metadata=row["metadata"] if pd.notna(row["metadata"]) else None,
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
+        for template_data in templates_data:
+            templates.append(
+                PromptTemplate(
+                    id=template_data["id"],
+                    name=template_data["name"],
+                    template=template_data["template"],
+                    version=template_data["version"],
+                    is_latest=template_data["is_latest"],
+                    metadata=template_data["metadata"],
+                    user_id=template_data["user_id"],
+                    created_at=template_data["created_at"],
+                    updated_at=template_data["updated_at"],
+                )
             )
-            templates.append(template)
 
         logger.info(f"Listed {len(templates)} prompt templates (limit: {limit})")
         return templates

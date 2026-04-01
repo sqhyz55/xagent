@@ -1756,7 +1756,53 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         template_id: str,
         user_id: Optional[int] = None,
     ) -> bool:
-        """Delete a prompt template by ID (sync)."""
+        """Delete a prompt template by ID (sync).
+
+        Updates is_latest flag for remaining versions if latest version is deleted.
+        """
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        base_filter = f"id == '{escape_lancedb_string(template_id)}'"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        # Check if exists and get info
+        result = table.search().where(base_filter).to_pandas()
+        if result.empty:
+            return False
+
+        # Check if this was the latest version and get the name
+        was_latest = result.iloc[0]["is_latest"]
+        template_name = result.iloc[0]["name"]
+
+        table.delete(base_filter)
+
+        # If we deleted the latest version, update the latest flag for the remaining versions
+        if was_latest:
+            name_filter = f"name == '{escape_lancedb_string(template_name)}'"
+            if user_id is not None:
+                name_filter += f" AND user_id == {user_id}"
+
+            remaining_versions = table.search().where(name_filter).to_pandas()
+            if not remaining_versions.empty:
+                max_version = remaining_versions["version"].max()
+                update_filter = (
+                    f"{name_filter} AND version == {max_version}"
+                )
+                table.update(where=update_filter, values={"is_latest": True})
+
+        logger.info("Deleted prompt template: %s", template_id)
+        return True
+
+    def update_metadata(
+        self,
+        template_id: str,
+        metadata: Optional[str],
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update metadata only, keeping same version and ID (sync)."""
         conn = self._get_sync_connection()
         self._ensure_table()
         table = conn.open_table("prompt_templates")
@@ -1768,11 +1814,105 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         # Check if exists
         result = table.search().where(base_filter).to_pandas()
         if result.empty:
-            return False
+            return None
 
-        table.delete(base_filter)
-        logger.info("Deleted prompt template: %s", template_id)
-        return True
+        # Update metadata
+        table.update(
+            where=base_filter,
+            values={"metadata": metadata or "", "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)},
+        )
+        logger.info("Updated metadata for prompt template: %s", template_id)
+
+        # Return updated template
+        return self.get_prompt_template(template_id, user_id)
+
+    def delete_by_name(
+        self,
+        name: str,
+        version: Optional[int] = None,
+        user_id: Optional[int] = None,
+    ) -> int:
+        """Delete template(s) by name (sync).
+
+        Handles is_latest flag updates for remaining versions.
+        """
+        from ..core.exceptions import DocumentNotFoundError
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        escaped_name = escape_lancedb_string(name)
+        base_filter = f"name == '{escaped_name}'"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        if version is not None:
+            # Delete specific version
+            version_filter = f"{base_filter} AND version == {version}"
+            result = table.search().where(version_filter).to_pandas()
+            if result.empty:
+                raise DocumentNotFoundError(f"Prompt template '{name}' version {version} not found.")
+
+            was_latest = result.iloc[0]["is_latest"]
+            table.delete(version_filter)
+
+            # If we deleted the latest version, update the latest flag
+            if was_latest:
+                remaining = table.search().where(base_filter).to_pandas()
+                if not remaining.empty:
+                    max_version = remaining["version"].max()
+                    table.update(
+                        where=f"{base_filter} AND version == {max_version}",
+                        values={"is_latest": True},
+                    )
+
+            logger.info("Deleted prompt template '%s' version %d", name, version)
+            return 1
+        else:
+            # Delete all versions
+            result = table.search().where(base_filter).to_pandas()
+            if result.empty:
+                raise DocumentNotFoundError(f"Prompt template '{name}' not found.")
+
+            count = len(result)
+            table.delete(base_filter)
+            logger.info("Deleted all %d versions of prompt template '%s'", count, name)
+            return count
+
+    def get_versions_by_name(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Get all versions of a template by name (sync)."""
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("prompt_templates")
+
+        base_filter = f"name == '{escape_lancedb_string(name)}'"
+        if user_id is not None:
+            base_filter += f" AND user_id == {user_id}"
+
+        result = table.search().where(base_filter).limit(limit).to_pandas()
+        templates = []
+        for _, row in result.iterrows():
+            templates.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "template": row["template"],
+                    "version": int(row["version"]),
+                    "is_latest": bool(row["is_latest"]),
+                    "metadata": row["metadata"],
+                    "user_id": int(row["user_id"]) if row["user_id"] else None,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+
+        return templates
 
     # --- Async methods (delegate to sync) ---
 
@@ -1819,6 +1959,33 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
     ) -> bool:
         """Async version of delete_prompt_template."""
         return self.delete_prompt_template(template_id, user_id)
+
+    async def update_metadata_async(
+        self,
+        template_id: str,
+        metadata: Optional[str],
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of update_metadata."""
+        return self.update_metadata(template_id, metadata, user_id)
+
+    async def delete_by_name_async(
+        self,
+        name: str,
+        version: Optional[int] = None,
+        user_id: Optional[int] = None,
+    ) -> int:
+        """Async version of delete_by_name."""
+        return self.delete_by_name(name, version, user_id)
+
+    async def get_versions_by_name_async(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Async version of get_versions_by_name."""
+        return self.get_versions_by_name(name, user_id, limit)
 
 
 class LanceDBMainPointerStore(MainPointerStore):

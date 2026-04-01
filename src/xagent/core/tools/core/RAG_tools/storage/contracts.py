@@ -1033,6 +1033,65 @@ class PromptTemplateStore(ABC):
             True if deleted, False if not found
         """
 
+    @abstractmethod
+    def update_metadata(
+        self,
+        template_id: str,
+        metadata: Optional[str],
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update metadata only, keeping same version and ID.
+
+        Args:
+            template_id: Template UUID
+            metadata: New metadata as JSON string
+            user_id: User ID for multi-tenancy
+
+        Returns:
+            Updated template data dict or None if not found
+        """
+
+    @abstractmethod
+    def delete_by_name(
+        self,
+        name: str,
+        version: Optional[int] = None,
+        user_id: Optional[int] = None,
+    ) -> int:
+        """Delete template(s) by name.
+
+        Handles is_latest flag updates for remaining versions.
+
+        Args:
+            name: Template name
+            version: Specific version to delete (None = delete all versions)
+            user_id: User ID for multi-tenancy
+
+        Returns:
+            Number of templates deleted
+
+        Raises:
+            DocumentNotFoundError: If template not found
+        """
+
+    @abstractmethod
+    def get_versions_by_name(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Get all versions of a template by name.
+
+        Args:
+            name: Template name
+            user_id: User ID for multi-tenancy
+            limit: Maximum results to return
+
+        Returns:
+            List of template data dicts
+        """
+
     # --- Async methods (delegate to sync for Phase 1A) ---
 
     @abstractmethod
@@ -1078,6 +1137,33 @@ class PromptTemplateStore(ABC):
         user_id: Optional[int] = None,
     ) -> bool:
         """Async version of delete_prompt_template."""
+
+    @abstractmethod
+    async def update_metadata_async(
+        self,
+        template_id: str,
+        metadata: Optional[str],
+        user_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Async version of update_metadata."""
+
+    @abstractmethod
+    async def delete_by_name_async(
+        self,
+        name: str,
+        version: Optional[int] = None,
+        user_id: Optional[int] = None,
+    ) -> int:
+        """Async version of delete_by_name."""
+
+    @abstractmethod
+    async def get_versions_by_name_async(
+        self,
+        name: str,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Async version of get_versions_by_name."""
 
 
 class MainPointerStore(ABC):
