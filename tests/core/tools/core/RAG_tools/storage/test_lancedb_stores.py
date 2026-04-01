@@ -14,15 +14,28 @@ from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_ensure_schema_fields() -> None:
+    """Mock _ensure_schema_fields to avoid schema iteration errors in tests."""
+    with patch(
+        "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager._ensure_schema_fields"
+    ):
+        yield
+
+
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
 def test_metadata_store_save_collection_config(mock_get_connection: Mock) -> None:
     """Metadata store should save collection config correctly."""
+    from types import SimpleNamespace
+
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
 
     mock_table = Mock()
+    # Mock schema as iterable for _ensure_schema_fields
+    mock_table.schema = [SimpleNamespace(name="collection")]
     mock_conn.open_table.return_value = mock_table
 
     store = LanceDBMetadataStore()
@@ -52,19 +65,25 @@ def test_metadata_store_get_collection_config_success(
     mock_get_connection: Mock,
 ) -> None:
     """Metadata store should retrieve collection config correctly."""
+    from types import SimpleNamespace
+
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
 
     mock_table = Mock()
+    # Mock schema as iterable for _ensure_schema_fields
+    mock_table.schema = [SimpleNamespace(name="collection")]
     mock_conn.open_table.return_value = mock_table
 
     # Mock pandas DataFrame with iloc[0]["config_json"] access pattern
-    mock_row = Mock()
-    mock_row.__getitem__ = Mock(return_value='{"parse_method": "default"}')
+    # Create a mock that behaves like a pandas Series
+    mock_series = Mock()
+    mock_series.__getitem__ = Mock(return_value='{"parse_method": "default"}')
 
     mock_result = Mock()
     mock_result.empty = False
-    mock_result.iloc = [mock_row]
+    mock_result.iloc = Mock()
+    mock_result.iloc.__getitem__ = Mock(return_value=mock_series)
 
     mock_table.search.return_value.where.return_value.to_pandas.return_value = (
         mock_result
@@ -165,11 +184,15 @@ def test_vector_store_list_document_records_filters_and_maps(
     mock_user_filter: Mock,
 ) -> None:
     """Vector store should apply combined filter and map to DocumentRecord."""
+    from types import SimpleNamespace
+
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
 
     mock_user_filter.return_value = "user_id == 1"
     mock_table = Mock()
+    # Mock schema as iterable for _ensure_schema_fields
+    mock_table.schema = [SimpleNamespace(name="doc_id")]
     mock_conn.open_table.return_value = mock_table
     mock_query_to_list.return_value = [
         {"doc_id": "doc-1", "source_path": "/tmp/a.pdf"},

@@ -1,7 +1,6 @@
 """Tests for collection manager functionality."""
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
