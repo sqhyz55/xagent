@@ -599,6 +599,11 @@ class TestReindexingIntegration:
             assert status == "index_ready"
             assert "Index ready" in advice
 
+    @pytest.mark.skip(
+        "Phase 1A: Reindex functionality moved to VectorIndexStore.should_reindex() "
+        "and VectorIndexStore.trigger_reindex(). Tested in test_lancedb_stores.py:"
+        "test_should_reindex_immediate_reindex_enabled, test_trigger_reindex_success."
+    )
     def test_reindex_with_optimize_call(self):
         """Test that reindexing calls table.optimize()."""
         from unittest.mock import MagicMock
@@ -623,6 +628,10 @@ class TestReindexingIntegration:
         assert reindex_success is True
         mock_table.optimize.assert_called_once()
 
+    @pytest.mark.skip(
+        "Phase 1A: Reindex error handling moved to VectorIndexStore.trigger_reindex(). "
+        "Tested in test_lancedb_stores.py::test_trigger_reindex_failure."
+    )
     def test_reindex_error_handling(self):
         """Test reindex error handling."""
         from unittest.mock import MagicMock
@@ -639,6 +648,10 @@ class TestReindexingIntegration:
         assert reindex_success is False
         mock_table.optimize.assert_called_once()
 
+    @pytest.mark.skip(
+        "Phase 1A: Smart reindex moved to VectorIndexStore.should_reindex(). "
+        "Tested in test_lancedb_stores.py::test_should_reindex_smart_reindex."
+    )
     def test_smart_reindex_with_index_stats(self):
         """Test smart reindex based on index statistics."""
         from unittest.mock import MagicMock
@@ -666,6 +679,10 @@ class TestReindexingIntegration:
         should_reindex = _should_reindex(mock_table, "test_table", 10, policy)
         assert should_reindex is False
 
+    @pytest.mark.skip(
+        "Phase 1A: Batch size reindex threshold moved to VectorIndexStore.should_reindex(). "
+        "Tested in test_lancedb_stores.py::test_should_reindex_batch_threshold."
+    )
     def test_batch_size_reindex_threshold(self):
         """Test batch size threshold for reindexing."""
         from unittest.mock import MagicMock
@@ -685,6 +702,10 @@ class TestReindexingIntegration:
         should_reindex = _should_reindex(mock_table, "test_table", 50, policy)
         assert should_reindex is False
 
+    @pytest.mark.skip(
+        "Phase 1A: Index stats error handling moved to VectorIndexStore.should_reindex(). "
+        "Tested in test_lancedb_stores.py::test_should_reindex_smart_reindex (logs error)."
+    )
     def test_reindex_with_index_stats_error(self):
         """Test reindex behavior when index stats fail."""
         from unittest.mock import MagicMock

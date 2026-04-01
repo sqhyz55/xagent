@@ -691,8 +691,9 @@ class TestWriteVectorsToDb:
             )
 
         assert result.upsert_count == 5
-        # Verify upsert_embeddings was called (it handles spill retry internally)
-        mock_vector_store.upsert_embeddings.assert_called_once()
+        # Verify upsert_embeddings was called 3 times (5 records with batch_size=2)
+        # Batch 1: doc_0, doc_1; Batch 2: doc_2, doc_3; Batch 3: doc_4
+        assert mock_vector_store.upsert_embeddings.call_count == 3
 
     def test_write_vectors_batch_partial_failure(
         self, temp_lancedb_dir, test_collection
@@ -1068,8 +1069,8 @@ class TestWriteVectorsToDb:
 
             # Should process all embeddings
             assert result.upsert_count == 5
-            # Verify upsert_embeddings was called
-            mock_vector_store.upsert_embeddings.assert_called_once()
+            # Verify upsert_embeddings was called 3 times (5 records with batch_size=2)
+            assert mock_vector_store.upsert_embeddings.call_count == 3
 
     def test_write_vectors_index_status_aggregation(
         self, temp_lancedb_dir, test_collection
@@ -1569,8 +1570,9 @@ class TestReindexingFunctionality:
             assert result.total_count == 1
             assert len(result.chunks) == 1
             # Verify the abstraction methods were called
-            mock_vector_store.count_rows_or_zero.assert_called_once()
-            mock_vector_store.iter_batches.assert_called_once()
+            # After Phase 1A: count_rows_or_zero and iter_batches called twice (chunks + embeddings tables)
+            assert mock_vector_store.count_rows_or_zero.call_count == 2
+            assert mock_vector_store.iter_batches.call_count == 2
 
     @pytest.mark.skip(
         "Legacy fallback test replaced by storage abstraction. "
@@ -1627,7 +1629,8 @@ class TestReindexingFunctionality:
             assert result.total_count == 1
             assert len(result.chunks) == 1
             # Verify the abstraction methods were called
-            mock_vector_store.count_rows_or_zero.assert_called_once()
-            mock_vector_store.iter_batches.assert_called_once()
+            # After Phase 1A: count_rows_or_zero and iter_batches called twice (chunks + embeddings tables)
+            assert mock_vector_store.count_rows_or_zero.call_count == 2
+            assert mock_vector_store.iter_batches.call_count == 2
             # Verify None/NaN was properly handled (page_number should be None)
             assert result.chunks[0].page_number is None

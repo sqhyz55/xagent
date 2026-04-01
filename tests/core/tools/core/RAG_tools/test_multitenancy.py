@@ -597,7 +597,7 @@ class TestCollectionManagementMultiTenancy:
         assert hasattr(result, "collections")
         assert hasattr(result, "total_count")
 
-    @patch("xagent.core.tools.core.RAG_tools.management.status.get_metadata_store")
+    @patch("xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store")
     @patch(
         "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
     )
@@ -636,7 +636,9 @@ class TestCollectionManagementMultiTenancy:
         result = delete_collection(self.collection, user_id=123, is_admin=False)
         assert result.status == "success"
 
-    @patch("xagent.core.tools.core.RAG_tools.management.status.get_metadata_store")
+    @patch(
+        "xagent.core.tools.core.RAG_tools.storage.factory.get_ingestion_status_store"
+    )
     @patch(
         "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
     )

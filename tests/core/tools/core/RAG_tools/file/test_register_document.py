@@ -259,7 +259,7 @@ class TestRegisterDocument:
 
         # Mock database connection to raise configuration error
         mock_store = MagicMock()
-        mock_store.count_rows.side_effect = ConfigurationError(
+        mock_store.count_rows_or_zero.side_effect = ConfigurationError(
             "LANCEDB_DIR not configured"
         )
         mock_get_store.return_value = mock_store
@@ -305,7 +305,7 @@ class TestRegisterDocument:
 
         # Mock vector store to raise an error
         mock_store = MagicMock()
-        mock_store.count_rows.side_effect = Exception("Table access failed")
+        mock_store.count_rows_or_zero.side_effect = Exception("Table access failed")
         mock_get_store.return_value = mock_store
 
         # Should propagate DatabaseOperationError
