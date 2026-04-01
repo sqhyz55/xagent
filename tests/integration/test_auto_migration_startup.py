@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
+from types import ModuleType
 
 import pyarrow as pa
 import pytest
@@ -26,6 +28,32 @@ from xagent.migrations.lancedb.backfill_user_id import (
     backfill_orphaned_embeddings,
 )
 from xagent.providers.vector_store.lancedb import get_connection_from_env
+
+
+def _patch_telegram_channel_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid Telegram startup calling get_db() when init_db is stubbed in tests.
+
+    ``startup_event`` ends by optionally starting the Telegram channel manager.
+    The real manager calls ``get_db()`` synchronously; without ``init_db()`` the
+    session factory is uninitialized and raises RuntimeError.
+
+    We inject a lightweight stub module into ``sys.modules`` instead of
+    ``monkeypatch.setattr("...telegram.bot...", ...)``, because importing the real
+    ``telegram.bot`` pulls optional dependencies (e.g. aiogram) that CI may omit.
+    """
+
+    class _FakeTelegramChannel:
+        enabled = False
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    fake_bot = ModuleType("xagent.web.channels.telegram.bot")
+    fake_bot.get_telegram_channel = lambda: _FakeTelegramChannel()
+    monkeypatch.setitem(sys.modules, "xagent.web.channels.telegram.bot", fake_bot)
 
 
 @pytest.fixture
@@ -655,6 +683,8 @@ async def test_startup_event_skips_when_auto_migrate_disabled(
 
     web_app_module = importlib.import_module("xagent.web.app")
 
+    _patch_telegram_channel_disabled(monkeypatch)
+
     class _FakeManager:
         async def initialize(self) -> None:
             return None
@@ -759,6 +789,8 @@ async def test_startup_event_triggers_background_auto_migration(
 
     web_app_module = importlib.import_module("xagent.web.app")
 
+    _patch_telegram_channel_disabled(monkeypatch)
+
     class _FakeManager:
         async def initialize(self) -> None:
             return None
@@ -862,6 +894,8 @@ async def test_startup_event_no_task_when_no_table_needs_migration(
     import importlib
 
     web_app_module = importlib.import_module("xagent.web.app")
+
+    _patch_telegram_channel_disabled(monkeypatch)
 
     class _FakeManager:
         async def initialize(self) -> None:
