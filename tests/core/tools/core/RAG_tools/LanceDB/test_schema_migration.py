@@ -62,6 +62,7 @@ def test_auto_migration_adds_missing_columns(tmp_path: Path, monkeypatch):
     table = conn.open_table("documents")
     schema = table.schema
     field_names = [f.name for f in schema]
+    assert "file_id" in field_names
     assert "title" in field_names
     assert "language" in field_names
     assert "uploaded_at" in field_names
@@ -69,6 +70,7 @@ def test_auto_migration_adds_missing_columns(tmp_path: Path, monkeypatch):
     # 4. Verify default values in existing data
     df = table.to_pandas()
     row = df.iloc[0]
+    assert row["file_id"] == ""
     # String defaults should be empty string
     assert row["title"] == ""
     assert row["language"] == ""

@@ -286,6 +286,32 @@ def test_process_document_success(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
+def test_process_document_passes_file_id_to_register_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pipeline should forward file_id to document registration."""
+    _patch_pipeline_dependencies(monkeypatch)
+    captured_kwargs: Dict[str, object] = {}
+
+    def _capture_register_document(**kwargs: object) -> dict[str, object]:
+        captured_kwargs.update(kwargs)
+        return {"doc_id": "doc-1", "created": True}
+
+    monkeypatch.setattr(
+        document_ingestion, "register_document", _capture_register_document
+    )
+
+    result = document_ingestion.process_document(
+        collection="demo",
+        source_path="/tmp/doc.pdf",
+        config=IngestionConfig(),
+        file_id="file-123",
+    )
+
+    assert result.status == "success"
+    assert captured_kwargs["file_id"] == "file-123"
+
+
 def test_process_document_skips_embedding_when_no_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

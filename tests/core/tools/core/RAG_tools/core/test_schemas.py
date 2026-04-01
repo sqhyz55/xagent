@@ -1368,6 +1368,7 @@ class TestCollectionInfo:
             "collection_locked": True,
             "allow_mixed_parse_methods": False,
             "skip_config_validation": False,
+            "ingestion_config": '{"chunk_size": 512}',
             "created_at": "2024-01-01T00:00:00",
             "updated_at": "2024-01-02T00:00:00",
             "last_accessed_at": "2024-01-02T00:00:00",
@@ -1386,6 +1387,8 @@ class TestCollectionInfo:
         assert collection.document_names == ["doc1.pdf", "doc2.md"]
         assert collection.collection_locked is True
         assert collection.extra_metadata == {"key": "value"}
+        assert collection.ingestion_config is not None
+        assert collection.ingestion_config.chunk_size == 512
 
     def test_collection_info_from_storage_migration(self):
         """Test that from_storage handles migration automatically."""
@@ -1428,6 +1431,7 @@ class TestCollectionInfo:
         assert storage_data["embedding_dimension"] == 1536
         assert storage_data["documents"] == 5
         assert storage_data["processed_documents"] == 3
+        assert storage_data["ingestion_config"] == "null"
 
     def test_collection_info_immutability_by_default(self):
         """Test that CollectionInfo is immutable by default after creation."""

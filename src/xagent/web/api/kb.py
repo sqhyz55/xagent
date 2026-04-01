@@ -5,7 +5,6 @@ import concurrent.futures
 import functools
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 
@@ -23,7 +22,6 @@ from fastapi.responses import JSONResponse
 from googleapiclient.discovery import build  # type: ignore
 from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ...core.tools.core.RAG_tools.core.schemas import (
@@ -59,15 +57,35 @@ from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
-    UPLOADS_DIR,
     get_upload_path,
     is_allowed_file,
     sanitize_path_component,
 )
-from ..kb_physical_sync import collection_physical_lock, move_collection_dir_to_trash
 from ..models.database import get_db
-from ..models.uploaded_file import UploadedFile
 from ..models.user import User
+from ..services.kb_collection_service import (
+    delete_collection_physical_dir,
+    delete_collection_uploaded_files,
+    rename_collection_storage,
+)
+from ..services.kb_file_service import (
+    build_uploaded_filename_map as _build_uploaded_filename_map,
+)
+from ..services.kb_file_service import (
+    delete_uploaded_file_if_orphaned as _delete_uploaded_file_if_orphaned,
+)
+from ..services.kb_file_service import (
+    get_document_record_file_id as _get_document_record_file_id,
+)
+from ..services.kb_file_service import (
+    list_documents_for_user as _list_documents_for_user,
+)
+from ..services.kb_file_service import (
+    resolve_document_filename as _resolve_document_filename,
+)
+from ..services.kb_file_service import (
+    upsert_uploaded_file_record as _upsert_uploaded_file_record,
+)
 from .cloud_storage import get_google_credentials
 
 T = TypeVar("T", bound=Callable[..., Any])
@@ -354,37 +372,22 @@ async def ingest(
             pass
         raise
 
-    # Register file in unified file management (file_id) for /api/files/list and file_id download/preview/delete
-    storage_path_str = str(file_path)
-    existing = (
-        db.query(UploadedFile)
-        .filter(UploadedFile.storage_path == storage_path_str)
-        .first()
-    )
-    if existing:
-        existing.file_size = int(total_size)  # type: ignore[assignment]
-        existing.mime_type = getattr(file, "content_type", None) or existing.mime_type
-        db.flush()
-        file_record = existing
-    else:
-        import mimetypes
+    # Register file in unified file management (file_id) for KB + file APIs.
+    import mimetypes
 
-        mime_type = (
-            getattr(file, "content_type", None)
-            or mimetypes.guess_type(safe_filename)[0]
-            or "application/octet-stream"
-        )
-        file_record = UploadedFile(
-            user_id=int(_user.id),
-            filename=safe_filename,
-            storage_path=storage_path_str,
-            mime_type=mime_type,
-            file_size=int(total_size),
-        )
-        db.add(file_record)
-        db.flush()
-    db.commit()
-    db.refresh(file_record)
+    mime_type = (
+        getattr(file, "content_type", None)
+        or mimetypes.guess_type(safe_filename)[0]
+        or "application/octet-stream"
+    )
+    file_record = _upsert_uploaded_file_record(
+        db,
+        user_id=int(_user.id),
+        filename=safe_filename,
+        storage_path=file_path,
+        mime_type=mime_type,
+        file_size=int(total_size),
+    )
 
     final_chunk_size = chunk_size if chunk_size is not None and chunk_size > 0 else 1000
     final_chunk_overlap = (
@@ -435,6 +438,7 @@ async def ingest(
             progress_manager=progress_manager,
             user_id=int(_user.id),
             is_admin=bool(_user.is_admin),
+            file_id=str(file_record.file_id),
         )
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -543,6 +547,20 @@ async def ingest_cloud(
                             doc_id=file_info.fileName,
                         )
 
+                    import mimetypes
+
+                    file_record = _upsert_uploaded_file_record(
+                        db,
+                        user_id=int(_user.id),
+                        filename=safe_filename,
+                        storage_path=file_path,
+                        mime_type=(
+                            mimetypes.guess_type(safe_filename)[0]
+                            or "application/octet-stream"
+                        ),
+                        file_size=int(file_path.stat().st_size),
+                    )
+
                     # Run ingestion (blocking)
                     try:
                         result = await asyncio.to_thread(
@@ -553,6 +571,7 @@ async def ingest_cloud(
                             progress_manager=progress_manager,
                             user_id=int(_user.id),
                             is_admin=bool(_user.is_admin),
+                            file_id=str(file_record.file_id),
                         )
                         return result
                     except Exception as e:
@@ -1023,8 +1042,6 @@ async def delete_collection_api(
     Raises:
         HTTPException: If physical deletion fails (prevents database deletion)
     """
-    from filelock import Timeout
-
     try:
         try:
             safe_collection = sanitize_path_component(collection_name, "collection")
@@ -1033,121 +1050,67 @@ async def delete_collection_api(
                 status_code=422, detail=f"Invalid collection name: {str(e)}"
             ) from e
 
-        # Step 1: Move physical directory to trash (under lock) BEFORE database deletion.
-        # Note: trash cleanup is NOT automatic; operators should run kb_physical_sync.cleanup_trash
-        # via cron/scheduler if they want periodic cleanup.
-        physical_cleanup_status = "not_found"  # not_found, success, failed
-        physical_cleanup_error = None
-        collection_dir: Path | None = None
-
-        try:
-            collection_dir = get_upload_path(
-                "", user_id=int(_user.id), collection=safe_collection
+        physical_cleanup = delete_collection_physical_dir(
+            user_id=int(_user.id),
+            collection_name=safe_collection,
+        )
+        physical_cleanup_status = physical_cleanup.status
+        physical_cleanup_error = physical_cleanup.error
+        collection_dir = physical_cleanup.collection_dir
+        if physical_cleanup_status == "failed":
+            if (
+                physical_cleanup_error
+                == "Another operation is in progress; please try again later."
+            ):
+                raise HTTPException(status_code=409, detail=physical_cleanup_error)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Failed to delete collection: cannot move physical files. "
+                    f"Error: {physical_cleanup_error}. "
+                    "Please ensure the directory is not in use and you have proper permissions."
+                ),
             )
 
-            if collection_dir.exists() and collection_dir.is_dir():
-                try:
-                    with collection_physical_lock(collection_dir):
-                        move_collection_dir_to_trash(
-                            collection_dir,
-                            UPLOADS_DIR,
-                            int(_user.id),
-                            safe_collection,
-                        )
-                    physical_cleanup_status = "success"
-                    logger.info(
-                        "Collection directory moved to trash: %s",
-                        collection_dir,
-                    )
-                except Timeout:
-                    physical_cleanup_status = "failed"
-                    physical_cleanup_error = (
-                        "Another operation is in progress; please try again later."
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail=physical_cleanup_error,
-                    )
-                except (PermissionError, OSError) as e:
-                    physical_cleanup_status = "failed"
-                    physical_cleanup_error = str(e)
-                    logger.error(
-                        "Failed to move collection directory to trash for %s: %s. "
-                        "Aborting to prevent inconsistent state.",
-                        collection_name,
-                        e,
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail=(
-                            "Failed to delete collection: cannot move physical files. "
-                            f"Error: {str(e)}. "
-                            "Please ensure the directory is not in use and you have proper permissions."
-                        ),
-                    ) from e
-                except Exception as e:
-                    physical_cleanup_status = "failed"
-                    physical_cleanup_error = str(e)
-                    logger.error(
-                        "Unexpected error during physical cleanup for %s: %s",
-                        collection_name,
-                        e,
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail=(
-                            "Failed to delete collection: unexpected error during physical cleanup. "
-                            f"Error: {str(e)}"
-                        ),
-                    ) from e
-            else:
-                physical_cleanup_status = "not_found"
-                logger.debug(
-                    "Collection directory does not exist (or is not a directory): %s. "
-                    "This is normal for collections without physical files.",
-                    collection_dir,
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(
-                "Error determining collection directory path for %s: %s. "
-                "Proceeding with database deletion.",
-                collection_name,
-                e,
+        collection_records = _list_documents_for_user(
+            user_id=int(_user.id),
+            is_admin=bool(_user.is_admin),
+            collection_name=collection_name,
+        )
+        collection_file_ids = {
+            file_id
+            for file_id in (
+                _get_document_record_file_id(record) for record in collection_records
             )
-            physical_cleanup_status = "error"
-            physical_cleanup_error = f"Path resolution error: {str(e)}"
+            if file_id
+        }
 
         result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
 
-        # Remove UploadedFile records for this collection path
-        if collection_dir is not None:
-            prefix = str(collection_dir.resolve()) + os.sep
-            dir_str = str(collection_dir.resolve())
-            deleted = (
-                db.query(UploadedFile)
-                .filter(
-                    # IMPORTANT:
-                    # Constrain by user_id first, then match by storage_path.
-                    # Otherwise, top-level OR would delete other users' files
-                    # in the same collection and/or delete all files belonging
-                    # to the user regardless of collection scope.
-                    UploadedFile.user_id == int(_user.id),
-                    or_(
-                        UploadedFile.storage_path.startswith(prefix),
-                        UploadedFile.storage_path == dir_str,
-                    ),
-                )
-                .delete(synchronize_session=False)
+        remaining_records = _list_documents_for_user(
+            user_id=int(_user.id),
+            is_admin=bool(_user.is_admin),
+        )
+        remaining_file_ids = {
+            file_id
+            for file_id in (
+                _get_document_record_file_id(record) for record in remaining_records
             )
-            if deleted:
-                db.commit()
-                logger.info(
-                    "Deleted %s UploadedFile record(s) for collection %s",
-                    deleted,
-                    collection_name,
-                )
+            if file_id
+        }
+        deleted_uploaded_files = delete_collection_uploaded_files(
+            db,
+            user_id=int(_user.id),
+            collection_file_ids=collection_file_ids,
+            remaining_file_ids=remaining_file_ids,
+            collection_dir=collection_dir,
+        )
+        if deleted_uploaded_files:
+            logger.info(
+                "Deleted %s UploadedFile record(s) for collection %s",
+                deleted_uploaded_files,
+                collection_name,
+            )
 
         # Step 3: Add physical cleanup status to warnings and message for visibility
         # This ensures users are always aware of physical cleanup status, not just in logs
@@ -1228,26 +1191,18 @@ async def check_documents_exist_api(
         ..., description="JSON body with 'filenames': list of filename strings"
     ),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Check which of the given filenames already exist in the collection.
 
     Used by the frontend to show "file already exists, re-upload?" before ingest.
-    Duplicate is determined by: same collection + document with same source_path basename.
+    New records resolve names via `file_id -> UploadedFile.filename`; legacy records
+    fall back to `source_path` basename.
 
     For duplicate check we always filter by current user's documents only (including
     for admins), so "already exists" matches what will be overwritten on re-upload.
     """
     try:
-        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-            ensure_documents_table,
-        )
-        from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
-        from ...core.tools.core.RAG_tools.utils.string_utils import (
-            build_lancedb_filter_expression,
-        )
-        from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
-        from ...providers.vector_store.lancedb import get_connection_from_env
-
         filenames = body.get("filenames")
         if not isinstance(filenames, list):
             raise HTTPException(
@@ -1263,31 +1218,30 @@ async def check_documents_exist_api(
         if not requested:
             return {"existing_filenames": []}
 
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        table = conn.open_table("documents")
-
-        base_filter = build_lancedb_filter_expression({"collection": collection_name})
-        # Use own-files-only filter even for admins so duplicate check matches re-upload behavior
-        user_filter = UserPermissions.get_user_filter(int(_user.id), is_admin=False)
-        combined_filter = (
-            f"({base_filter}) and ({user_filter})"
-            if user_filter and base_filter
-            else (user_filter or base_filter)
+        records = _list_documents_for_user(
+            user_id=int(_user.id),
+            is_admin=False,
+            collection_name=collection_name,
         )
-        MAX_SEARCH_RESULTS = 10000
-        records = query_to_list(
-            table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
+        filename_map = _build_uploaded_filename_map(
+            db,
+            user_id=int(_user.id),
+            file_ids=[
+                file_id
+                for file_id in (
+                    _get_document_record_file_id(record) for record in records
+                )
+                if file_id
+            ],
         )
 
-        existing_basenames = set()
+        existing_filenames = set()
         for record in records:
-            sp = record.get("source_path")
-            if sp:
-                existing_basenames.add(os.path.basename(str(sp)))
+            resolved_filename = _resolve_document_filename(record, filename_map)
+            if resolved_filename:
+                existing_filenames.add(resolved_filename)
 
-        existing_filenames = sorted(requested & existing_basenames)
-        return {"existing_filenames": existing_filenames}
+        return {"existing_filenames": sorted(requested & existing_filenames)}
 
     except HTTPException:
         raise
@@ -1306,66 +1260,66 @@ async def check_documents_exist_api(
 async def delete_document_api(
     collection_name: str,
     filename: str,
+    file_id: Optional[str] = Query(
+        None, description="Preferred UploadedFile file_id for document lookup"
+    ),
+    doc_id: Optional[str] = Query(
+        None, description="Preferred doc_id for document lookup"
+    ),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Delete a document and all its associated data.
 
     Args:
         collection_name: Name of the collection
-        filename: Document filename (will be used to find doc_id)
+        filename: Legacy filename lookup key for backward compatibility
 
     Returns:
         Deletion result with status, list of deleted doc_ids, and filename
 
     Note:
-        This endpoint uses filename lookup which may have a race condition if
-        the same filename is uploaded multiple times concurrently. For production
-        use, consider using doc_id directly or adding a filename index column.
+        This endpoint prefers `file_id` or `doc_id` when provided. The path
+        `filename` is retained as a compatibility fallback for older clients.
     """
     # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
-    from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-        ensure_documents_table,
-    )
     from ...core.tools.core.RAG_tools.management.collections import delete_document
-    from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
-    from ...core.tools.core.RAG_tools.utils.string_utils import (
-        build_lancedb_filter_expression,
+
+    records = _list_documents_for_user(
+        user_id=int(_user.id),
+        is_admin=bool(_user.is_admin),
+        collection_name=collection_name,
     )
-    from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
-    from ...providers.vector_store.lancedb import get_connection_from_env
-
-    # Look up doc_id(s) by filename
-    conn = get_connection_from_env()
-    ensure_documents_table(conn)
-    table = conn.open_table("documents")
-
-    # Filter by collection first to reduce search space
-    base_filter = build_lancedb_filter_expression({"collection": collection_name})
-
-    user_filter = UserPermissions.get_user_filter(int(_user.id), bool(_user.is_admin))
-
-    if user_filter and base_filter:
-        combined_filter = f"({base_filter}) and ({user_filter})"
-    elif user_filter:
-        combined_filter = user_filter
-    else:
-        combined_filter = base_filter
-
-    MAX_SEARCH_RESULTS = 10000
-    records = query_to_list(
-        table.search().where(combined_filter).limit(MAX_SEARCH_RESULTS)
+    filename_map = _build_uploaded_filename_map(
+        db,
+        user_id=int(_user.id),
+        file_ids=[
+            current_file_id
+            for current_file_id in (
+                _get_document_record_file_id(record) for record in records
+            )
+            if current_file_id
+        ],
     )
 
     matching_docs = []
     for record in records:
-        source_path = record.get("source_path", "")
-        if source_path and os.path.basename(str(source_path)) == filename:
-            matching_docs.append(
-                {
-                    "doc_id": record.get("doc_id"),
-                    "source_path": source_path,
-                }
-            )
+        current_doc_id = record.get("doc_id")
+        current_file_id = _get_document_record_file_id(record)
+        resolved_filename = _resolve_document_filename(record, filename_map)
+        if doc_id and current_doc_id != doc_id:
+            continue
+        if file_id and current_file_id != file_id:
+            continue
+        if not doc_id and not file_id and resolved_filename != filename:
+            continue
+        matching_docs.append(
+            {
+                "doc_id": current_doc_id,
+                "file_id": current_file_id,
+                "filename": resolved_filename or filename,
+            }
+        )
 
     if not matching_docs:
         raise HTTPException(
@@ -1376,16 +1330,54 @@ async def delete_document_api(
     deleted_doc_ids = []
     deletion_errors = []
 
+    remaining_records = _list_documents_for_user(
+        user_id=int(_user.id),
+        is_admin=bool(_user.is_admin),
+    )
+    remaining_file_ids = {
+        current_file_id
+        for current_file_id in (
+            _get_document_record_file_id(record) for record in remaining_records
+        )
+        if current_file_id
+    }
+
     for doc_info in matching_docs:
         doc_id = doc_info["doc_id"]
+        if not isinstance(doc_id, str) or not doc_id:
+            error_msg = "Failed to delete document: resolved doc_id is missing"
+            deletion_errors.append(error_msg)
+            logger.error("%s", error_msg)
+            continue
         try:
             delete_document(
                 collection_name, doc_id, int(_user.id), bool(_user.is_admin)
             )
             deleted_doc_ids.append(doc_id)
+            current_file_id = doc_info.get("file_id")
+            if current_file_id:
+                remaining_file_ids.discard(current_file_id)
+                remaining_after_delete = {
+                    next_file_id
+                    for next_file_id in (
+                        _get_document_record_file_id(record)
+                        for record in _list_documents_for_user(
+                            user_id=int(_user.id),
+                            is_admin=bool(_user.is_admin),
+                        )
+                    )
+                    if next_file_id
+                }
+                if _delete_uploaded_file_if_orphaned(
+                    db,
+                    file_id=current_file_id,
+                    user_id=int(_user.id),
+                    remaining_file_ids=remaining_after_delete,
+                ):
+                    db.commit()
             logger.info(
                 "Deleted document '%s' (doc_id: %s) from collection '%s'",
-                filename,
+                doc_info.get("filename", filename),
                 doc_id,
                 collection_name,
             )
@@ -1472,174 +1464,44 @@ async def rename_collection_api(
     physical_rename_error: Optional[str] = None
     old_collection_dir: Optional[Path] = None
     new_collection_dir: Optional[Path] = None
-
-    # Step 1: Rename physical directory under lock BEFORE updating database
-    try:
-        from filelock import Timeout
-
-        from ..config import get_upload_path
-
-        old_collection_dir = get_upload_path(
-            "",
-            user_id=int(_user.id),
-            collection=safe_old_collection,
-            create_if_not_exists=False,
-        )
-        new_collection_dir = get_upload_path(
-            "",
-            user_id=int(_user.id),
-            collection=safe_new_collection,
-            create_if_not_exists=False,
-        )
-
-        if old_collection_dir.exists() and old_collection_dir.is_dir():
-            if new_collection_dir.exists():
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Cannot rename collection: target directory already exists. "
-                        f"A collection named '{new_name}' already has physical files."
-                    ),
-                )
-
-            try:
-                with collection_physical_lock(old_collection_dir):
-                    # Sync DB first; if DB commit fails, do NOT touch the filesystem.
-                    old_str = str(old_collection_dir)
-                    new_str = str(new_collection_dir)
-                    uploads_resolved = UPLOADS_DIR.resolve()
-                    records = (
-                        db.query(UploadedFile)
-                        .filter(
-                            UploadedFile.user_id == int(_user.id),
-                            UploadedFile.storage_path.startswith(old_str + os.sep),
-                        )
-                        .all()
-                    )
-                    previous_paths: dict[int, str] = {
-                        int(getattr(rec, "id")): str(getattr(rec, "storage_path"))
-                        for rec in records
-                    }
-                    for rec in records:
-                        suffix = rec.storage_path[len(old_str) :]
-                        if ".." in suffix:
-                            logger.warning(
-                                "Skipping storage_path update (invalid suffix): %s",
-                                suffix,
-                            )
-                            continue
-                        new_path = new_str + suffix
-                        try:
-                            Path(new_path).resolve().relative_to(uploads_resolved)
-                        except ValueError:
-                            logger.warning(
-                                "Skipping storage_path update (path outside UPLOADS_DIR): %s",
-                                new_path,
-                            )
-                            continue
-                        rec.storage_path = new_path  # type: ignore[assignment]
-                    db.commit()  # Commit DB updates BEFORE physical move
-                    if records:
-                        logger.info(
-                            "Updated %d uploaded_files record(s) for renamed collection %s -> %s",
-                            len(records),
-                            collection_name,
-                            new_name,
-                        )
-
-                    # Now do the physical move. shutil.move handles cross-device moves.
-                    import shutil
-
-                    try:
-                        shutil.move(str(old_collection_dir), str(new_collection_dir))
-                    except Exception as move_exc:
-                        # Best-effort rollback: revert DB paths if physical move fails.
-                        logger.error(
-                            "Physical collection move failed after DB update for %s -> %s: %s; rolling back DB paths",
-                            collection_name,
-                            new_name,
-                            move_exc,
-                        )
-                        for rec in records:
-                            prior = previous_paths.get(int(getattr(rec, "id")), None)
-                            if prior is not None:
-                                rec.storage_path = prior  # type: ignore[assignment]
-                        try:
-                            db.commit()
-                        except Exception as rollback_exc:
-                            logger.exception(
-                                "Rollback DB paths failed for collection rename %s -> %s: %s",
-                                collection_name,
-                                new_name,
-                                rollback_exc,
-                            )
-                        raise
-                physical_rename_status = "success"
-                logger.info(
-                    "Physically renamed collection directory: %s -> %s",
-                    old_collection_dir,
-                    new_collection_dir,
-                )
-            except Timeout:
-                physical_rename_status = "failed"
-                physical_rename_error = (
-                    "Another operation is in progress; please try again later."
-                )
-                raise HTTPException(
-                    status_code=409,
-                    detail=physical_rename_error,
-                )
-            except (PermissionError, OSError) as e:
-                physical_rename_status = "failed"
-                physical_rename_error = str(e)
-                logger.error(
-                    "Failed to physically rename collection directory for %s: %s. "
-                    "Aborting rename to prevent inconsistent state.",
-                    collection_name,
-                    e,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        "Failed to rename collection: cannot rename physical directory. "
-                        f"Error: {str(e)}. "
-                        "Please ensure the directory is not in use and you have proper permissions."
-                    ),
-                ) from e
-            except Exception as e:
-                physical_rename_status = "failed"
-                physical_rename_error = str(e)
-                logger.error(
-                    "Unexpected error during physical rename for %s: %s",
-                    collection_name,
-                    e,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        "Failed to rename collection: unexpected error during physical directory rename. "
-                        f"Error: {str(e)}"
-                    ),
-                ) from e
-        else:
-            physical_rename_status = "not_found"
-            logger.debug(
-                "Collection directory does not exist (or is not a directory): %s. "
-                "This is normal for collections without physical files.",
-                old_collection_dir,
+    collection_file_ids = {
+        file_id
+        for file_id in (
+            _get_document_record_file_id(record)
+            for record in _list_documents_for_user(
+                user_id=int(_user.id),
+                is_admin=bool(_user.is_admin),
+                collection_name=collection_name,
             )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(
-            "Error determining collection directory path for rename %s -> %s: %s. "
-            "Proceeding with database rename.",
-            collection_name,
-            new_name,
-            e,
         )
-        physical_rename_status = "error"
-        physical_rename_error = f"Path resolution error: {str(e)}"
+        if file_id
+    }
+
+    physical_rename = rename_collection_storage(
+        db,
+        user_id=int(_user.id),
+        old_collection_name=safe_old_collection,
+        new_collection_name=safe_new_collection,
+        collection_file_ids=collection_file_ids,
+    )
+    physical_rename_status = physical_rename.status
+    physical_rename_error = physical_rename.error
+    old_collection_dir = physical_rename.old_collection_dir
+    new_collection_dir = physical_rename.new_collection_dir
+    if physical_rename_status == "failed":
+        if (
+            physical_rename_error
+            == "Another operation is in progress; please try again later."
+        ):
+            raise HTTPException(status_code=409, detail=physical_rename_error)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to rename collection: cannot rename physical directory. "
+                f"Error: {physical_rename_error}. "
+                "Please ensure the directory is not in use and you have proper permissions."
+            ),
+        )
 
     # Step 2: Update collection name in all tables
     table_names = _list_table_names(conn, warnings)

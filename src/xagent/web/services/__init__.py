@@ -7,6 +7,21 @@ from .chat_history_service import (
     persist_assistant_message,
     persist_user_message,
 )
+from .kb_collection_service import (
+    CollectionPhysicalDeleteResult,
+    CollectionPhysicalRenameResult,
+    delete_collection_physical_dir,
+    delete_collection_uploaded_files,
+    rename_collection_storage,
+)
+from .kb_file_service import (
+    build_uploaded_filename_map,
+    delete_uploaded_file_if_orphaned,
+    get_document_record_file_id,
+    list_documents_for_user,
+    resolve_document_filename,
+    upsert_uploaded_file_record,
+)
 from .model_service import (
     get_default_image_edit_model,
     get_default_image_generate_model,
@@ -26,6 +41,17 @@ __all__ = [
     "summarize_tool_event",
     "persist_assistant_message",
     "persist_user_message",
+    "CollectionPhysicalDeleteResult",
+    "CollectionPhysicalRenameResult",
+    "delete_collection_physical_dir",
+    "delete_collection_uploaded_files",
+    "rename_collection_storage",
+    "upsert_uploaded_file_record",
+    "list_documents_for_user",
+    "build_uploaded_filename_map",
+    "get_document_record_file_id",
+    "resolve_document_filename",
+    "delete_uploaded_file_if_orphaned",
     "get_default_model",
     "get_default_vision_model",
     "get_default_image_generate_model",

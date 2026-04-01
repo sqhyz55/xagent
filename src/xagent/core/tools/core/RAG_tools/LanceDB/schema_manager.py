@@ -119,6 +119,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
         [
             pa.field("collection", pa.string()),
             pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
             pa.field("source_path", pa.string()),
             pa.field("file_type", pa.string()),
             pa.field("content_hash", pa.string()),

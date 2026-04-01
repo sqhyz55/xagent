@@ -734,26 +734,35 @@ class TestAPIMultiTenancy:
         mock_list_collections.assert_called_once_with(123, False)
         assert result == {"collections": [], "total": 0}
 
-    @patch("xagent.web.api.kb.move_collection_dir_to_trash")
+    @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
+    @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
-    @patch("xagent.web.api.kb.get_upload_path")
     async def test_delete_collection_api_with_user(
-        self, mock_get_upload_path, mock_delete_collection, mock_move_to_trash
+        self,
+        mock_delete_collection,
+        mock_delete_collection_physical_dir,
+        _mock_list_documents_for_user,
     ):
         """Test delete_collection_api passes user context and moves dir to trash."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )
         from xagent.web.models.user import User
+        from xagent.web.services.kb_collection_service import (
+            CollectionPhysicalDeleteResult,
+        )
 
         mock_user = MagicMock(spec=User)
         mock_user.id = 123
         mock_user.is_admin = False
 
         mock_path = MagicMock(spec=Path)
-        mock_path.exists.return_value = True
-        mock_path.is_dir.return_value = True
-        mock_get_upload_path.return_value = mock_path
+        mock_delete_collection_physical_dir.return_value = (
+            CollectionPhysicalDeleteResult(
+                status="success",
+                collection_dir=mock_path,
+            )
+        )
 
         mock_result = CollectionOperationResult(
             status="success",
@@ -774,34 +783,42 @@ class TestAPIMultiTenancy:
         )
 
         mock_delete_collection.assert_called_once_with("test_collection", 123, False)
-        mock_move_to_trash.assert_called_once()
-        call_args = mock_move_to_trash.call_args[0]
-        assert call_args[0] == mock_path
-        assert call_args[2] == 123
-        assert call_args[3] == "test_collection"
+        mock_delete_collection_physical_dir.assert_called_once_with(
+            user_id=123,
+            collection_name="test_collection",
+        )
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
-    @patch("xagent.web.api.kb.move_collection_dir_to_trash")
+    @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
+    @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
-    @patch("xagent.web.api.kb.get_upload_path")
     async def test_delete_collection_api_admin_access(
-        self, mock_get_upload_path, mock_delete_collection, mock_move_to_trash
+        self,
+        mock_delete_collection,
+        mock_delete_collection_physical_dir,
+        _mock_list_documents_for_user,
     ):
         """Test admin can delete collections (move dir to trash)."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )
         from xagent.web.models.user import User
+        from xagent.web.services.kb_collection_service import (
+            CollectionPhysicalDeleteResult,
+        )
 
         mock_user = MagicMock(spec=User)
         mock_user.id = 999
         mock_user.is_admin = True
 
         mock_path = MagicMock(spec=Path)
-        mock_path.exists.return_value = True
-        mock_path.is_dir.return_value = True
-        mock_get_upload_path.return_value = mock_path
+        mock_delete_collection_physical_dir.return_value = (
+            CollectionPhysicalDeleteResult(
+                status="success",
+                collection_dir=mock_path,
+            )
+        )
 
         mock_result = CollectionOperationResult(
             status="success",
@@ -821,11 +838,10 @@ class TestAPIMultiTenancy:
         )
 
         mock_delete_collection.assert_called_once_with("test_collection", 999, True)
-        mock_move_to_trash.assert_called_once()
-        call_args = mock_move_to_trash.call_args[0]
-        assert call_args[0] == mock_path
-        assert call_args[2] == 999
-        assert call_args[3] == "test_collection"
+        mock_delete_collection_physical_dir.assert_called_once_with(
+            user_id=999,
+            collection_name="test_collection",
+        )
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
