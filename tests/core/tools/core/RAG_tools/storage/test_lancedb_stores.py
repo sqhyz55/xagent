@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
+import pytest
+
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
     LanceDBMetadataStore,
     LanceDBVectorIndexStore,
@@ -210,3 +212,184 @@ def test_vector_store_rename_collection_data_updates_expected_tables(
     assert warnings == []
     # 4 target tables should be updated; control-plane table excluded.
     assert mock_table.update.call_count == 4
+
+
+# --- Upsert Fallback Tests ---
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_embeddings_merge_insert_success(mock_get_connection: Mock) -> None:
+    """Test successful merge_insert upsert."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock merge_insert chain
+    mock_merge_insert = Mock()
+    mock_when_matched = Mock()
+    mock_when_not_matched = Mock()
+    mock_table.merge_insert.return_value = mock_merge_insert
+    mock_merge_insert.when_matched_update_all.return_value = mock_when_matched
+    mock_when_matched.when_not_matched_insert_all.return_value = mock_when_not_matched
+    mock_when_not_matched.execute.return_value = None
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {
+            "collection": "test_col",
+            "doc_id": "doc1",
+            "chunk_id": "chunk1",
+            "vector": [0.1, 0.2],
+            "text": "test",
+        }
+    ]
+
+    store.upsert_embeddings("text_embedding_v4", records)
+
+    # Verify merge_insert was called
+    mock_table.merge_insert.assert_called_once_with(["collection", "doc_id", "chunk_id"])
+    mock_merge_insert.when_matched_update_all.assert_called_once()
+    mock_when_matched.when_not_matched_insert_all.assert_called_once()
+    mock_when_not_matched.execute.assert_called_once()
+
+    # Verify add was NOT called (no fallback needed)
+    mock_table.add.assert_not_called()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_embeddings_merge_insert_fallback_to_add(mock_get_connection: Mock) -> None:
+    """Test fallback to add() when merge_insert fails with recoverable error."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock merge_insert chain that fails
+    mock_merge_insert = Mock()
+    mock_when_matched = Mock()
+    mock_when_not_matched = Mock()
+    mock_table.merge_insert.return_value = mock_merge_insert
+    mock_merge_insert.when_matched_update_all.return_value = mock_when_matched
+    mock_when_matched.when_not_matched_insert_all.return_value = mock_when_not_matched
+    # merge_insert fails with recoverable error (e.g., network issue)
+    mock_when_not_matched.execute.side_effect = Exception("Temporary network error")
+
+    # Mock add() to succeed
+    mock_table.add.return_value = None
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {
+            "collection": "test_col",
+            "doc_id": "doc1",
+            "chunk_id": "chunk1",
+            "vector": [0.1, 0.2],
+            "text": "test",
+        }
+    ]
+
+    store.upsert_embeddings("text_embedding_v4", records)
+
+    # Verify merge_insert was attempted
+    mock_table.merge_insert.assert_called_once()
+
+    # Verify fallback to add() was used
+    mock_table.add.assert_called_once()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_embeddings_non_recoverable_error_no_fallback(mock_get_connection: Mock) -> None:
+    """Test that non-recoverable errors (schema, type mismatch) do not fallback."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock merge_insert chain that fails with non-recoverable error
+    mock_merge_insert = Mock()
+    mock_when_matched = Mock()
+    mock_when_not_matched = Mock()
+    mock_table.merge_insert.return_value = mock_merge_insert
+    mock_merge_insert.when_matched_update_all.return_value = mock_when_matched
+    mock_when_matched.when_not_matched_insert_all.return_value = mock_when_not_matched
+    # Schema error - should NOT fallback
+    mock_when_not_matched.execute.side_effect = ValueError("Schema mismatch")
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {
+            "collection": "test_col",
+            "doc_id": "doc1",
+            "chunk_id": "chunk1",
+            "vector": [0.1, 0.2],
+            "text": "test",
+        }
+    ]
+
+    # Should raise ValueError without fallback
+    with pytest.raises(ValueError, match="Schema mismatch"):
+        store.upsert_embeddings("text_embedding_v4", records)
+
+    # Verify merge_insert was attempted
+    mock_table.merge_insert.assert_called_once()
+
+    # Verify add() was NOT called (no fallback for non-recoverable errors)
+    mock_table.add.assert_not_called()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_embeddings_both_methods_fail(mock_get_connection: Mock) -> None:
+    """Test that error is raised when both merge_insert and add() fail."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock merge_insert chain that fails
+    mock_merge_insert = Mock()
+    mock_when_matched = Mock()
+    mock_when_not_matched = Mock()
+    mock_table.merge_insert.return_value = mock_merge_insert
+    mock_merge_insert.when_matched_update_all.return_value = mock_when_matched
+    mock_when_matched.when_not_matched_insert_all.return_value = mock_when_not_matched
+    mock_when_not_matched.execute.side_effect = Exception("merge_insert failed")
+
+    # Mock add() to also fail
+    mock_table.add.side_effect = Exception("add() also failed")
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {
+            "collection": "test_col",
+            "doc_id": "doc1",
+            "chunk_id": "chunk1",
+            "vector": [0.1, 0.2],
+            "text": "test",
+        }
+    ]
+
+    # Should raise when both methods fail
+    with pytest.raises(Exception, match="add.*also failed"):
+        store.upsert_embeddings("text_embedding_v4", records)
+
+    # Verify both methods were attempted
+    mock_table.merge_insert.assert_called_once()
+    mock_table.add.assert_called_once()
+

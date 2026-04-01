@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Optional, cast
 
 import pandas as pd
+import numpy as np
 
 from ..core.config import (
     DEFAULT_LANCEDB_BATCH_DELAY_MS,
@@ -38,13 +39,11 @@ from ..core.schemas import (
     IndexOperation,
 )
 from ..LanceDB.model_tag_utils import to_model_tag
-from ..LanceDB.schema_manager import ensure_chunks_table, ensure_embeddings_table
+from ..LanceDB.schema_manager import ensure_embeddings_table
 from ..storage.factory import get_vector_index_store
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
-from ..utils.string_utils import build_lancedb_filter_expression
 from ..utils.user_permissions import UserPermissions
-from .index_manager import get_index_manager
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +454,41 @@ def get_stored_vector_dimension(
     return None
 
 
+def _safe_int_conversion(value: Any, default: int = 0) -> int:
+    """Safely convert value to int, handling None and NaN.
+
+    Args:
+        value: Value to convert (can be None, NaN, int, float, etc.)
+        default: Default value if conversion fails
+
+    Returns:
+        Integer value, or default if value is None/NaN/not convertible
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_str_value(value: Any) -> Optional[str]:
+    """Extract string value, returning None for NaN/None values.
+
+    This handles pandas DataFrame's NaN preservation behavior where
+    NaN values are not automatically converted to None.
+
+    Args:
+        value: Value from pandas DataFrame (can be str, None, or NaN)
+
+    Returns:
+        String value, or None if value is None/NaN
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    return str(value) if value is not None else None
+
+
 def read_chunks_for_embedding(
     collection: str,
     doc_id: str,
@@ -464,7 +498,10 @@ def read_chunks_for_embedding(
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> EmbeddingReadResponse:
-    """Read chunks from database for embedding computation."""
+    """Read chunks from database for embedding computation.
+
+    Phase 1A: Refactored to use storage abstraction layer instead of raw connection.
+    """
     try:
         # Validate inputs
         if not collection or not doc_id or not parse_hash or not model:
@@ -480,10 +517,10 @@ def read_chunks_for_embedding(
             model,
         )
 
-        # Get database connection
-        conn = get_connection_from_env()
+        # Use storage abstraction instead of raw connection
+        from ..storage.factory import get_vector_index_store
 
-        ensure_chunks_table(conn)
+        vector_store = get_vector_index_store()
 
         # Build query filters
         query_filters: Dict[str, Any] = {
@@ -496,118 +533,69 @@ def read_chunks_for_embedding(
         if filters:
             query_filters.update(filters)
 
-        # Use storage abstraction to build safe filter expression
-        vector_store = get_vector_index_store()
-
-        # Convert dict filters to FilterExpression
-        from ..storage.contracts import FilterCondition, FilterOperator
-        conditions = [
-            FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
-            for key, value in query_filters.items()
-        ]
-
-        # Combine conditions with AND
-        filter_expr_obj = tuple(conditions) if len(conditions) > 1 else conditions[0] if conditions else None
-
-        # Build backend-specific filter with user permissions
-        backend_filter = vector_store.build_filter_expression(
-            filters=filter_expr_obj,
+        # Use abstraction layer for counting (returns 0 if table doesn't exist)
+        total_count = vector_store.count_rows_or_zero(
+            table_name="chunks",
+            filters=query_filters,
             user_id=user_id,
             is_admin=is_admin,
         )
+        if total_count == 0:
+            logger.info("No chunks found for the given criteria")
+            return EmbeddingReadResponse(chunks=[], total_count=0, pending_count=0)
 
-        # Read chunks from database
-        chunks_table = conn.open_table("chunks")
+        # Use abstraction layer for batch iteration
+        chunks_data = []
+        for batch in vector_store.iter_batches(
+            table_name="chunks",
+            columns=None,  # Select all columns
+            batch_size=1000,
+            filters=query_filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                chunks_data.append(row.to_dict())
+            if len(chunks_data) >= total_count:
+                break
 
-        try:
-            # OPTIMIZATION: Use count_rows() for memory-efficient counting
-            total_count = chunks_table.count_rows(backend_filter) if backend_filter else chunks_table.count_rows()
-            if total_count == 0:
-                logger.info("No chunks found for the given criteria")
-                return EmbeddingReadResponse(chunks=[], total_count=0, pending_count=0)
-
-            # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-            chunks_data = query_to_list(
-                chunks_table.search().where(backend_filter) if backend_filter else chunks_table.search()
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error("Failed to read chunks for embedding: %s", e)
-            raise DatabaseOperationError(
-                f"Failed to read chunks for embedding: {e}"
-            ) from e
-
-        # Check which chunks already have embeddings
+        # Check which chunks already have embeddings using abstraction layer
         embedded_chunk_ids = set()
         model_tag = to_model_tag(model)
         embeddings_table_name = f"embeddings_{model_tag}"
 
         try:
-            # Get vector dimension from collection metadata or model config
-            vector_dim = None
-            try:
-                from ..management.collection_manager import get_collection_sync
-
-                coll_info = get_collection_sync(collection)
-                vector_dim = coll_info.embedding_dimension
-            except Exception:
-                # Fallback to resolving the model config
-                from ..utils.model_resolver import resolve_embedding_adapter
-
-                embedding_config, _ = resolve_embedding_adapter(model)
-                vector_dim = embedding_config.dimension
-
-            # Ensure primary (Hub ID based) table exists for new writes/reads.
-            ensure_embeddings_table(conn, model_tag, vector_dim=vector_dim)
-            try:
-                embeddings_table = conn.open_table(embeddings_table_name)
-            except Exception as exc:  # noqa: BLE001
-                # Legacy fallback: open table based on resolved provider model_name if present.
-                embeddings_table, embeddings_table_name = _open_embeddings_table(
-                    conn, model
-                )
-                logger.warning(
-                    "Primary embeddings table '%s' not found (%s); falling back to legacy table '%s'",
-                    f"embeddings_{model_tag}",
-                    exc,
-                    embeddings_table_name,
-                )
-
             # Get existing embeddings for these chunks
             # Only select chunk_id column to avoid loading unnecessary vector data
-            embedding_filters = {
+            embedding_filters: Dict[str, Any] = {
                 "collection": collection,
                 "doc_id": doc_id,
                 "parse_hash": parse_hash,
-                "model": model,
             }
 
-            # Use storage abstraction to build safe filter expression
-            from ..storage.contracts import FilterCondition, FilterOperator
-            conditions = [
-                FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
-                for key, value in embedding_filters.items()
-            ]
-            filter_expr_obj = tuple(conditions) if len(conditions) > 1 else conditions[0]
-
-            # Build backend-specific filter with user permissions
-            embedding_filter_expr = vector_store.build_filter_expression(
-                filters=filter_expr_obj,
+            # Use abstraction layer to query embeddings (returns 0 if table doesn't exist)
+            # Note: We don't filter by 'model' field as it's not in current schema
+            embedding_count = vector_store.count_rows_or_zero(
+                table_name=embeddings_table_name,
+                filters=embedding_filters,
                 user_id=user_id,
                 is_admin=is_admin,
             )
 
-            # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-            embeddings_data = query_to_list(
-                embeddings_table.search()
-                .where(embedding_filter_expr)
-                .select(["chunk_id"])
-            )
-            # Filter out None values (from NaN normalization)
-            embedded_chunk_ids = {
-                item["chunk_id"]
-                for item in embeddings_data
-                if item.get("chunk_id") is not None
-            }
+            if embedding_count > 0:
+                # Read chunk_ids from embeddings table
+                for batch in vector_store.iter_batches(
+                    table_name=embeddings_table_name,
+                    columns=["chunk_id"],
+                    filters=embedding_filters,
+                    user_id=user_id,
+                    is_admin=is_admin,
+                ):
+                    batch_df = batch.to_pandas()
+                    for chunk_id in batch_df["chunk_id"]:
+                        if chunk_id is not None:
+                            embedded_chunk_ids.add(chunk_id)
 
         except Exception as e:  # noqa: BLE001
             # If embeddings table doesn't exist or query fails, assume no embeddings exist
@@ -626,22 +614,22 @@ def read_chunks_for_embedding(
                 # Deserialize metadata from JSON string to dictionary
                 metadata = deserialize_metadata(chunk_dict.get("metadata"))
 
-                # Arrow/to_list() returns None instead of NaN, so direct None check is sufficient
-                index_value = chunk_dict.get("index")
-                index = int(index_value) if index_value is not None else 0
+                # Handle index with NaN-safe conversion
+                index = _safe_int_conversion(chunk_dict.get("index"), default=0)
 
                 page_number_value = chunk_dict.get("page_number")
                 # Convert to int only if valid and > 0 (schema requires gt=0)
                 if page_number_value is not None:
-                    page_num = int(page_number_value)
+                    page_num = _safe_int_conversion(page_number_value, default=1)
                     page_number = page_num if page_num > 0 else None
                 else:
                     page_number = None
 
-                # Normalize optional string fields: Arrow/to_list() returns None, not NaN
-                section = chunk_dict.get("section")
-                anchor = chunk_dict.get("anchor")
-                json_path = chunk_dict.get("json_path")
+                # Normalize optional string fields using NaN-safe helper
+                # pandas to_pandas() preserves NaN values, so explicit NaN handling needed
+                section = _safe_str_value(chunk_dict.get("section"))
+                anchor = _safe_str_value(chunk_dict.get("anchor"))
+                json_path = _safe_str_value(chunk_dict.get("json_path"))
 
                 chunk = ChunkForEmbedding(
                     doc_id=chunk_dict["doc_id"],
@@ -855,18 +843,19 @@ def _process_batch(
 
 
 def _process_model_embeddings(
-    conn: Any,
     collection: str,
     model: str,
     model_embeddings: List[ChunkEmbeddingData],
     create_index: bool,
     user_id: Optional[int] = None,
 ) -> tuple[int, str]:
-    """Process embeddings for a single model.
+    """Process embeddings for a single model using abstraction layer.
 
     Returns:
         Tuple of (upserted_count, index_status)
     """
+    from ..storage.factory import get_vector_index_store
+
     model_tag = to_model_tag(model)
     table_name = f"embeddings_{model_tag}"
 
@@ -898,11 +887,6 @@ def _process_model_embeddings(
         vector_dim,
     )
 
-    # Prepare table
-    embeddings_table = _validate_and_prepare_table(
-        conn, model_tag, table_name, vector_dim
-    )
-
     # Process embeddings in batches to prevent memory issues and LanceDB spills
     original_batch_size = int(
         os.getenv("LANCEDB_BATCH_SIZE", str(DEFAULT_LANCEDB_BATCH_SIZE))
@@ -930,6 +914,8 @@ def _process_model_embeddings(
     max_spill_retries = int(os.getenv("LANCEDB_MAX_SPILL_RETRIES", "3"))
     spill_retry_count = 0
 
+    vector_store = get_vector_index_store()
+
     while current_idx < total_embeddings:
         end_idx = min(current_idx + batch_size, total_embeddings)
         batch_embeddings = model_embeddings[current_idx:end_idx]
@@ -956,16 +942,20 @@ def _process_model_embeddings(
 
         try:
             batch_idx_for_logging = current_idx // original_batch_size
-            batch_upserted = _process_batch(
-                embeddings_table,
-                records_to_merge,
-                batch_idx_for_logging,
-                total_batches_for_logging,
-                model,
-            )
+            # Use abstraction layer for upsert (includes fallback logic)
+            vector_store.upsert_embeddings(model_tag, records_to_merge)
+            batch_upserted = len(records_to_merge)
             upserted_count += batch_upserted
             current_idx = end_idx  # Move to next batch on success
             spill_retry_count = 0  # Reset after a successful batch
+
+            logger.info(
+                "Successfully processed batch %d/%d (%d embeddings) for model %s",
+                batch_idx_for_logging + 1,
+                total_batches_for_logging,
+                batch_upserted,
+                model,
+            )
 
         except Exception as batch_error:  # noqa: BLE001
             failed_batches += 1
@@ -1032,26 +1022,11 @@ def _process_model_embeddings(
 
     logger.info("Processed model %s: upserted %d embeddings", model, upserted_count)
 
-    # Handle index creation and reindexing if requested
+    # Handle index creation using abstraction layer
     index_status: str = IndexOperation.SKIPPED.value
     if create_index:
         try:
-            # Use index manager for index creation
-            index_manager = get_index_manager()
-            status, _ = index_manager.check_and_create_index(
-                embeddings_table, table_name, readonly=False
-            )
-            index_status = status
-
-            # Trigger reindex if needed
-            policy = IndexPolicy()
-            if _should_reindex(embeddings_table, table_name, upserted_count, policy):
-                reindex_success = _trigger_reindex(embeddings_table, table_name)
-                if reindex_success:
-                    logger.info("Reindex triggered for %s", table_name)
-                else:
-                    logger.warning("Reindex failed for %s", table_name)
-
+            index_status = vector_store.create_index(model_tag, readonly=False)
         except Exception as index_error:  # noqa: BLE001
             logger.warning("Failed to create index for %s: %s", table_name, index_error)
             index_status = IndexOperation.FAILED.value
@@ -1084,13 +1059,10 @@ def write_vectors_to_db(
         total_upserted = 0
         index_statuses = []
 
-        # Get database connection
-        conn = get_connection_from_env()
-
-        # Process each model separately
+        # Process each model separately (abstraction layer handles connection internally)
         for model, model_embeddings in embeddings_by_model.items():
             upserted, idx_status = _process_model_embeddings(
-                conn, collection, model, model_embeddings, create_index, user_id
+                collection, model, model_embeddings, create_index, user_id
             )
             total_upserted += upserted
             index_statuses.append(idx_status)

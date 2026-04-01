@@ -218,7 +218,7 @@ class FilterCondition:
     operator: FilterOperator
     value: Any
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Validate operator matches value type
         if self.operator in {FilterOperator.IN}:
             if not isinstance(self.value, (list, tuple, set)):
@@ -302,7 +302,12 @@ class MetadataStore(ABC):
 
 
 class VectorIndexStore(ABC):
-    """Vector/data-plane storage contract."""
+    """Vector/data-plane storage contract.
+
+    Phase 1A Option C: Hybrid sync/async methods for gradual migration.
+    Sync methods provide backward compatibility; async methods enable
+    non-blocking operations in async contexts (FastAPI, etc.).
+    """
 
     @abstractmethod
     def list_document_records(
@@ -394,7 +399,7 @@ class VectorIndexStore(ABC):
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> Iterator[Any]:
-        """Iterate over table data in batches.
+        """Iterate over table data in batches (sync).
 
         Yields backend-specific batch objects (e.g., PyArrow RecordBatch).
         This method is designed for memory-efficient processing of large tables.
@@ -419,7 +424,7 @@ class VectorIndexStore(ABC):
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> int:
-        """Count rows in a table with optional filters.
+        """Count rows in a table with optional filters (sync).
 
         Args:
             table_name: Name of table to count.
@@ -428,8 +433,39 @@ class VectorIndexStore(ABC):
             is_admin: Admin privilege flag.
 
         Returns:
-            Row count (0 on error).
+            Row count.
+
+        Raises:
+            DatabaseOperationError: If table cannot be opened or count fails.
         """
+
+    def count_rows_or_zero(
+        self,
+        table_name: str,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Count rows in a table, returning 0 if table doesn't exist.
+
+        This is a convenience method for existence checks where a missing table
+        should be treated as "no data" rather than an error.
+
+        Args:
+            table_name: Name of table to count.
+            filters: Optional filter criteria (key-value pairs for equality).
+            user_id: Optional user filter for multi-tenancy.
+            is_admin: Admin privilege flag.
+
+        Returns:
+            Row count, or 0 if table doesn't exist or count fails.
+        """
+        from ..core.exceptions import DatabaseOperationError
+
+        try:
+            return self.count_rows(table_name, filters, user_id, is_admin)
+        except DatabaseOperationError:
+            return 0
 
     @abstractmethod
     def aggregate_document_counts(
@@ -472,11 +508,193 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
+    def upsert_documents(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert document records (sync).
+
+        Args:
+            records: List of document record dictionaries to upsert.
+        """
+
+    @abstractmethod
+    def upsert_parses(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert parse records (sync).
+
+        Args:
+            records: List of parse record dictionaries to upsert.
+        """
+
+    @abstractmethod
+    def upsert_chunks(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert chunk records (sync).
+
+        Args:
+            records: List of chunk record dictionaries to upsert.
+        """
+
+    @abstractmethod
+    def upsert_embeddings(self, model_tag: str, records: List[Dict[str, Any]]) -> None:
+        """Upsert embedding records (sync).
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            records: List of embedding record dictionaries to upsert.
+        """
+
+    @abstractmethod
+    def create_index(self, model_tag: str, readonly: bool = False) -> str:
+        """Create or check vector index for embeddings table.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            readonly: If True, don't trigger index creation.
+
+        Returns:
+            Index status string.
+        """
+
+    # --- Async variants (Phase 1A Option C: Hybrid approach) ---
+
+    @abstractmethod
+    async def search_vectors_async(
+        self,
+        table_name: str,
+        query_vector: List[float],
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        vector_column_name: str = "vector",
+    ) -> List[Dict[str, Any]]:
+        """Execute vector search (async).
+
+        Args:
+            table_name: Name of embeddings table to search.
+            query_vector: Query vector for similarity search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            vector_column_name: Name of vector column (default "vector").
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _distance: Distance score (lower is better)
+            - metadata: Additional metadata
+        """
+
+    @abstractmethod
+    async def search_fts_async(
+        self,
+        table_name: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        text_column_name: str = "text",
+    ) -> List[Dict[str, Any]]:
+        """Execute full-text search (async).
+
+        Args:
+            table_name: Name of embeddings/table to search (must have FTS index).
+            query_text: Query text for full-text search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            text_column_name: Name of text column with FTS index (default "text").
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _score: TF-IDF score (higher is better)
+            - metadata: Additional metadata
+
+        Raises:
+            DatabaseOperationError: If FTS index is not configured or search fails.
+        """
+
+    @abstractmethod
+    async def iter_batches_async(
+        self,
+        table_name: str,
+        columns: Optional[Sequence[str]] = None,
+        batch_size: int = 1000,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> Any:  # Returns AsyncIterator (async generator), but mypy has issues with async def + AsyncIterator return type
+        """Iterate over table data in batches (async).
+
+        This is an async generator that yields backend-specific batch objects
+        (e.g., PyArrow RecordBatch). Use with: async for batch in iter_batches_async(...)
+
+        Args:
+            table_name: Name of table to iterate.
+            columns: Optional columns to select.
+            batch_size: Rows per batch.
+            filters: Optional filter criteria.
+            user_id: Optional user filter for multi-tenancy.
+            is_admin: Admin privilege flag.
+
+        Yields:
+            Backend-specific batch objects (PyArrow RecordBatch).
+        """
+
+    @abstractmethod
+    async def count_rows_async(
+        self,
+        table_name: str,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Count rows in a table with optional filters (async).
+
+        Args:
+            table_name: Name of table to count.
+            filters: Optional filter criteria.
+            user_id: Optional user filter.
+            is_admin: Admin privilege flag.
+
+        Returns:
+            Row count (0 on error).
+        """
+
+    @abstractmethod
+    async def upsert_documents_async(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert document records (async).
+
+        Args:
+            records: List of document record dictionaries to upsert.
+        """
+
+    @abstractmethod
+    async def upsert_chunks_async(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert chunk records (async).
+
+        Args:
+            records: List of chunk record dictionaries to upsert.
+        """
+
+    @abstractmethod
+    async def upsert_embeddings_async(
+        self, model_tag: str, records: List[Dict[str, Any]]
+    ) -> None:
+        """Upsert embedding records (async).
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            records: List of embedding record dictionaries to upsert.
+        """
+
+    @abstractmethod
     def get_raw_connection(self) -> Any:
         """Return raw backend connection for legacy compatibility paths.
 
         The returned object conforms to the DatabaseConnection protocol but
         uses Any type to avoid importing backend-specific types.
+
+        DEPRECATED: Use specific upsert methods instead for write operations.
         """
 
 
@@ -490,3 +708,184 @@ class KBWriteCoordinator(ABC):
     @abstractmethod
     def vector_index_store(self) -> VectorIndexStore:
         """Return configured vector index store."""
+
+
+# ============================================================================
+# Phase 1A Part 2: Additional Store Contracts
+# ============================================================================
+
+
+class IngestionStatusStore(ABC):
+    """Ingestion status tracking contract.
+
+    Manages ingestion_runs table for tracking document processing status.
+
+    Phase 1A Option C: Hybrid sync/async methods for gradual migration.
+    Sync methods provide backward compatibility; async methods enable
+    non-blocking operations in async contexts.
+    """
+
+    # --- Sync methods ---
+
+    @abstractmethod
+    def write_ingestion_status(
+        self,
+        collection: str,
+        doc_id: str,
+        *,
+        status: str,
+        message: Optional[str] = None,
+        parse_hash: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Write ingestion status record (sync).
+
+        Args:
+            collection: Collection name.
+            doc_id: Document ID.
+            status: Status value (e.g., 'pending', 'processing', 'success', 'failed').
+            message: Optional status message or error description.
+            parse_hash: Optional hash of the parsed document for change detection.
+            user_id: Optional user ID for multi-tenancy.
+
+        Raises:
+            DatabaseOperationError: If write operation fails.
+        """
+
+    @abstractmethod
+    def load_ingestion_status(
+        self,
+        collection: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Load ingestion status records (sync).
+
+        Args:
+            collection: Optional collection name to filter by.
+            doc_id: Optional document ID to filter by.
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether user has admin privileges (bypasses filtering).
+
+        Returns:
+            List of ingestion status records.
+
+        Raises:
+            DatabaseOperationError: If read operation fails.
+        """
+
+    @abstractmethod
+    def clear_ingestion_status(
+        self,
+        collection: str,
+        doc_id: str,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Remove ingestion status record (sync).
+
+        Args:
+            collection: Collection name.
+            doc_id: Document ID.
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether user has admin privileges (bypasses filtering).
+
+        Raises:
+            DatabaseOperationError: If delete operation fails.
+        """
+
+    # --- Async methods ---
+
+    @abstractmethod
+    async def write_ingestion_status_async(
+        self,
+        collection: str,
+        doc_id: str,
+        *,
+        status: str,
+        message: Optional[str] = None,
+        parse_hash: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Write ingestion status record (async).
+
+        Args:
+            collection: Collection name.
+            doc_id: Document ID.
+            status: Status value.
+            message: Optional status message.
+            parse_hash: Optional parse hash.
+            user_id: Optional user ID.
+
+        Raises:
+            DatabaseOperationError: If write operation fails.
+        """
+
+    @abstractmethod
+    async def load_ingestion_status_async(
+        self,
+        collection: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Load ingestion status records (async).
+
+        Args:
+            collection: Optional collection name to filter by.
+            doc_id: Optional document ID to filter by.
+            user_id: Optional user ID for multi-tenancy.
+            is_admin: Whether user has admin privileges.
+
+        Returns:
+            List of ingestion status records.
+
+        Raises:
+            DatabaseOperationError: If read operation fails.
+        """
+
+    @abstractmethod
+    async def clear_ingestion_status_async(
+        self,
+        collection: str,
+        doc_id: str,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Remove ingestion status record (async).
+
+        Args:
+            collection: Collection name.
+            doc_id: Document ID.
+            user_id: Optional user ID for multi-tenancy.
+            is_admin: Whether user has admin privileges.
+
+        Raises:
+            DatabaseOperationError: If delete operation fails.
+        """
+
+
+class PromptTemplateStore(ABC):
+    """Prompt template management contract.
+
+    Manages prompt_templates table for storing and retrieving prompt templates.
+
+    Phase 1A Option C: Hybrid sync/async methods for gradual migration.
+    """
+
+    # TODO: Implement contract methods
+    # This will be implemented in Phase 2.3
+
+
+class MainPointerStore(ABC):
+    """Main pointer management contract for version control.
+
+    Manages main_pointers table for tracking current versions across
+    processing stages (parse, chunk, embed).
+
+    Phase 1A Option C: Hybrid sync/async methods for gradual migration.
+    """
+
+    # TODO: Implement contract methods
+    # This will be implemented in Phase 2.4

@@ -30,19 +30,11 @@ from ..core.schemas import (
     ParsedParagraph,
     ParseMethod,
 )
-from ..LanceDB.schema_manager import ensure_documents_table, ensure_parses_table
 from ..storage.factory import get_vector_index_store
 from ..storage.contracts import build_filter_from_dict
 from ..utils.hash_utils import compute_parse_hash, get_parse_params_whitelist
-from ..utils.lancedb_query_utils import query_to_list
-from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
-
-
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
 
 
 def parse_document(
@@ -118,13 +110,6 @@ async def _parse_document_internal(
     is_admin = request.is_admin
 
     logger.info(f"Starting document parsing: doc_id={doc_id}, method={parse_method}")
-
-    try:
-        conn = get_connection_from_env()
-        ensure_parses_table(conn)
-        ensure_documents_table(conn)
-    except Exception as e:
-        raise DatabaseOperationError(f"Failed to connect to database: {e}") from e
 
     document = _get_document_from_db(collection, doc_id, user_id, is_admin)
     if not document:
@@ -340,30 +325,31 @@ def _convert_parse_result_to_paragraphs(result: Any) -> List[ParsedParagraph]:
 def _get_document_from_db(
     collection: str, doc_id: str, user_id: Optional[int] = None, is_admin: bool = False
 ) -> Optional[Any]:
-    """Get document from database by doc_id."""
+    """Get document from database by doc_id using abstraction layer."""
     try:
-        conn = get_connection_from_env()
-        ensure_documents_table(conn)
-        table = conn.open_table("documents")
-        query_filters = {"collection": collection, "doc_id": doc_id}
-        filter_expr_obj = build_filter_from_dict(query_filters)
-
-        # Use storage abstraction to build backend-specific filter
         vector_store = get_vector_index_store()
-        backend_filter = vector_store.build_filter_expression(
-            filters=filter_expr_obj,
+        query_filters = {"collection": collection, "doc_id": doc_id}
+
+        if (
+            vector_store.count_rows_or_zero(
+                "documents", filters=query_filters, user_id=user_id, is_admin=is_admin
+            )
+            == 0
+        ):
+            return None
+
+        # Use iter_batches to load the document
+        for batch in vector_store.iter_batches(
+            table_name="documents",
+            filters=query_filters,
             user_id=user_id,
             is_admin=is_admin,
-        )
+        ):
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                return row.to_dict()
 
-        if table.count_rows(backend_filter) == 0:
-            return None
-
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        records = query_to_list(table.search().where(backend_filter))
-        if not records:
-            return None
-        return records[0]
+        return None
 
     except Exception as e:
         logger.error(f"Failed to get document from database: {e}")
@@ -395,7 +381,7 @@ def _parse_exists(
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> bool:
-    """Check if parse record already exists.
+    """Check if parse record already exists using abstraction layer.
 
     Args:
         collection: Collection name
@@ -408,25 +394,18 @@ def _parse_exists(
         True if parse record exists and is accessible to the user
     """
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("parses")
+        vector_store = get_vector_index_store()
         query_filters = {
             "collection": collection,
             "doc_id": doc_id,
             "parse_hash": parse_hash,
         }
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters for multi-tenancy
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
-
-        return bool(table.count_rows(filter_expr) > 0)
+        return bool(
+            vector_store.count_rows_or_zero(
+                "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
+            )
+            > 0
+        )
     except Exception as e:
         raise DatabaseOperationError(f"Database query failed: {e}") from e
 
@@ -438,7 +417,7 @@ def _get_existing_parse_content(
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> List[ParsedParagraph]:
-    """Get existing parse content from database.
+    """Get existing parse content from database using abstraction layer.
 
     Args:
         collection: Collection name
@@ -451,47 +430,48 @@ def _get_existing_parse_content(
         List of parsed paragraphs if found and accessible, empty list otherwise
     """
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("parses")
+        vector_store = get_vector_index_store()
         query_filters = {
             "collection": collection,
             "doc_id": doc_id,
             "parse_hash": parse_hash,
         }
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
 
-        # Combine filters for multi-tenancy
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
-
-        if table.count_rows(filter_expr) == 0:
-            return []
-
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        records = query_to_list(table.search().where(filter_expr))
-        if not records:
-            return []
-        record = records[0]
-
-        parsed_content = record.get("parsed_content")
-        if not parsed_content:
-            return []
-
-        data = json.loads(parsed_content)
-        paragraphs = []
-        for item in data:
-            paragraphs.append(
-                ParsedParagraph(
-                    text=item.get("text", ""),
-                    metadata=item.get("metadata", {}),
-                )
+        if (
+            vector_store.count_rows_or_zero(
+                "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
             )
-        return paragraphs
+            == 0
+        ):
+            return []
+
+        # Use iter_batches to load the parse content
+        for batch in vector_store.iter_batches(
+            table_name="parses",
+            filters=query_filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                record = row.to_dict()
+                parsed_content = record.get("parsed_content")
+                if not parsed_content:
+                    continue
+
+                data = json.loads(parsed_content)
+                paragraphs = []
+                for item in data:
+                    paragraphs.append(
+                        ParsedParagraph(
+                            text=item.get("text", ""),
+                            metadata=item.get("metadata", {}),
+                        )
+                    )
+                return paragraphs
+
+        return []
+
     except Exception as e:
         logger.error(f"Failed to read parse content: {e}")
         raise DatabaseOperationError(f"Failed reading parse content: {e}") from e
@@ -506,7 +486,7 @@ def _write_parse_to_db(
     paragraphs: List[ParsedParagraph],
     user_id: Optional[int] = None,
 ) -> bool:
-    """Write parse record to database."""
+    """Write parse record to database using abstraction layer."""
     enable_timing = os.environ.get("PARSE_DETAILED_TIMING", "0").lower() in (
         "1",
         "true",
@@ -514,8 +494,7 @@ def _write_parse_to_db(
     )
 
     try:
-        conn = get_connection_from_env()
-        table = conn.open_table("parses")
+        vector_store = get_vector_index_store()
 
         if enable_timing:
             serialize_start = time.perf_counter()
@@ -545,7 +524,7 @@ def _write_parse_to_db(
             )
             db_op_start = time.perf_counter()
             logger.debug(
-                "[PARSE TIMING]    - Starting database operation (merge_insert)..."
+                "[PARSE TIMING]    - Starting database operation (upsert_parses)..."
             )
 
         parse_record = {
@@ -558,11 +537,9 @@ def _write_parse_to_db(
             "parsed_content": parsed_content,
             "user_id": user_id,  # Add user_id for multi-tenancy
         }
-        table.merge_insert(
-            ["collection", "doc_id", "parse_hash"]
-        ).when_matched_update_all().when_not_matched_insert_all().execute(
-            [parse_record]
-        )
+
+        # Use abstraction layer for upsert
+        vector_store.upsert_parses([parse_record])
 
         if enable_timing:
             db_op_end = time.perf_counter()

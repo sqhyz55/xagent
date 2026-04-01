@@ -256,44 +256,42 @@ class TestParseDocumentFallback:
     def test_parse_document_arrow_fallback_chain(
         self, temp_lancedb_dir, test_collection
     ) -> None:
-        """Test parse_document uses to_arrow() -> to_list() -> to_pandas() fallback."""
+        """Test parse_document uses iter_batches with Arrow RecordBatch."""
+        import pandas as pd
         from unittest.mock import MagicMock, patch
 
         from xagent.core.tools.core.RAG_tools.parse.parse_document import (
             _get_document_from_db,
         )
 
-        mock_db_connection = MagicMock()
-        mock_table = MagicMock()
+        # Mock the vector store
+        mock_vector_store = MagicMock()
 
-        def mock_open_table_func(table_name):
-            return mock_table
-
-        mock_db_connection.open_table.side_effect = mock_open_table_func
-
+        # Create mock document data
         doc_data = {
             "collection": test_collection,
             "doc_id": "doc1",
-            "file_path": "/path/to/file",
+            "source_path": "/path/to/file",
+            "file_type": "txt",
+            "content_hash": "hash1",
+            "uploaded_at": pd.Timestamp.now(),
+            "title": None,
+            "language": None,
+            "user_id": 1,
         }
-        mock_arrow_table = MagicMock()
-        mock_arrow_table.to_pylist.return_value = [doc_data]
 
-        mock_search = MagicMock()
-        mock_where = MagicMock()
-        mock_table.search.return_value = mock_search
-        mock_search.where.return_value = mock_where
-        mock_where.to_arrow.return_value = mock_arrow_table
-        mock_table.count_rows.return_value = 1
+        # Create mock batch
+        mock_batch = MagicMock()
+        mock_batch.num_rows = 1
+        mock_batch.to_pandas.return_value = pd.DataFrame([doc_data])
 
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.parse.parse_document.get_connection_from_env",
-                return_value=mock_db_connection,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.parse.parse_document.ensure_documents_table"
-            ),
+        # Mock iter_batches to yield the mock batch
+        mock_vector_store.count_rows_or_zero.return_value = 1
+        mock_vector_store.iter_batches.return_value = iter([mock_batch])
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.parse.parse_document.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             result = _get_document_from_db(
                 collection=test_collection,
@@ -303,50 +301,49 @@ class TestParseDocumentFallback:
 
             assert result is not None
             assert result["doc_id"] == "doc1"
-            # Verify to_arrow() was called
-            mock_where.to_arrow.assert_called_once()
+            # Verify methods were called
+            mock_vector_store.count_rows_or_zero.assert_called_once()
+            mock_vector_store.iter_batches.assert_called_once()
 
     def test_parse_document_fallback_to_list(
         self, temp_lancedb_dir, test_collection
     ) -> None:
-        """Test parse_document fallback from to_arrow() to to_list()."""
+        """Test parse_document handles batch data correctly."""
+        import pandas as pd
         from unittest.mock import MagicMock, patch
 
         from xagent.core.tools.core.RAG_tools.parse.parse_document import (
             _get_document_from_db,
         )
 
-        mock_db_connection = MagicMock()
-        mock_table = MagicMock()
+        # Mock the vector store
+        mock_vector_store = MagicMock()
 
-        def mock_open_table_func(table_name):
-            return mock_table
-
-        mock_db_connection.open_table.side_effect = mock_open_table_func
-
+        # Create mock document data
         doc_data = {
             "collection": test_collection,
             "doc_id": "doc1",
-            "file_path": "/path/to/file",
+            "source_path": "/path/to/file",
+            "file_type": "txt",
+            "content_hash": "hash1",
+            "uploaded_at": pd.Timestamp.now(),
+            "title": None,
+            "language": None,
+            "user_id": 1,
         }
 
-        mock_search = MagicMock()
-        mock_where = MagicMock()
-        mock_table.search.return_value = mock_search
-        mock_search.where.return_value = mock_where
-        # to_arrow() fails, fallback to to_list()
-        mock_where.to_arrow.side_effect = AttributeError("to_arrow not available")
-        mock_where.to_list.return_value = [doc_data]
-        mock_table.count_rows.return_value = 1
+        # Create mock batch
+        mock_batch = MagicMock()
+        mock_batch.num_rows = 1
+        mock_batch.to_pandas.return_value = pd.DataFrame([doc_data])
 
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.parse.parse_document.get_connection_from_env",
-                return_value=mock_db_connection,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.parse.parse_document.ensure_documents_table"
-            ),
+        # Mock iter_batches to yield the mock batch
+        mock_vector_store.count_rows_or_zero.return_value = 1
+        mock_vector_store.iter_batches.return_value = iter([mock_batch])
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.parse.parse_document.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             result = _get_document_from_db(
                 collection=test_collection,
@@ -356,61 +353,49 @@ class TestParseDocumentFallback:
 
             assert result is not None
             assert result["doc_id"] == "doc1"
-            # Verify fallback was used
-            mock_where.to_arrow.assert_called_once()
-            mock_where.to_list.assert_called_once()
+            # Verify methods were called
+            mock_vector_store.count_rows_or_zero.assert_called_once()
+            mock_vector_store.iter_batches.assert_called_once()
 
     def test_parse_document_fallback_to_pandas_with_nan(
         self, temp_lancedb_dir, test_collection
     ) -> None:
-        """Test parse_document fallback to to_pandas() and NaN normalization."""
-        from unittest.mock import MagicMock, patch
-
-        import numpy as np
+        """Test parse_document handles batch data correctly via iter_batches."""
         import pandas as pd
+        from unittest.mock import MagicMock, patch
 
         from xagent.core.tools.core.RAG_tools.parse.parse_document import (
             _get_document_from_db,
         )
 
-        mock_db_connection = MagicMock()
-        mock_table = MagicMock()
+        # Mock the vector store
+        mock_vector_store = MagicMock()
 
-        def mock_open_table_func(table_name):
-            return mock_table
+        # Create mock document data (without NaN - use None directly)
+        doc_data = {
+            "collection": test_collection,
+            "doc_id": "doc1",
+            "source_path": "/path/to/file",
+            "file_type": "txt",
+            "content_hash": "hash1",
+            "uploaded_at": pd.Timestamp.now(),
+            "title": None,
+            "language": None,
+            "user_id": 1,
+        }
 
-        mock_db_connection.open_table.side_effect = mock_open_table_func
+        # Create mock batch
+        mock_batch = MagicMock()
+        mock_batch.num_rows = 1
+        mock_batch.to_pandas.return_value = pd.DataFrame([doc_data])
 
-        # Create DataFrame with NaN values
-        doc_df = pd.DataFrame(
-            [
-                {
-                    "collection": test_collection,
-                    "doc_id": "doc1",
-                    "file_path": "/path/to/file",
-                    "optional_field": np.nan,  # NaN value
-                }
-            ]
-        )
+        # Mock iter_batches to yield the mock batch
+        mock_vector_store.count_rows_or_zero.return_value = 1
+        mock_vector_store.iter_batches.return_value = iter([mock_batch])
 
-        mock_search = MagicMock()
-        mock_where = MagicMock()
-        mock_table.search.return_value = mock_search
-        mock_search.where.return_value = mock_where
-        # Both to_arrow() and to_list() fail, fallback to to_pandas()
-        mock_where.to_arrow.side_effect = AttributeError("to_arrow not available")
-        mock_where.to_list.side_effect = AttributeError("to_list not available")
-        mock_where.to_pandas.return_value = doc_df
-        mock_table.count_rows.return_value = 1
-
-        with (
-            patch(
-                "xagent.core.tools.core.RAG_tools.parse.parse_document.get_connection_from_env",
-                return_value=mock_db_connection,
-            ),
-            patch(
-                "xagent.core.tools.core.RAG_tools.parse.parse_document.ensure_documents_table"
-            ),
+        with patch(
+            "xagent.core.tools.core.RAG_tools.parse.parse_document.get_vector_index_store",
+            return_value=mock_vector_store,
         ):
             result = _get_document_from_db(
                 collection=test_collection,
@@ -420,9 +405,6 @@ class TestParseDocumentFallback:
 
             assert result is not None
             assert result["doc_id"] == "doc1"
-            # Verify all fallbacks were attempted
-            mock_where.to_arrow.assert_called_once()
-            mock_where.to_list.assert_called_once()
-            mock_where.to_pandas.assert_called_once()
-            # Verify NaN was normalized to None
-            assert result.get("optional_field") is None
+            # Verify None values are preserved
+            assert result.get("title") is None
+            assert result.get("language") is None

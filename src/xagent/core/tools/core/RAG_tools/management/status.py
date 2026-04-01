@@ -1,7 +1,9 @@
-"""Helpers for tracking document ingestion status in LanceDB.
+"""Helpers for tracking document ingestion status.
 
 This module provides functions to track, load, and manage the ingestion status
 of documents being processed in the RAG pipeline.
+
+Phase 1A Part 2: Refactored to use IngestionStatusStore abstraction layer.
 """
 
 from __future__ import annotations
@@ -10,12 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
-
-from ..LanceDB.schema_manager import ensure_ingestion_runs_table
-from ..storage.factory import get_metadata_store
-from ..utils.string_utils import build_lancedb_filter_expression
-from ..utils.user_permissions import UserPermissions
+from ..storage.factory import get_ingestion_status_store
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +33,7 @@ def write_ingestion_status(
     """Persist the latest ingestion status for a document.
 
     This function writes the current status of a document's ingestion process
-    to the LanceDB ingestion_runs table.
+    to the ingestion_runs table using the storage abstraction layer.
 
     Args:
         collection: Name of the collection
@@ -48,31 +45,19 @@ def write_ingestion_status(
 
     Returns:
         None
+
+    Raises:
+        DatabaseOperationError: If write operation fails.
     """
-
-    conn = get_metadata_store().get_raw_connection()
-    ensure_ingestion_runs_table(conn)
-    table = conn.open_table("ingestion_runs")
-
-    # Build filter without user permissions (deleting all matching records)
-    filter_expr = build_lancedb_filter_expression(
-        {"collection": collection, "doc_id": doc_id}, skip_user_filter=True
+    store = get_ingestion_status_store()
+    store.write_ingestion_status(
+        collection=collection,
+        doc_id=doc_id,
+        status=status,
+        message=message,
+        parse_hash=parse_hash,
+        user_id=user_id,
     )
-    if filter_expr:
-        table.delete(filter_expr)
-
-    timestamp = _now()
-    record = {
-        "collection": collection,
-        "doc_id": doc_id,
-        "status": status,
-        "message": message or "",
-        "parse_hash": parse_hash or "",
-        "created_at": timestamp,
-        "updated_at": timestamp,
-        "user_id": user_id,  # Add user_id for multi-tenancy
-    }
-    table.add([record])
 
 
 def load_ingestion_status(
@@ -83,8 +68,9 @@ def load_ingestion_status(
 ) -> List[Dict[str, Any]]:
     """Return ingestion status records filtered by collection/doc.
 
-    This function retrieves ingestion status records from the LanceDB
-    ingestion_runs table, with optional filtering by collection and document.
+    This function retrieves ingestion status records from the ingestion_runs
+    table using the storage abstraction layer, with optional filtering by
+    collection and document.
 
     Args:
         collection: Optional collection name to filter by
@@ -102,39 +88,17 @@ def load_ingestion_status(
         - created_at: Creation timestamp
         - updated_at: Last update timestamp
         - user_id: User ID who owns the document
+
+    Raises:
+        DatabaseOperationError: If read operation fails.
     """
-
-    conn = get_metadata_store().get_raw_connection()
-    ensure_ingestion_runs_table(conn)
-    table = conn.open_table("ingestion_runs")
-
-    filters: Dict[str, str] = {}
-    if collection is not None:
-        filters["collection"] = collection
-    if doc_id is not None:
-        filters["doc_id"] = doc_id
-
-    # Build base filter without user permissions (will be added separately)
-    base_filter = build_lancedb_filter_expression(filters, skip_user_filter=True)
-    user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-
-    if user_filter and base_filter:
-        filter_expr = f"({base_filter}) and ({user_filter})"
-    elif user_filter:
-        filter_expr = user_filter
-    else:
-        filter_expr = base_filter
-    try:
-        search = table.search()
-        if filter_expr:
-            search = search.where(filter_expr)
-        df = search.to_pandas()
-    except Exception as e:
-        logger.error(f"Failed to load ingestion status: {e}")
-        df = pd.DataFrame()
-
-    records: List[Dict[str, Any]] = df.to_dict("records")
-    return records
+    store = get_ingestion_status_store()
+    return store.load_ingestion_status(
+        collection=collection,
+        doc_id=doc_id,
+        user_id=user_id,
+        is_admin=is_admin,
+    )
 
 
 def clear_ingestion_status(
@@ -143,7 +107,7 @@ def clear_ingestion_status(
     """Remove stored ingestion status for a document.
 
     This function deletes the ingestion status record for a specific document
-    from the LanceDB ingestion_runs table.
+    from the ingestion_runs table using the storage abstraction layer.
 
     Args:
         collection: Name of the collection
@@ -153,24 +117,110 @@ def clear_ingestion_status(
 
     Returns:
         None
+
+    Raises:
+        DatabaseOperationError: If delete operation fails.
     """
-
-    conn = get_metadata_store().get_raw_connection()
-    ensure_ingestion_runs_table(conn)
-    table = conn.open_table("ingestion_runs")
-
-    # Build base filter without user permissions (will be added separately)
-    base_filter = build_lancedb_filter_expression(
-        {"collection": collection, "doc_id": doc_id}, skip_user_filter=True
+    store = get_ingestion_status_store()
+    store.clear_ingestion_status(
+        collection=collection,
+        doc_id=doc_id,
+        user_id=user_id,
+        is_admin=is_admin,
     )
-    user_filter = UserPermissions.get_user_filter(user_id, is_admin)
 
-    if user_filter and base_filter:
-        filter_expr = f"({base_filter}) and ({user_filter})"
-    elif user_filter:
-        filter_expr = user_filter
-    else:
-        filter_expr = base_filter
 
-    if filter_expr:
-        table.delete(filter_expr)
+# ============================================================================
+# Async variants (Phase 1A Option C: Hybrid approach)
+# ============================================================================
+
+
+async def write_ingestion_status_async(
+    collection: str,
+    doc_id: str,
+    *,
+    status: str,
+    message: Optional[str] = None,
+    parse_hash: Optional[str] = None,
+    user_id: Optional[int] = None,
+) -> None:
+    """Async version of write_ingestion_status.
+
+    Args:
+        collection: Name of the collection
+        doc_id: Unique identifier for the document
+        status: Current status value
+        message: Optional status message
+        parse_hash: Optional parse hash
+        user_id: Optional user ID
+
+    Returns:
+        None
+
+    Raises:
+        DatabaseOperationError: If write operation fails.
+    """
+    store = get_ingestion_status_store()
+    await store.write_ingestion_status_async(
+        collection=collection,
+        doc_id=doc_id,
+        status=status,
+        message=message,
+        parse_hash=parse_hash,
+        user_id=user_id,
+    )
+
+
+async def load_ingestion_status_async(
+    collection: Optional[str] = None,
+    doc_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+) -> List[Dict[str, Any]]:
+    """Async version of load_ingestion_status.
+
+    Args:
+        collection: Optional collection name to filter by
+        doc_id: Optional document ID to filter by
+        user_id: Optional user ID for multi-tenancy filtering
+        is_admin: Whether the user has admin privileges
+
+    Returns:
+        List of ingestion status records.
+
+    Raises:
+        DatabaseOperationError: If read operation fails.
+    """
+    store = get_ingestion_status_store()
+    return await store.load_ingestion_status_async(
+        collection=collection,
+        doc_id=doc_id,
+        user_id=user_id,
+        is_admin=is_admin,
+    )
+
+
+async def clear_ingestion_status_async(
+    collection: str, doc_id: str, user_id: Optional[int] = None, is_admin: bool = False
+) -> None:
+    """Async version of clear_ingestion_status.
+
+    Args:
+        collection: Name of the collection
+        doc_id: Unique identifier for the document
+        user_id: Optional user ID for multi-tenancy filtering
+        is_admin: Whether the user has admin privileges
+
+    Returns:
+        None
+
+    Raises:
+        DatabaseOperationError: If delete operation fails.
+    """
+    store = get_ingestion_status_store()
+    await store.clear_ingestion_status_async(
+        collection=collection,
+        doc_id=doc_id,
+        user_id=user_id,
+        is_admin=is_admin,
+    )

@@ -511,7 +511,8 @@ class TestListCandidates:
             # Assert that the where clause was called with the correctly escaped string
             # The escape_lancedb_string function converts ' to '' and \ to \\.
             # The build_lancedb_filter_expression will wrap the escaped value in single quotes.
-            expected_where_clause = f"collection == '{collection_name}' AND doc_id == 'test_doc'' OR 1=1 --'"
+            # Updated for Phase 1A: filter builder adds parentheses for better operator precedence
+            expected_where_clause = f"(collection == '{collection_name}') AND (doc_id == 'test_doc'' OR 1=1 --')"
 
             mock_table.search.assert_called_once()
             mock_table.search.return_value.where.assert_called_once_with(

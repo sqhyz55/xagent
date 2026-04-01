@@ -594,7 +594,7 @@ def rebuild_collection_metadata() -> None:
 
     # Get connection and find embeddings tables
     conn = get_vector_index_store().get_raw_connection()
-    table_names = conn.table_names()  # type: ignore[attr-defined]
+    table_names = conn.table_names()
     embeddings_tables = [t for t in table_names if t.startswith("embeddings_")]
 
     # Build lookup from legacy/new table tags to Hub model IDs.

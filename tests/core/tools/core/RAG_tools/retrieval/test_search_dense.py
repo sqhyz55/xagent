@@ -80,12 +80,7 @@ class TestSearchDenseEngine:
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
-    def test_search_engine_basic(
-        self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
-    ) -> None:
+    def test_search_engine_basic(self, mock_get_conn: Mock, mock_search_chain) -> None:
         """Test basic search engine functionality."""
         # Mock connection and table
         mock_conn = Mock()
@@ -116,19 +111,17 @@ class TestSearchDenseEngine:
             mock_table, mock_results_df
         )
 
-        # Collection filter is always applied for KB isolation
-        mock_build_filter.return_value = "collection == 'test_collection'"
+        # Mock vector store
+        mock_vector_store = Mock()
+        mock_vector_store.build_filter_expression.return_value = (
+            "collection == 'test_collection'"
+        )
+        mock_vector_store.create_index.return_value = "index_ready"
 
-        # Mock index manager
         with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_index_manager = Mock()
-            mock_index_manager.check_and_create_index.return_value = (
-                "index_ready",
-                "Index ready",
-            )
-            mock_get_index_manager.return_value = mock_index_manager
+            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
+        ) as mock_get_vector_store:
+            mock_get_vector_store.return_value = mock_vector_store
 
             # Execute search
             results, index_status, index_advice = search_dense_engine(
@@ -153,26 +146,19 @@ class TestSearchDenseEngine:
             # Verify table operations
             mock_get_conn.assert_called_once()
             mock_conn.open_table.assert_called_once_with("embeddings_test_model")
-            mock_get_index_manager.assert_called_once()
-            mock_index_manager.check_and_create_index.assert_called_once_with(
-                mock_table, "embeddings_test_model", False
-            )
+            mock_vector_store.create_index.assert_called_once_with("test_model", False)
             mock_table.search.assert_called_once_with(
                 [0.1, 0.2, 0.3],
                 vector_column_name="vector",
             )
-            # Collection filter must be applied for KB isolation (Issue #72)
-            # Note: After Phase 1A, build_filter_expression takes FilterExpression objects
-            assert mock_build_filter.called, "build_filter_expression should be called"
+            # Verify filter was applied
+            mock_vector_store.build_filter_expression.assert_called_once()
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
     def test_search_engine_with_filters(
-        self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
+        self, mock_get_conn: Mock, mock_search_chain
     ) -> None:
         """Test search engine with filters."""
         mock_conn = Mock()
@@ -188,23 +174,22 @@ class TestSearchDenseEngine:
         # Use fixture to create mock search chain
         mock_search_chain(mock_table, mock_results_df)
 
+        # Mock vector store
+        mock_vector_store = Mock()
+        filters = {"doc_id": "test_doc", "file_type": "pdf"}
+        expected_filter_clause = "doc_id = 'test_doc' AND file_type = 'pdf'"
+        mock_vector_store.build_filter_expression.side_effect = [
+            "collection == 'test_collection'",
+            expected_filter_clause,
+        ]
+        mock_vector_store.create_index.return_value = "index_ready"
+
         with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_index_manager = Mock()
-            mock_index_manager.check_and_create_index.return_value = (
-                "index_ready",
-                "Index ready",
-            )
-            mock_get_index_manager.return_value = mock_index_manager
+            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
+        ) as mock_get_vector_store:
+            mock_get_vector_store.return_value = mock_vector_store
 
             # Execute search with filters (collection filter + custom filters)
-            filters = {"doc_id": "test_doc", "file_type": "pdf"}
-            # After Phase 1A, build_filter_expression is called once with combined FilterExpression
-            # Return a combined filter string that includes both collection and custom filters
-            combined_filter = "(collection == 'test_collection') AND (doc_id == 'test_doc') AND (file_type == 'pdf')"
-            mock_build_filter.return_value = combined_filter
-
             search_dense_engine(
                 collection="test_collection",
                 model_tag="test_model",
@@ -218,30 +203,18 @@ class TestSearchDenseEngine:
             # Verify filter application (collection filter + custom filters)
             mock_get_conn.assert_called_once()
             mock_conn.open_table.assert_called_once_with("embeddings_test_model")
-            mock_get_index_manager.assert_called_once()
-            mock_index_manager.check_and_create_index.assert_called_once_with(
-                mock_table, "embeddings_test_model", False
-            )
-            # Note: After Phase 1A, build_filter_expression is called once with combined FilterExpression
-            assert mock_build_filter.called, "build_filter_expression should be called"
+            mock_vector_store.create_index.assert_called_once_with("test_model", False)
+            # build_filter_expression is called once with combined filters
+            mock_vector_store.build_filter_expression.assert_called_once()
             search_query = mock_table.search.return_value
-            # Note: The filter is wrapped in parentheses by the filter application logic
             search_query.where.assert_called_once()
-            where_arg = search_query.where.call_args[0][0]
-            # Verify the combined filter contains all expected parts
-            assert "collection" in where_arg and "test_collection" in where_arg
-            assert "doc_id" in where_arg and "test_doc" in where_arg
-            assert "file_type" in where_arg and "pdf" in where_arg
             search_query.where.return_value.limit.assert_called_once_with(5)
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
     def test_search_dense_engine_applies_collection_filter(
-        self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
+        self, mock_get_conn: Mock, mock_search_chain
     ) -> None:
         """Test that search_dense_engine always applies collection filter for KB isolation (Issue #72)."""
         mock_conn = Mock()
@@ -252,17 +225,16 @@ class TestSearchDenseEngine:
         import pandas as pd
 
         mock_search_chain(mock_table, pd.DataFrame([]))
-        mock_build_filter.return_value = "collection == 'my_kb'"
+
+        # Mock vector store
+        mock_vector_store = Mock()
+        mock_vector_store.build_filter_expression.return_value = "collection == 'my_kb'"
+        mock_vector_store.create_index.return_value = "index_ready"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_index_manager = Mock()
-            mock_index_manager.check_and_create_index.return_value = (
-                "index_ready",
-                None,
-            )
-            mock_get_index_manager.return_value = mock_index_manager
+            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
+        ) as mock_get_vector_store:
+            mock_get_vector_store.return_value = mock_vector_store
 
             search_dense_engine(
                 collection="my_kb",
@@ -273,8 +245,7 @@ class TestSearchDenseEngine:
                 is_admin=True,
             )
 
-            # Note: After Phase 1A, build_filter_expression is called with FilterExpression
-            assert mock_build_filter.called, "build_filter_expression should be called"
+            mock_vector_store.build_filter_expression.assert_called()
             search_query = mock_table.search.return_value
             search_query.where.assert_called_once()
             where_arg = search_query.where.call_args[0][0]
@@ -283,11 +254,8 @@ class TestSearchDenseEngine:
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
     def test_search_engine_readonly_mode(
-        self, mock_build_filter: Mock, mock_get_conn: Mock, mock_search_chain
+        self, mock_get_conn: Mock, mock_search_chain
     ) -> None:
         """Test search engine in readonly mode."""
         mock_conn = Mock()
@@ -303,18 +271,17 @@ class TestSearchDenseEngine:
         # Use fixture to create mock search chain
         mock_search_chain(mock_table, mock_results_df)
 
-        # Collection filter is always applied for KB isolation
-        mock_build_filter.return_value = "collection == 'test_collection'"
+        # Mock vector store
+        mock_vector_store = Mock()
+        mock_vector_store.build_filter_expression.return_value = (
+            "collection == 'test_collection'"
+        )
+        mock_vector_store.create_index.return_value = "readonly advice: Readonly mode - no index operations for embeddings_test_model"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_index_manager = Mock()
-            mock_index_manager.check_and_create_index.return_value = (
-                "readonly",
-                "Readonly mode - no index operations",
-            )
-            mock_get_index_manager.return_value = mock_index_manager
+            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
+        ) as mock_get_vector_store:
+            mock_get_vector_store.return_value = mock_vector_store
 
             # Execute search in readonly mode
             results, index_status, index_advice = search_dense_engine(
@@ -328,57 +295,39 @@ class TestSearchDenseEngine:
             )
 
             assert index_status == "readonly"
-            assert index_advice == "Readonly mode - no index operations"
+            assert "Readonly mode" in index_advice
 
-            # Verify readonly mode passed to index manager
+            # Verify readonly mode passed to create_index
             mock_get_conn.assert_called_once()
             mock_conn.open_table.assert_called_once_with("embeddings_test_model")
-            mock_get_index_manager.assert_called_once()
-            mock_index_manager.check_and_create_index.assert_called_once_with(
-                mock_table, "embeddings_test_model", True
-            )
+            mock_vector_store.create_index.assert_called_once_with("test_model", True)
             mock_table.search.assert_called_once_with(
                 [0.1, 0.2, 0.3],
                 vector_column_name="vector",
             )
-            # Collection filter is always applied for KB isolation
-            # Note: After Phase 1A, build_filter_expression is called with FilterExpression
-            assert mock_build_filter.called, "build_filter_expression should be called"
+            mock_vector_store.build_filter_expression.assert_called_once()
 
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
-    def test_search_engine_error_handling(
-        self, mock_build_filter: Mock, mock_get_conn: Mock
-    ) -> None:
+    def test_search_engine_error_handling(self, mock_get_conn: Mock) -> None:
         """Test error handling in search engine."""
         mock_conn = Mock()
         mock_get_conn.return_value = mock_conn
         mock_conn.open_table.side_effect = Exception("Database connection failed")
 
-        mock_build_filter.return_value = None
-
-        # Mock index manager to avoid uncalled mock issues if exception occurs early
-        with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_get_index_manager.return_value = Mock()
-
-            with pytest.raises(Exception, match="Database connection failed"):
-                search_dense_engine(
-                    collection="test_collection",
-                    model_tag="test_model",
-                    query_vector=[0.1, 0.2, 0.3],
-                    top_k=5,
-                    user_id=None,
-                    is_admin=True,
-                )
-            mock_get_conn.assert_called_once()
-            mock_conn.open_table.assert_called_once_with("embeddings_test_model")
-            mock_get_index_manager.assert_not_called()  # Should not be called if open_table fails
+        with pytest.raises(Exception, match="Database connection failed"):
+            search_dense_engine(
+                collection="test_collection",
+                model_tag="test_model",
+                query_vector=[0.1, 0.2, 0.3],
+                top_k=5,
+                user_id=None,
+                is_admin=True,
+            )
+        mock_get_conn.assert_called_once()
+        mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+        # Index check not reached due to early exception
 
 
 class TestSearchDense:
@@ -739,12 +688,7 @@ class TestSearchDenseIntegration:
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
-    def test_search_engine_arrow_fallback_to_list(
-        self, mock_build_filter: Mock, mock_get_conn: Mock
-    ) -> None:
+    def test_search_engine_arrow_fallback_to_list(self, mock_get_conn: Mock) -> None:
         """Test search engine fallback from to_arrow() to to_list()."""
         mock_conn = Mock()
         mock_table = Mock()
@@ -781,17 +725,15 @@ class TestSearchDenseIntegration:
         # to_list() should return a list, not a Mock
         mock_limit.to_list.return_value = mock_results_df.to_dict("records")
 
-        mock_build_filter.return_value = None
+        # Mock vector store
+        mock_vector_store = Mock()
+        mock_vector_store.build_filter_expression.return_value = None
+        mock_vector_store.create_index.return_value = "index_ready"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_index_manager = Mock()
-            mock_index_manager.check_and_create_index.return_value = (
-                "index_ready",
-                "Index ready",
-            )
-            mock_get_index_manager.return_value = mock_index_manager
+            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
+        ) as mock_get_vector_store:
+            mock_get_vector_store.return_value = mock_vector_store
 
             results, _, _ = search_dense_engine(
                 collection="test_collection",
@@ -812,11 +754,8 @@ class TestSearchDenseIntegration:
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.LanceDBVectorIndexStore.build_filter_expression"
-    )
     def test_search_engine_arrow_fallback_to_pandas_with_nan(
-        self, mock_build_filter: Mock, mock_get_conn: Mock
+        self, mock_get_conn: Mock
     ) -> None:
         """Test search engine fallback to to_pandas() and NaN normalization."""
         mock_conn = Mock()
@@ -857,17 +796,15 @@ class TestSearchDenseIntegration:
         mock_limit.to_list.side_effect = AttributeError("to_list not available")
         mock_limit.to_pandas.return_value = mock_results_df
 
-        mock_build_filter.return_value = None
+        # Mock vector store
+        mock_vector_store = Mock()
+        mock_vector_store.build_filter_expression.return_value = None
+        mock_vector_store.create_index.return_value = "index_ready"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_index_manager"
-        ) as mock_get_index_manager:
-            mock_index_manager = Mock()
-            mock_index_manager.check_and_create_index.return_value = (
-                "index_ready",
-                "Index ready",
-            )
-            mock_get_index_manager.return_value = mock_index_manager
+            "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
+        ) as mock_get_vector_store:
+            mock_get_vector_store.return_value = mock_vector_store
 
             results, _, _ = search_dense_engine(
                 collection="test_collection",

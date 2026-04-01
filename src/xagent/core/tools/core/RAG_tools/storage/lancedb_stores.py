@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional, Sequence
 
+import lancedb
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
 
@@ -16,16 +18,20 @@ from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
 from ..core.schemas import CollectionInfo
 from ..LanceDB.schema_manager import ensure_documents_table
 from ..utils.lancedb_query_utils import query_to_list
-from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
+from ..utils.string_utils import escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from .contracts import (
     DocumentRecord,
     FilterCondition,
     FilterExpression,
     FilterOperator,
+    IngestionStatusStore,
+    MainPointerStore,
     MetadataStore,
-    validate_field_name,
+    PromptTemplateStore,
     VectorIndexStore,
+    build_filter_from_dict,
+    validate_field_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,15 +174,45 @@ class LanceDBMetadataStore(MetadataStore):
 
 
 class LanceDBVectorIndexStore(VectorIndexStore):
-    """LanceDB implementation for vector/data-plane operations."""
+    """LanceDB implementation for vector/data-plane operations.
+
+    Phase 1A Option C: Provides both sync and async methods.
+    Sync methods use legacy lancedb.connect(); async methods use lancedb.connect_async().
+    Async methods return native Arrow format; sync methods return pandas format.
+    """
 
     def __init__(self) -> None:
         self._conn: Optional[DBConnection] = None
+        self._async_conn: Optional[Any] = None  # AsyncConnection
+        self._async_lock = asyncio.Lock()  # Protect async connection initialization
 
     def _get_connection(self) -> DBConnection:
         if self._conn is None:
             self._conn = get_connection_from_env()
         return self._conn
+
+    async def _get_async_connection(self) -> Any:
+        """Get or create async LanceDB connection with thread-safe initialization."""
+        # Fast path: return existing connection without lock
+        if self._async_conn is not None:
+            return self._async_conn
+
+        # Slow path: initialize with lock to prevent race condition
+        async with self._async_lock:
+            # Double-check after acquiring lock
+            if self._async_conn is not None:
+                return self._async_conn
+
+            # Get URI from sync connection for reuse
+            sync_conn = self._get_connection()
+            uri = getattr(sync_conn, "uri", None)
+            if uri is None:
+                # Fallback: use LANCEDB_DIR env var
+                import os
+
+                uri = os.getenv("LANCEDB_DIR", "./data/lancedb")
+            self._async_conn = await lancedb.connect_async(uri)  # type: ignore[attr-defined]
+            return self._async_conn
 
     def list_document_records(
         self,
@@ -185,18 +221,17 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
     ) -> List[DocumentRecord]:
+        # Build filter expression using common function (includes validation)
+        filter_expr_obj = build_filter_from_dict({"collection": collection_name})
+        combined_filter = self.build_filter_expression(
+            filters=filter_expr_obj,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
         conn = self._get_connection()
         ensure_documents_table(conn)
         table = conn.open_table("documents")
-        # Build base filter without user permissions (will be added separately)
-        base_filter = build_lancedb_filter_expression(
-            {"collection": collection_name}, skip_user_filter=True
-        )
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-        if user_filter and base_filter:
-            combined_filter = f"({base_filter}) and ({user_filter})"
-        else:
-            combined_filter = user_filter or base_filter
 
         raw_records = query_to_list(
             table.search().where(combined_filter).limit(max_results)
@@ -411,6 +446,140 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         return stats
 
+    def create_index(self, model_tag: str, readonly: bool = False) -> str:
+        """Create or check vector index for embeddings table.
+
+        This method implements the full index management logic previously in
+        IndexManager, including automatic index type selection based on row count
+        and FTS index management.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            readonly: If True, don't trigger index creation.
+
+        Returns:
+            Index status string. If advice is available, it's appended with
+            "advice:" prefix (e.g., "index_building advice: Creating HNSW index").
+        """
+        from ..core.config import IndexPolicy
+        from ..LanceDB.model_tag_utils import to_model_tag
+
+        # Import LanceDB index types
+        try:
+            from lancedb.index import IVF_HNSW_SQ, IVF_PQ  # type: ignore
+        except ImportError:
+            IVF_HNSW_SQ = "IVF_HNSW_SQ"
+            IVF_PQ = "IVF_PQ"
+
+        conn = self._get_connection()
+        table_name = f"embeddings_{to_model_tag(model_tag)}"
+
+        if readonly:
+            return (
+                f"readonly advice: Readonly mode - no index operations for {table_name}"
+            )
+
+        try:
+            table = conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s': %s", table_name, exc)
+            return "failed"
+
+        # Use default index policy
+        policy = IndexPolicy()
+        vector_index_status: str = "no_index"
+        vector_index_advice: Optional[str] = None
+
+        try:
+            # Get row count efficiently
+            row_count = table.count_rows()
+
+            if row_count < policy.enable_threshold_rows:
+                vector_index_status = "below_threshold"
+                vector_index_advice = (
+                    f"Table {table_name} has {row_count} rows - below threshold "
+                    f"({policy.enable_threshold_rows}) for index creation"
+                )
+            else:
+                # Auto-select index type based on scale
+                from ..core.schemas import IndexType
+
+                if row_count >= policy.ivfpq_threshold_rows:
+                    recommended_type = IndexType.IVFPQ
+                else:
+                    recommended_type = IndexType.HNSW
+
+                # Check existing indexes
+                indexes = table.list_indices()
+                has_vector_index = any(idx.name == "vector" for idx in indexes)
+
+                if not has_vector_index:
+                    # Create index with recommended type
+                    if recommended_type == IndexType.IVFPQ:
+                        index_type = IVF_PQ
+                        create_params = policy.ivfpq_params or {}
+                    else:  # HNSW
+                        index_type = IVF_HNSW_SQ
+                        create_params = policy.hnsw_params or {}
+
+                    # Merge metric with create_params
+                    all_params = {
+                        "metric": policy.metric.value,
+                        "index_type": index_type,
+                        **create_params,
+                    }
+
+                    table.create_index(**all_params)
+                    vector_index_status = "index_building"
+                    logger.info(
+                        "Successfully created vector index for %s (type=%s, metric=%s)",
+                        table_name,
+                        index_type,
+                        policy.metric.value,
+                    )
+                    if recommended_type == IndexType.IVFPQ:
+                        vector_index_advice = (
+                            f"IVFPQ index created for {table_name} "
+                            f"({row_count} rows, using IVFPQ strategy for large-scale data), metric: {policy.metric.value}"
+                        )
+                    else:  # HNSW
+                        vector_index_advice = (
+                            f"HNSW index created for {table_name} "
+                            f"({row_count} rows, using HNSW strategy for medium-scale data), metric: {policy.metric.value}"
+                        )
+                else:
+                    vector_index_status = "index_ready"
+                    vector_index_advice = f"Index ready for {table_name} ({row_count} rows), metric: {policy.metric.value}"
+
+        except Exception as e:
+            logger.error(f"Vector index operation failed for {table_name}: {str(e)}")
+            vector_index_status = "index_corrupted"
+            vector_index_advice = (
+                f"Vector index check failed for {table_name}: {str(e)}"
+            )
+
+        # FTS Index Management (if enabled)
+        if policy.fts_enabled:
+            try:
+                # Check if FTS index exists
+                indexes = table.list_indices()
+                has_fts = any(
+                    idx.index_type == "FTS" and "text" in idx.columns for idx in indexes
+                )
+                if not has_fts:
+                    fts_params = {"with_position": True, **(policy.fts_params or {})}
+                    table.create_fts_index("text", replace=True, **fts_params)
+                    logger.info("Created FTS index on 'text' column for %s", table_name)
+            except Exception as e:
+                logger.warning(
+                    f"FTS index creation/check failed for {table_name}: {str(e)}"
+                )
+
+        # Combine status and advice
+        if vector_index_advice:
+            return f"{vector_index_status} advice: {vector_index_advice}"
+        return vector_index_status
+
     def get_raw_connection(self) -> DBConnection:
         return self._get_connection()
 
@@ -449,20 +618,18 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             logger.debug("Unable to open table '%s': %s", table_name, exc)
             return
 
-        # Build filter expression
-        filter_expr = None
-        if filters:
-            filter_expr = build_lancedb_filter_expression(filters)
-
-        # Apply user filter for multi-tenancy
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters
+        # Build filter expression using common function (includes validation)
         combined_filter = None
-        if filter_expr and user_filter:
-            combined_filter = f"({filter_expr}) AND ({user_filter})"
+        if filters:
+            filter_expr_obj = build_filter_from_dict(filters)
+            combined_filter = self.build_filter_expression(
+                filters=filter_expr_obj,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
         else:
-            combined_filter = user_filter or filter_expr
+            # Just apply user filter
+            combined_filter = UserPermissions.get_user_filter(user_id, is_admin)
 
         # Helper method to select columns from a batch
         def _select_columns(batch: Any, cols: Optional[Sequence[str]]) -> Any:
@@ -505,8 +672,10 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         # Arrow fallback: materialize table as Arrow then iterate
         try:
+            # Note: LanceDB's to_arrow() doesn't accept filter parameter
+            # Use search().where().to_arrow() instead
             if combined_filter:
-                arrow_table = table.to_arrow(filter=combined_filter)
+                arrow_table = table.search().where(combined_filter).to_arrow()
             else:
                 arrow_table = table.to_arrow()
         except Exception as exc:
@@ -541,7 +710,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         """Count rows in a table with optional filters.
 
         Raises:
-            DatabaseOperationError: If table cannot be opened or count fails
+            DatabaseOperationError: If table cannot be opened or count fails.
         """
         from ..core.exceptions import DatabaseOperationError
 
@@ -554,24 +723,22 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 f"Failed to open table '{table_name}': {exc}"
             ) from exc
 
-        # Build filter expression
-        filter_expr = None
+        # Build filter expression using common function (includes validation)
+        backend_filter = None
         if filters:
-            filter_expr = build_lancedb_filter_expression(filters)
-
-        # Apply user filter for multi-tenancy
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Combine filters
-        combined_filter = None
-        if filter_expr and user_filter:
-            combined_filter = f"({filter_expr}) AND ({user_filter})"
+            filter_expr_obj = build_filter_from_dict(filters)
+            backend_filter = self.build_filter_expression(
+                filters=filter_expr_obj,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
         else:
-            combined_filter = user_filter or filter_expr
+            # Just apply user filter
+            backend_filter = UserPermissions.get_user_filter(user_id, is_admin)
 
         try:
-            if combined_filter:
-                return int(table.count_rows(combined_filter))
+            if backend_filter:
+                return int(table.count_rows(backend_filter))
             return int(table.count_rows())
         except Exception as exc:
             raise DatabaseOperationError(
@@ -649,9 +816,6 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
     def _translate_condition(self, condition: FilterCondition) -> str:
         """Translate single condition to LanceDB syntax."""
-        # Validate field name to prevent injection
-        validate_field_name(condition.field)
-
         field = condition.field
         op = condition.operator
         value = condition.value
@@ -686,3 +850,714 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             return "NULL"
         else:
             return f"'{escape_lancedb_string(value)}'"
+
+    def upsert_documents(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert document records to LanceDB.
+
+        Args:
+            records: List of document record dictionaries to upsert.
+        """
+        from ..LanceDB.schema_manager import ensure_documents_table
+
+        if not records:
+            return
+
+        conn = self._get_connection()
+        ensure_documents_table(conn)
+        table = conn.open_table("documents")
+
+        # Use merge_insert for efficient upsert
+        table.merge_insert(
+            ["collection", "doc_id"]
+        ).when_matched_update_all().when_not_matched_insert_all().execute(records)
+
+    def upsert_parses(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert parse records to LanceDB.
+
+        Args:
+            records: List of parse record dictionaries to upsert.
+        """
+        from ..LanceDB.schema_manager import ensure_parses_table
+
+        if not records:
+            return
+
+        conn = self._get_connection()
+        ensure_parses_table(conn)
+        table = conn.open_table("parses")
+
+        # Use merge_insert for efficient upsert
+        table.merge_insert(
+            ["collection", "doc_id", "parse_hash"]
+        ).when_matched_update_all().when_not_matched_insert_all().execute(records)
+
+    def upsert_chunks(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert chunk records to LanceDB.
+
+        Args:
+            records: List of chunk record dictionaries to upsert.
+        """
+        from ..LanceDB.schema_manager import ensure_chunks_table
+
+        if not records:
+            return
+
+        conn = self._get_connection()
+        ensure_chunks_table(conn)
+        table = conn.open_table("chunks")
+
+        # Use merge_insert for efficient upsert
+        table.merge_insert(
+            ["collection", "doc_id", "parse_hash", "chunk_id"]
+        ).when_matched_update_all().when_not_matched_insert_all().execute(records)
+
+    def upsert_embeddings(self, model_tag: str, records: List[Dict[str, Any]]) -> None:
+        """Upsert embedding records to LanceDB with fallback pattern.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            records: List of embedding record dictionaries to upsert.
+
+        Raises:
+            Exception: If both merge_insert and add() methods fail.
+        """
+        from ..LanceDB.model_tag_utils import to_model_tag
+        from ..LanceDB.schema_manager import ensure_embeddings_table
+        from ..vector_storage.vector_manager import _is_non_recoverable_merge_error
+
+        if not records:
+            return
+
+        conn = self._get_connection()
+        table_name = f"embeddings_{to_model_tag(model_tag)}"
+
+        # Infer vector dimension from first record
+        vector_dim = None
+        if records and "vector" in records[0]:
+            vector = records[0]["vector"]
+            if isinstance(vector, (list, tuple)):
+                vector_dim = len(vector)
+
+        ensure_embeddings_table(conn, to_model_tag(model_tag), vector_dim=vector_dim)
+        table = conn.open_table(table_name)
+
+        try:
+            # Try merge_insert first (preferred method for upserts)
+            table.merge_insert(
+                ["collection", "doc_id", "chunk_id"]
+            ).when_matched_update_all().when_not_matched_insert_all().execute(records)
+        except Exception as merge_error:
+            if _is_non_recoverable_merge_error(merge_error):
+                # Log critical error and re-raise without fallback
+                logger.error(
+                    "merge_insert failed with non-recoverable error (error_type=%s): %s. "
+                    "This may indicate schema mismatch or data corruption. "
+                    "Not attempting fallback to add() method.",
+                    type(merge_error).__name__,
+                    merge_error,
+                )
+                raise
+
+            # For recoverable errors (e.g., temporary issues, network errors), attempt fallback
+            logger.warning(
+                "merge_insert failed (error_type=%s): %s; "
+                "attempting fallback to add() method",
+                type(merge_error).__name__,
+                merge_error,
+            )
+            try:
+                import pandas as pd
+
+                table.add(pd.DataFrame(records))
+                logger.info(
+                    "Successfully used add() fallback for %d embeddings after merge_insert failure",
+                    len(records),
+                )
+            except Exception as add_error:
+                logger.error(
+                    "Fallback add() also failed: %s. "
+                    "Both merge_insert and add() methods failed.",
+                    add_error,
+                )
+                raise
+
+    # --- Async method implementations (Phase 1A Option C) ---
+
+    async def search_vectors_async(
+        self,
+        table_name: str,
+        query_vector: List[float],
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        vector_column_name: str = "vector",
+    ) -> List[Dict[str, Any]]:
+        """Execute vector search using async LanceDB API.
+
+        Returns native Arrow format converted to list of dicts.
+        """
+        async_conn = await self._get_async_connection()
+
+        try:
+            table = await async_conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s': %s", table_name, exc)
+            return []
+
+        # Build filter expression
+        backend_filter = self.build_filter_expression(
+            filters, user_id=None, is_admin=False
+        )
+
+        # Build search query
+        search_query = table.search(
+            query_vector,
+            vector_column_name=vector_column_name,
+        )
+
+        if backend_filter:
+            search_query = search_query.where(backend_filter)
+
+        search_query = search_query.limit(top_k)
+
+        try:
+            # Async search returns Arrow table
+            results_table = await search_query.to_arrow()
+
+            # Convert Arrow to list of dicts
+            results = []
+            for batch in results_table.to_batches():
+                for i in range(batch.num_rows):
+                    row = {}
+                    for j in range(batch.num_columns):
+                        col_name = batch.schema.names[j]
+                        col_array = batch.column(j)
+                        value = col_array[i].as_py()
+                        row[col_name] = value
+                    results.append(row)
+            return results
+
+        except Exception as exc:
+            logger.error("Async vector search failed: %s", exc)
+            return []
+
+    async def search_fts_async(
+        self,
+        table_name: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        text_column_name: str = "text",
+    ) -> List[Dict[str, Any]]:
+        """Execute full-text search using async LanceDB FTS API.
+
+        Returns native Arrow format converted to list of dicts.
+        """
+        async_conn = await self._get_async_connection()
+
+        try:
+            table = await async_conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s': %s", table_name, exc)
+            return []
+
+        # Build filter expression
+        backend_filter = self.build_filter_expression(
+            filters, user_id=None, is_admin=False
+        )
+
+        # Build FTS search query
+        # Note: LanceDB async API supports query_type="fts"
+        search_query = table.search(
+            query_text,
+            query_type="fts",
+        )
+
+        if backend_filter:
+            search_query = search_query.where(backend_filter)
+
+        search_query = search_query.limit(top_k)
+
+        try:
+            # Async FTS search returns Arrow table
+            results_table = await search_query.to_arrow()
+
+            # Convert Arrow to list of dicts
+            results = []
+            for batch in results_table.to_batches():
+                for i in range(batch.num_rows):
+                    row = {}
+                    for j in range(batch.num_columns):
+                        col_name = batch.schema.names[j]
+                        col_array = batch.column(j)
+                        value = col_array[i].as_py()
+                        row[col_name] = value
+                    results.append(row)
+            return results
+
+        except Exception as exc:
+            logger.error("Async FTS search failed: %s", exc)
+            return []
+
+    async def iter_batches_async(
+        self,
+        table_name: str,
+        columns: Optional[Sequence[str]] = None,
+        batch_size: int = 1000,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> Any:  # Returns AsyncIterator (async generator), see contract for details
+        """Iterate over table data in batches using async LanceDB API.
+
+        Yields PyArrow RecordBatch objects (native async format).
+        """
+        async_conn = await self._get_async_connection()
+
+        try:
+            table = await async_conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s': %s", table_name, exc)
+            return
+
+        # Build filter expression using common function (includes validation)
+        combined_filter = None
+        if filters:
+            filter_expr_obj = build_filter_from_dict(filters)
+            combined_filter = self.build_filter_expression(
+                filters=filter_expr_obj,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        else:
+            # Just apply user filter
+            combined_filter = UserPermissions.get_user_filter(user_id, is_admin)
+
+        # Helper method to select columns from a batch
+        def _select_columns(batch: Any, cols: Optional[Sequence[str]]) -> Any:
+            if cols is None:
+                return batch
+            arrays = []
+            names = []
+            for col_name in cols:
+                idx = batch.schema.get_field_index(col_name)
+                if idx != -1:
+                    arrays.append(batch.column(idx))
+                    names.append(col_name)
+            if not arrays:
+                return pa.RecordBatch.from_arrays([], [])
+            return pa.RecordBatch.from_arrays(arrays, names)
+
+        try:
+            # Use LanceDB async to_batches() with column projection for efficiency
+            # Note: LanceDB to_batches supports columns parameter to avoid reading unused columns
+            if combined_filter:
+                async for batch in table.to_batches(
+                    filter=combined_filter,
+                    batch_size=batch_size,
+                    columns=columns,  # Pass columns directly to avoid reading all data
+                ):
+                    if batch.num_rows > 0:
+                        yield batch
+            else:
+                async for batch in table.to_batches(
+                    batch_size=batch_size,
+                    columns=columns,  # Pass columns directly to avoid reading all data
+                ):
+                    if batch.num_rows > 0:
+                        yield batch
+        except Exception as exc:
+            logger.debug(
+                "Async batch iteration failed for table '%s': %s", table_name, exc
+            )
+
+    async def count_rows_async(
+        self,
+        table_name: str,
+        filters: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Count rows in a table with optional filters using async LanceDB API."""
+        async_conn = await self._get_async_connection()
+
+        try:
+            table = await async_conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s': %s", table_name, exc)
+            return 0
+
+        # Build filter expression using common function (includes validation)
+        combined_filter = None
+        if filters:
+            filter_expr_obj = build_filter_from_dict(filters)
+            combined_filter = self.build_filter_expression(
+                filters=filter_expr_obj,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        else:
+            # Just apply user filter
+            combined_filter = UserPermissions.get_user_filter(user_id, is_admin)
+
+        try:
+            if combined_filter:
+                return int(await table.count_rows(combined_filter))
+            return int(await table.count_rows())
+        except Exception as exc:
+            logger.debug("Failed to count rows in '%s': %s", table_name, exc)
+            return 0
+
+    async def upsert_documents_async(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert document records using async LanceDB API."""
+        from ..LanceDB.schema_manager import ensure_documents_table
+
+        if not records:
+            return
+
+        async_conn = await self._get_async_connection()
+
+        # Note: ensure_documents_table uses sync connection - may need async variant
+        # For now, reuse sync connection for table creation
+        sync_conn = self._get_connection()
+        ensure_documents_table(sync_conn)
+
+        table = await async_conn.open_table("documents")
+
+        # Use merge_insert for efficient upsert
+        await (
+            table.merge_insert(["collection", "doc_id"])
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(records)
+        )
+
+    async def upsert_chunks_async(self, records: List[Dict[str, Any]]) -> None:
+        """Upsert chunk records using async LanceDB API."""
+        from ..LanceDB.schema_manager import ensure_chunks_table
+
+        if not records:
+            return
+
+        async_conn = await self._get_async_connection()
+
+        # Reuse sync connection for table creation
+        sync_conn = self._get_connection()
+        ensure_chunks_table(sync_conn)
+
+        table = await async_conn.open_table("chunks")
+
+        # Use merge_insert for efficient upsert
+        await (
+            table.merge_insert(["collection", "doc_id", "parse_hash", "chunk_id"])
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(records)
+        )
+
+    async def upsert_embeddings_async(
+        self, model_tag: str, records: List[Dict[str, Any]]
+    ) -> None:
+        """Upsert embedding records using async LanceDB API.
+
+        Note: This method uses merge_insert without fallback for simplicity.
+        For production use with error recovery, use the sync upsert_embeddings method.
+        """
+        from ..LanceDB.model_tag_utils import to_model_tag
+        from ..LanceDB.schema_manager import ensure_embeddings_table
+
+        if not records:
+            return
+
+        async_conn = await self._get_async_connection()
+        sync_conn = self._get_connection()
+
+        table_name = f"embeddings_{to_model_tag(model_tag)}"
+
+        # Infer vector dimension from first record
+        vector_dim = None
+        if records and "vector" in records[0]:
+            vector = records[0]["vector"]
+            if isinstance(vector, (list, tuple)):
+                vector_dim = len(vector)
+
+        ensure_embeddings_table(
+            sync_conn, to_model_tag(model_tag), vector_dim=vector_dim
+        )
+        table = await async_conn.open_table(table_name)
+
+        # Use merge_insert for efficient upsert
+        await (
+            table.merge_insert(["collection", "doc_id", "chunk_id"])
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(records)
+        )
+
+
+# ============================================================================
+# Phase 1A Part 2: Additional LanceDB Store Implementations
+# ============================================================================
+
+
+class LanceDBIngestionStatusStore(IngestionStatusStore):
+    """LanceDB implementation for ingestion status tracking.
+
+    Manages ingestion_runs table for tracking document processing status.
+    """
+
+    def __init__(self) -> None:
+        self._sync_conn: Optional[DBConnection] = None
+        self._async_conn: Optional[Any] = None
+        self._async_lock = asyncio.Lock()
+
+    def _get_sync_connection(self) -> DBConnection:
+        """Get sync LanceDB connection."""
+        if self._sync_conn is None:
+            self._sync_conn = get_connection_from_env()
+        return self._sync_conn
+
+    async def _get_async_connection(self) -> Any:
+        """Get async LanceDB connection."""
+        if self._async_conn is None:
+            async with self._async_lock:
+                if self._async_conn is None:
+                    self._async_conn = await lancedb.connect_async(
+                        get_connection_from_env().uri
+                    )
+        return self._async_conn
+
+    def _ensure_ingestion_runs_table(self, conn: DBConnection) -> None:
+        """Ensure ingestion_runs table exists."""
+        from ..LanceDB.schema_manager import ensure_ingestion_runs_table
+
+        ensure_ingestion_runs_table(conn)
+
+    # --- Sync methods ---
+
+    def write_ingestion_status(
+        self,
+        collection: str,
+        doc_id: str,
+        *,
+        status: str,
+        message: Optional[str] = None,
+        parse_hash: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Write ingestion status record (sync)."""
+        try:
+            conn = self._get_sync_connection()
+            self._ensure_ingestion_runs_table(conn)
+            table = conn.open_table("ingestion_runs")
+
+            # Delete existing record for this collection/doc_id
+            base_filter = self._build_base_filter(collection, doc_id)
+            if base_filter:
+                table.delete(base_filter)
+
+            # Create new record
+            timestamp = datetime.now(timezone.utc)
+            record = {
+                "collection": collection,
+                "doc_id": doc_id,
+                "status": status,
+                "message": message or "",
+                "parse_hash": parse_hash or "",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "user_id": user_id,
+            }
+            table.add([record])
+
+        except Exception as e:
+            logger.error(f"Failed to write ingestion status: {e}")
+            raise
+
+    def load_ingestion_status(
+        self,
+        collection: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Load ingestion status records (sync)."""
+        try:
+            conn = self._get_sync_connection()
+            self._ensure_ingestion_runs_table(conn)
+            table = conn.open_table("ingestion_runs")
+
+            # Build filter expression
+            filter_expr = self._build_load_filter(
+                collection, doc_id, user_id, is_admin
+            )
+
+            # Execute query
+            search = table.search()
+            if filter_expr:
+                search = search.where(filter_expr)
+            df = search.to_pandas()
+
+            return df.to_dict("records")
+
+        except Exception as e:
+            logger.error(f"Failed to load ingestion status: {e}")
+            raise
+
+    def clear_ingestion_status(
+        self,
+        collection: str,
+        doc_id: str,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Remove ingestion status record (sync)."""
+        try:
+            conn = self._get_sync_connection()
+            self._ensure_ingestion_runs_table(conn)
+            table = conn.open_table("ingestion_runs")
+
+            # Build filter with user permissions
+            base_filter = self._build_base_filter(collection, doc_id)
+            user_filter = UserPermissions.get_user_filter(user_id, is_admin)
+
+            filter_expr = self._combine_filters(base_filter, user_filter)
+            if filter_expr:
+                table.delete(filter_expr)
+
+        except Exception as e:
+            logger.error(f"Failed to clear ingestion status: {e}")
+            raise
+
+    # --- Async methods ---
+
+    async def write_ingestion_status_async(
+        self,
+        collection: str,
+        doc_id: str,
+        *,
+        status: str,
+        message: Optional[str] = None,
+        parse_hash: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Write ingestion status record (async).
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+        # Delegate to sync implementation for now
+        return self.write_ingestion_status(
+            collection=collection,
+            doc_id=doc_id,
+            status=status,
+            message=message,
+            parse_hash=parse_hash,
+            user_id=user_id,
+        )
+
+    async def load_ingestion_status_async(
+        self,
+        collection: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Load ingestion status records (async).
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+        # Delegate to sync implementation for now
+        return self.load_ingestion_status(
+            collection=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    async def clear_ingestion_status_async(
+        self,
+        collection: str,
+        doc_id: str,
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Remove ingestion status record (async).
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+        # Delegate to sync implementation for now
+        return self.clear_ingestion_status(
+            collection=collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    # --- Helper methods ---
+
+    def _build_base_filter(self, collection: str, doc_id: str) -> str:
+        """Build base filter for collection/doc_id."""
+        safe_collection = escape_lancedb_string(collection)
+        safe_doc_id = escape_lancedb_string(doc_id)
+        return f"collection == '{safe_collection}' AND doc_id == '{safe_doc_id}'"
+
+    def _build_load_filter(
+        self,
+        collection: Optional[str],
+        doc_id: Optional[str],
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Optional[str]:
+        """Build filter for loading status records."""
+        conditions = []
+
+        if collection is not None:
+            safe_collection = escape_lancedb_string(collection)
+            conditions.append(f"collection == '{safe_collection}'")
+
+        if doc_id is not None:
+            safe_doc_id = escape_lancedb_string(doc_id)
+            conditions.append(f"doc_id == '{safe_doc_id}'")
+
+        # Combine with user filter
+        base_filter = " AND ".join(conditions) if conditions else None
+        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
+
+        return self._combine_filters(base_filter, user_filter)
+
+    def _combine_filters(
+        self, base_filter: Optional[str], user_filter: Optional[str]
+    ) -> Optional[str]:
+        """Combine base and user filters."""
+        if user_filter and base_filter:
+            return f"({base_filter}) AND ({user_filter})"
+        elif user_filter:
+            return user_filter
+        return base_filter
+
+
+class LanceDBPromptTemplateStore(PromptTemplateStore):
+    """LanceDB implementation for prompt template management.
+
+    Manages prompt_templates table for storing and retrieving prompt templates.
+
+    TODO: Implement in Phase 2.3
+    """
+
+    pass
+
+
+class LanceDBMainPointerStore(MainPointerStore):
+    """LanceDB implementation for main pointer management.
+
+    Manages main_pointers table for tracking current versions across
+    processing stages (parse, chunk, embed).
+
+    TODO: Implement in Phase 2.4
+    """
+
+    pass

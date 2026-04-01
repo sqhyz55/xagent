@@ -39,11 +39,19 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
     monkeypatch.setenv("ENABLE_AUTO_EMBEDDINGS_MIGRATION", "true")
     # Reload config module to pick up the new environment variable
     import sys
+
     if "xagent.core.tools.core.RAG_tools.core.config" in sys.modules:
         importlib.reload(sys.modules["xagent.core.tools.core.RAG_tools.core.config"])
         # Reload vector_manager to pick up the new config value
-        if "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager" in sys.modules:
-            importlib.reload(sys.modules["xagent.core.tools.core.RAG_tools.vector_storage.vector_manager"])
+        if (
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager"
+            in sys.modules
+        ):
+            importlib.reload(
+                sys.modules[
+                    "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager"
+                ]
+            )
 
     monkeypatch.setenv("LANCEDB_DIR", str(tmp_path / ".lancedb"))
     reset_kb_write_coordinator()

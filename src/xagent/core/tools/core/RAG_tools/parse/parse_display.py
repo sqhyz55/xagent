@@ -15,18 +15,9 @@ from ..core.schemas import (
     ParsedTableDisplay,
     ParsedTextSegmentDisplay,
 )
-from ..LanceDB.schema_manager import ensure_parses_table
 from ..storage.factory import get_vector_index_store
-from ..utils.lancedb_query_utils import query_to_list
-from ..utils.string_utils import build_lancedb_filter_expression
-from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
-
-
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
 
 
 def reconstruct_parse_result_from_db(
@@ -36,7 +27,7 @@ def reconstruct_parse_result_from_db(
     user_id: Optional[int] = None,
     is_admin: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Reconstruct ParseResult-like structure from database.
+    """Reconstruct ParseResult-like structure from database using abstraction layer.
 
     Args:
         collection: Collection name
@@ -52,9 +43,7 @@ def reconstruct_parse_result_from_db(
         elements is a list of dictionaries with 'type', 'text'/'html', and 'metadata' keys.
     """
     try:
-        conn = get_connection_from_env()
-        ensure_parses_table(conn)
-        table = conn.open_table("parses")
+        vector_store = get_vector_index_store()
 
         # Build base filter expression
         query_filters: Dict[str, Any] = {
@@ -64,17 +53,12 @@ def reconstruct_parse_result_from_db(
         if parse_hash:
             query_filters["parse_hash"] = parse_hash
 
-        base_filter_expr = build_lancedb_filter_expression(query_filters)
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        if user_filter_expr and base_filter_expr:
-            filter_expr = f"({base_filter_expr}) and ({user_filter_expr})"
-        elif user_filter_expr:
-            filter_expr = user_filter_expr
-        else:
-            filter_expr = base_filter_expr
-
-        if table.count_rows(filter_expr) == 0:
+        if (
+            vector_store.count_rows_or_zero(
+                "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
+            )
+            == 0
+        ):
             if parse_hash:
                 raise DocumentNotFoundError(
                     f"Parse result not found: doc_id={doc_id}, parse_hash={parse_hash}"
@@ -83,8 +67,18 @@ def reconstruct_parse_result_from_db(
                 f"No parse results found for document: doc_id={doc_id}"
             )
 
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        records = query_to_list(table.search().where(filter_expr))
+        # Use iter_batches to load all matching records
+        records = []
+        for batch in vector_store.iter_batches(
+            table_name="parses",
+            filters=query_filters,
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                records.append(row.to_dict())
+
         if not records:
             raise DocumentNotFoundError(
                 f"No parse results found for document: doc_id={doc_id}"

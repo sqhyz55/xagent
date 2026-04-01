@@ -23,20 +23,13 @@ from ..core.exceptions import (
     HashComputationError,
 )
 from ..core.schemas import RegisterDocumentRequest, RegisterDocumentResponse
-from ..LanceDB.schema_manager import ensure_documents_table
 from ..storage.factory import get_vector_index_store
 from ..utils import check_file_type, compute_file_hash
 from ..utils.string_utils import (
-    build_lancedb_filter_expression,
     generate_deterministic_doc_id,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
 
 
 # Public entry with explicit arguments (for LG/CLI/FastAPI). Returns plain dict.
@@ -162,25 +155,26 @@ def _register_document(request: RegisterDocumentRequest) -> RegisterDocumentResp
     except Exception as e:
         raise HashComputationError(f"Failed to compute content hash: {e}") from e
 
-    # LanceDB operations
+    # LanceDB operations using abstraction layer
     try:
-        # Get LanceDB connection
-        db = get_connection_from_env()
+        vector_store = get_vector_index_store()
 
-        # Ensure documents table exists
-        ensure_documents_table(db)
-
-        # Open the documents table
-        table = db.open_table("documents")
-
-        # Check if document already exists (for idempotency)
+        # Check if document already exists (for idempotency) using count_rows
         query_filters = {
             "collection": collection,
             "doc_id": doc_id,
         }
-        filter_expr = build_lancedb_filter_expression(query_filters)
-
-        exists = table.count_rows(filter_expr) > 0
+        # For existence check, use admin mode to see all records including legacy data
+        # count_rows_or_zero returns 0 if table doesn't exist
+        exists = (
+            vector_store.count_rows_or_zero(
+                "documents",
+                filters=query_filters,
+                user_id=request.user_id,
+                is_admin=True,
+            )
+            > 0
+        )
 
         # Prepare document record
         doc_record = {
@@ -197,10 +191,8 @@ def _register_document(request: RegisterDocumentRequest) -> RegisterDocumentResp
             "user_id": request.user_id,  # Add user_id for multi-tenancy
         }
 
-        # Use merge_insert for efficient upsert operation
-        table.merge_insert(
-            ["collection", "doc_id"]
-        ).when_matched_update_all().when_not_matched_insert_all().execute([doc_record])
+        # Use abstraction layer for upsert
+        vector_store.upsert_documents([doc_record])
 
         created = not exists
 
@@ -219,11 +211,11 @@ def _register_document(request: RegisterDocumentRequest) -> RegisterDocumentResp
 
 
 def get_document(db_dir: str, collection: str, doc_id: str) -> Optional[Any]:
-    """Retrieve a document record from LanceDB.
+    """Retrieve a document record from LanceDB using abstraction layer.
 
 
     Args:
-        db_dir: LanceDB directory path
+        db_dir: LanceDB directory path (unused, kept for compatibility)
         collection: Collection name to filter by (only returns documents from this collection)
         doc_id: Document ID to retrieve
 
@@ -234,19 +226,23 @@ def get_document(db_dir: str, collection: str, doc_id: str) -> Optional[Any]:
         DatabaseOperationError: If database operation fails
     """
     try:
-        db = get_connection_from_env()
-        ensure_documents_table(db)
-        table = db.open_table("documents")
+        vector_store = get_vector_index_store()
 
-        filter_expr = build_lancedb_filter_expression(
-            {"collection": collection, "doc_id": doc_id}
-        )
-        if table.count_rows(filter_expr) == 0:
+        # Check if document exists
+        query_filters = {"collection": collection, "doc_id": doc_id}
+        if vector_store.count_rows_or_zero("documents", filters=query_filters) == 0:
             return None
 
-        # Convert to dict and handle datetime
-        record = table.search().where(filter_expr).to_pandas().iloc[0].to_dict()
-        return record
+        # Use iter_batches to load the document
+        for batch in vector_store.iter_batches(
+            table_name="documents",
+            filters=query_filters,
+        ):
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                return row.to_dict()
+
+        return None
 
     except Exception as e:
         raise DatabaseOperationError(f"Failed to retrieve document: {e}") from e
@@ -255,10 +251,10 @@ def get_document(db_dir: str, collection: str, doc_id: str) -> Optional[Any]:
 def list_documents(
     db_dir: str, collection: str, limit: int = 100
 ) -> list[Dict[str, Any]]:
-    """List documents in the collection.
+    """List documents in the collection using abstraction layer.
 
     Args:
-        db_dir: LanceDB directory path
+        db_dir: LanceDB directory path (unused, kept for compatibility)
         collection: Collection name to filter by (only documents in this KB are returned)
         limit: Maximum number of documents to return
 
@@ -269,13 +265,25 @@ def list_documents(
         DatabaseOperationError: If database operation fails
     """
     try:
-        db = get_connection_from_env()
-        ensure_documents_table(db)
-        table = db.open_table("documents")
+        vector_store = get_vector_index_store()
+        query_filters = {"collection": collection}
 
-        filter_expr = build_lancedb_filter_expression({"collection": collection})
-        results = table.search().where(filter_expr).limit(limit).to_pandas()
-        return list(results.to_dict("records"))
+        results = []
+        for batch in vector_store.iter_batches(
+            table_name="documents",
+            filters=query_filters,
+            user_id=None,
+            is_admin=True,  # Use admin mode to see all documents including legacy data
+        ):
+            batch_df = batch.to_pandas()
+            for _, row in batch_df.iterrows():
+                results.append(row.to_dict())
+                if len(results) >= limit:
+                    break
+            if len(results) >= limit:
+                break
+
+        return results
 
     except Exception as e:
         raise DatabaseOperationError(f"Failed to list documents: {e}") from e

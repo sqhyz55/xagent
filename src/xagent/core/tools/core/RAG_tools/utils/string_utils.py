@@ -6,7 +6,7 @@ import hashlib
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Pattern for sanitizing document IDs and filenames
 # Only allows: letters, numbers, underscore, hyphen
@@ -48,23 +48,22 @@ def build_lancedb_filter_expression(
 
     Args:
         filters: A dictionary where keys are column names and values are the filter values.
-        user_id: Optional user ID for multi-tenancy filtering
-        is_admin: Whether user has admin privileges (bypasses user filtering)
-        skip_user_filter: If True, don't apply user permissions filter (default: False)
+        user_id: Optional user ID for multi-tenancy filtering.
+        is_admin: Whether the user has admin privileges.
+        skip_user_filter: If True, bypasses user permission filter.
 
     Returns:
         A string representing the safely constructed LanceDB filter expression.
-
-    Note:
-        When skip_user_filter=True, user permissions are not applied to the filter.
-        This allows the function to be used for base filters where user permissions
-        are handled separately by the caller (e.g., in load_ingestion_status).
     """
-    from ..storage.contracts import FilterCondition, FilterOperator
+    from ..storage.contracts import (
+        FilterCondition,
+        FilterExpression,
+        FilterOperator,
+    )
     from ..storage.factory import get_vector_index_store
 
     # Convert to FilterCondition list
-    conditions = []
+    conditions: List[FilterCondition] = []
     for key, value in filters.items():
         conditions.append(
             FilterCondition(field=key, operator=FilterOperator.EQ, value=value)
@@ -74,13 +73,13 @@ def build_lancedb_filter_expression(
     vector_store = get_vector_index_store()
 
     # Combine conditions with AND (tuple convention)
+    # Type: FilterExpression can be FilterCondition or tuple of FilterConditions
     if len(conditions) == 1:
-        filter_expr = conditions[0]
+        filter_expr: FilterExpression = conditions[0]
     else:
         filter_expr = tuple(conditions)
 
     # Get backend-specific syntax
-    # When skip_user_filter=True, pass is_admin=True to bypass user filtering
     backend_filter = vector_store.build_filter_expression(
         filters=filter_expr,
         user_id=user_id if not skip_user_filter else None,

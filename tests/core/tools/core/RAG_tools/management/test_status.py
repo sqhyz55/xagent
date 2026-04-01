@@ -1,4 +1,7 @@
-"""Tests for RAG ingestion status utilities."""
+"""Tests for RAG ingestion status utilities.
+
+Phase 1A Part 2: Tests for both sync and async methods.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +12,11 @@ import pytest
 
 from xagent.core.tools.core.RAG_tools.management.status import (
     clear_ingestion_status,
+    clear_ingestion_status_async,
     load_ingestion_status,
+    load_ingestion_status_async,
     write_ingestion_status,
+    write_ingestion_status_async,
 )
 
 
@@ -164,3 +170,109 @@ def test_write_ingestion_status_optional_fields(temp_lancedb_dir: str) -> None:
     assert records[0]["status"] == "pending"
     assert records[0]["message"] == ""
     assert records[0]["parse_hash"] == ""
+
+
+# ============================================================================
+# Async Method Tests (Phase 1A Part 2)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_write_ingestion_status_async(temp_lancedb_dir: str) -> None:
+    """Test async version of write_ingestion_status."""
+
+    collection = "test_collection"
+    doc_id = "test_doc"
+
+    await write_ingestion_status_async(
+        collection=collection,
+        doc_id=doc_id,
+        status="running",
+        message="Processing document",
+        parse_hash="hash-123",
+    )
+
+    records = await load_ingestion_status_async(
+        collection=collection, doc_id=doc_id, is_admin=True
+    )
+    assert len(records) == 1
+    assert records[0]["collection"] == collection
+    assert records[0]["doc_id"] == doc_id
+    assert records[0]["status"] == "running"
+    assert records[0]["message"] == "Processing document"
+    assert records[0]["parse_hash"] == "hash-123"
+
+
+@pytest.mark.asyncio
+async def test_write_ingestion_status_overwrites_existing_async(
+    temp_lancedb_dir: str,
+) -> None:
+    """Test async version of write overwrites existing status."""
+
+    collection = "test_collection"
+    doc_id = "test_doc"
+
+    await write_ingestion_status_async(
+        collection=collection,
+        doc_id=doc_id,
+        status="pending",
+        message="Initial status",
+    )
+
+    await write_ingestion_status_async(
+        collection=collection,
+        doc_id=doc_id,
+        status="success",
+        message="Completed",
+    )
+
+    records = await load_ingestion_status_async(
+        collection=collection, doc_id=doc_id, is_admin=True
+    )
+    assert len(records) == 1
+    assert records[0]["status"] == "success"
+    assert records[0]["message"] == "Completed"
+
+
+@pytest.mark.asyncio
+async def test_load_ingestion_status_by_collection_async(temp_lancedb_dir: str) -> None:
+    """Test async version of load status by collection."""
+
+    collection1 = "collection1"
+    collection2 = "collection2"
+
+    await write_ingestion_status_async(collection1, "doc1", status="running")
+    await write_ingestion_status_async(collection1, "doc2", status="success")
+    await write_ingestion_status_async(collection2, "doc1", status="pending")
+
+    records = await load_ingestion_status_async(collection=collection1, is_admin=True)
+    assert len(records) == 2
+    assert all(r["collection"] == collection1 for r in records)
+
+    records = await load_ingestion_status_async(collection=collection2, is_admin=True)
+    assert len(records) == 1
+    assert records[0]["collection"] == collection2
+
+
+@pytest.mark.asyncio
+async def test_clear_ingestion_status_async(temp_lancedb_dir: str) -> None:
+    """Test async version of clear ingestion status."""
+
+    collection = "test_collection"
+    doc_id = "test_doc"
+
+    await write_ingestion_status_async(
+        collection, doc_id, status="running", message="Processing"
+    )
+
+    records = await load_ingestion_status_async(
+        collection=collection, doc_id=doc_id, is_admin=True
+    )
+    assert len(records) == 1
+
+    await clear_ingestion_status_async(collection, doc_id, is_admin=True)
+
+    records = await load_ingestion_status_async(
+        collection=collection, doc_id=doc_id, is_admin=True
+    )
+    assert len(records) == 0
