@@ -340,10 +340,11 @@ async def ingest(
 
     try:
         total_size = 0
-        chunk_size = 1024 * 1024  # 1MB
+        # Must not shadow the Form parameter ``chunk_size`` (see issue #199).
+        file_read_buffer_size = 1024 * 1024  # 1MB streaming read buffer only
         with open(file_path, "wb") as buffer:
             while True:
-                chunk = await file.read(chunk_size)
+                chunk = await file.read(file_read_buffer_size)
                 if not chunk:
                     break
                 total_size += len(chunk)
