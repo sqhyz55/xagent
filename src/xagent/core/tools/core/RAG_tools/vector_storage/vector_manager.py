@@ -47,11 +47,6 @@ from ..utils.user_permissions import UserPermissions
 logger = logging.getLogger(__name__)
 
 
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
-
-
 def _is_non_recoverable_merge_error(error: Exception) -> bool:
     """Classify merge_insert failures as recoverable or non-recoverable.
 
@@ -462,8 +457,6 @@ def read_chunks_for_embedding(
         )
 
         # Use storage abstraction instead of raw connection
-        from ..storage.factory import get_vector_index_store
-
         vector_store = get_vector_index_store()
 
         # Build query filters
@@ -798,7 +791,6 @@ def _process_model_embeddings(
     Returns:
         Tuple of (upserted_count, index_status)
     """
-    from ..storage.factory import get_vector_index_store
 
     model_tag = to_model_tag(model)
     table_name = f"embeddings_{model_tag}"

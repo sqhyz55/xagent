@@ -10,7 +10,7 @@ are provided for existing code.
 from __future__ import annotations
 
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 from .contracts import (
     IngestionStatusStore,
@@ -26,6 +26,11 @@ from .lancedb_stores import (
     LanceDBMetadataStore,
     LanceDBPromptTemplateStore,
     LanceDBVectorIndexStore,
+)
+from .vector_backend import (
+    VectorBackend,
+    get_configured_vector_backend,
+    require_implemented_vector_backend,
 )
 
 
@@ -51,6 +56,7 @@ class StorageFactory:
 
         # Store instances (lazy initialization)
         self._vector_index_store: Optional[VectorIndexStore] = None
+        self._vector_backend: Optional[VectorBackend] = None
         self._metadata_store: Optional[MetadataStore] = None
         self._ingestion_status_store: Optional[IngestionStatusStore] = None
         self._prompt_template_store: Optional[PromptTemplateStore] = None
@@ -80,6 +86,7 @@ class StorageFactory:
         """
         with self._lock:
             self._vector_index_store = None
+            self._vector_backend = None
             self._metadata_store = None
             self._ingestion_status_store = None
             self._prompt_template_store = None
@@ -91,14 +98,42 @@ class StorageFactory:
     def get_vector_index_store(self) -> VectorIndexStore:
         """Get or create vector index store.
 
+        Backend is selected via :envvar:`XAGENT_VECTOR_BACKEND` (or legacy
+        ``VECTOR_STORE_BACKEND``); see :mod:`.vector_backend`.
+
         Returns:
-            LanceDBVectorIndexStore instance.
+            Concrete :class:`~.contracts.VectorIndexStore` (currently
+            :class:`~.lancedb_stores.LanceDBVectorIndexStore` when backend is
+            ``lancedb``).
+
+        Raises:
+            ConfigurationError: Unknown backend name, or backend not implemented
+                yet (e.g. ``milvus`` / ``qdrant`` without an adapter).
         """
         if self._vector_index_store is None:
             with self._lock:
                 if self._vector_index_store is None:
-                    self._vector_index_store = LanceDBVectorIndexStore()
+                    backend = get_configured_vector_backend()
+                    require_implemented_vector_backend(backend)
+                    if backend is VectorBackend.LANCEDB:
+                        self._vector_index_store = LanceDBVectorIndexStore()
+                        self._vector_backend = backend
+                    else:
+                        raise AssertionError(
+                            "require_implemented_vector_backend must prevent this branch"
+                        )
         return self._vector_index_store
+
+    def get_resolved_vector_backend(self) -> VectorBackend:
+        """Return the backend bound to the current vector index store singleton.
+
+        After the store is created, this reflects the backend used at creation
+        time (cached). Before creation, returns :func:`.get_configured_vector_backend`
+        without instantiating the store.
+        """
+        if self._vector_backend is not None:
+            return self._vector_backend
+        return get_configured_vector_backend()
 
     # --- MetadataStore ---
 
@@ -162,7 +197,8 @@ class StorageFactory:
         """Get or create KB write coordinator.
 
         Returns:
-            DefaultKBWriteCoordinator instance.
+            DefaultKBWriteCoordinator: Phase 1A shell delegating to metadata
+            and vector stores only; see that class for future coordination scope.
         """
         if self._coordinator is None:
             with self._lock:
@@ -225,6 +261,19 @@ def get_vector_index_store() -> VectorIndexStore:
     return _get_default_factory().get_vector_index_store()
 
 
+def get_vector_store_raw_connection() -> Any:
+    """Return the LanceDB handle exposed by the vector index store singleton.
+
+    Central entry point for RAG code that still needs a raw connection during
+    Phase 1A. Replaces duplicated per-module ``get_connection_from_env`` helpers
+    that only delegated to ``get_vector_index_store().get_raw_connection()``.
+
+    Returns:
+        The object returned by :meth:`VectorIndexStore.get_raw_connection`.
+    """
+    return get_vector_index_store().get_raw_connection()
+
+
 def get_ingestion_status_store() -> IngestionStatusStore:
     """Get ingestion status store.
 
@@ -258,7 +307,14 @@ def get_main_pointer_store() -> MainPointerStore:
 
 
 class DefaultKBWriteCoordinator(KBWriteCoordinator):
-    """Default in-process coordinator (Phase 1A contract shell)."""
+    """In-process KB write coordinator: Phase 1A placeholder implementation.
+
+    Only :meth:`metadata_store` and :meth:`vector_index_store` are implemented;
+    both delegate to the injected or default LanceDB-backed stores. This is
+    sufficient as a shell while call sites converge on :class:`KBWriteCoordinator`.
+    Future phases may add distributed locking, batched writes, and conflict
+    resolution without changing the high-level factory entry point.
+    """
 
     def __init__(
         self,

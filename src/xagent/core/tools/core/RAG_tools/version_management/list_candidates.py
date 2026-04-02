@@ -11,14 +11,9 @@ from typing import Any, Dict, List, Optional, Union
 
 from ..core.exceptions import DatabaseOperationError, VersionManagementError
 from ..core.schemas import StepType
-from ..storage.factory import get_vector_index_store
+from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression
-
-
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
 
 
 def _resolve_step_type(step_type_input: Union[StepType, str]) -> StepType:

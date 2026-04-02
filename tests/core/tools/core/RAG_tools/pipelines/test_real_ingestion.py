@@ -29,8 +29,6 @@ from xagent.core.tools.core.RAG_tools.management import collection_manager
 from xagent.core.tools.core.RAG_tools.pipelines import document_ingestion
 from xagent.core.tools.core.RAG_tools.utils import model_resolver
 
-# Configure logging to be visible in pytest output
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

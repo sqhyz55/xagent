@@ -16,16 +16,11 @@ from ..LanceDB.schema_manager import (
     ensure_main_pointers_table,
     ensure_parses_table,
 )
-from ..storage.factory import get_vector_index_store
+from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from .main_pointer_manager import get_main_pointer
 
 logger = logging.getLogger(__name__)
-
-
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
 
 
 def _plan_by_predicates(

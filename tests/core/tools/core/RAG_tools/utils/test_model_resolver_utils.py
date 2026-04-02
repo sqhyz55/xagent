@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Dict
 
 import pytest
+from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from xagent.core.model.chat.basic.base import BaseLLM
 from xagent.core.model.embedding.base import BaseEmbedding
@@ -34,6 +36,31 @@ class _StubHub:
         if model_id not in self._models:
             raise ValueError(f"Model {model_id} not found")
         return self._models[model_id]
+
+
+class TestHubInitFailureClassification:
+    """Tests for _hub_init_failure_is_benign_optional_sqlite."""
+
+    def test_sqlite_missing_file_is_benign(self) -> None:
+        exc = sqlite3.OperationalError("unable to open database file")
+        assert model_resolver._hub_init_failure_is_benign_optional_sqlite(exc) is True
+
+    def test_sqlalchemy_wrapped_sqlite_missing_is_benign(self) -> None:
+        inner = sqlite3.OperationalError("unable to open database file")
+        exc = SAOperationalError("SELECT 1", {}, inner)
+        assert model_resolver._hub_init_failure_is_benign_optional_sqlite(exc) is True
+
+    def test_database_locked_not_benign(self) -> None:
+        exc = sqlite3.OperationalError("database is locked")
+        assert model_resolver._hub_init_failure_is_benign_optional_sqlite(exc) is False
+
+    def test_other_errors_not_benign(self) -> None:
+        assert (
+            model_resolver._hub_init_failure_is_benign_optional_sqlite(
+                RuntimeError("connection refused")
+            )
+            is False
+        )
 
 
 class TestGetOrInitModelHub:

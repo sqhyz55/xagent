@@ -12,13 +12,11 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from lancedb.db import DBConnection
-
 from ..core.parser_registry import get_supported_parsers, validate_parser_compatibility
 from ..core.schemas import CollectionInfo
 from ..storage.factory import get_metadata_store, get_vector_index_store
 from ..utils.model_resolver import resolve_embedding_adapter
-from ..utils.string_utils import escape_lancedb_string
+from ..utils.tag_mapping import register_tag_mapping
 
 T = TypeVar("T")
 
@@ -135,18 +133,7 @@ class CollectionManager:
     """
 
     def __init__(self) -> None:
-        self._conn: Optional[DBConnection] = None
         self._metadata_store = get_metadata_store()
-
-    async def _get_connection(self) -> DBConnection:
-        """Legacy connection accessor for compatibility.
-
-        Returns:
-            The backend connection instance.
-        """
-        if self._conn is None:
-            self._conn = self._metadata_store.get_raw_connection()
-        return self._conn
 
     async def get_collection(self, collection_name: str) -> CollectionInfo:
         """Get collection metadata from storage.
@@ -593,8 +580,8 @@ def rebuild_collection_metadata() -> None:
         return
 
     # Get connection and find embeddings tables
-    conn = get_vector_index_store().get_raw_connection()
-    table_names = conn.table_names()
+    vector_store = get_vector_index_store()
+    table_names = vector_store.list_table_names()
     embeddings_tables = [t for t in table_names if t.startswith("embeddings_")]
 
     # Build lookup from legacy/new table tags to Hub model IDs.
@@ -610,8 +597,20 @@ def rebuild_collection_metadata() -> None:
             for cfg in hub.list().values():
                 if not isinstance(cfg, EmbeddingModelConfig):
                     continue
-                hub_tag_to_id[to_model_tag(cfg.id)] = (cfg.id, cfg.dimension)
-                hub_tag_to_id[to_model_tag(cfg.model_name)] = (cfg.id, cfg.dimension)
+                register_tag_mapping(
+                    hub_tag_to_id,
+                    to_model_tag(cfg.id),
+                    (cfg.id, cfg.dimension),
+                    get_identity=lambda item: item[0],
+                    logger=logger,
+                )
+                register_tag_mapping(
+                    hub_tag_to_id,
+                    to_model_tag(cfg.model_name),
+                    (cfg.id, cfg.dimension),
+                    get_identity=lambda item: item[0],
+                    logger=logger,
+                )
     except Exception:
         hub_tag_to_id = {}
 
@@ -625,9 +624,11 @@ def rebuild_collection_metadata() -> None:
             if collection.embeddings > 0:
                 # Find which embeddings table has data for this collection
                 for table_name in embeddings_tables:
-                    table = conn.open_table(table_name)
-                    count = table.count_rows(
-                        f"collection = '{escape_lancedb_string(collection.name)}'"
+                    # Use abstraction layer to count rows
+                    count = vector_store.count_rows_or_zero(
+                        table_name,
+                        filters={"collection": collection.name},
+                        is_admin=True,
                     )
                     if count > 0:
                         suffix = table_name.replace("embeddings_", "", 1)
@@ -640,18 +641,11 @@ def rebuild_collection_metadata() -> None:
                             # Legacy fallback: best-effort reverse normalization.
                             embedding_model_id = suffix.replace("_", "-")
 
-                        # Get vector dimension from schema
-                        schema = table.schema
-                        vector_field = schema.field("vector")
-                        if hasattr(vector_field, "type"):
-                            vector_type = vector_field.type
-                            if hasattr(vector_type, "list_size"):
-                                embedding_dimension = vector_type.list_size
-                            else:
-                                # Variable length list, get first row to infer dimension
-                                sample = table.search().limit(1).to_pandas()
-                                if not sample.empty and "vector" in sample.columns:
-                                    embedding_dimension = len(sample.iloc[0]["vector"])
+                        # Use abstraction layer to get vector dimension from schema
+                        table_dim = vector_store.get_vector_dimension(table_name)
+                        if table_dim is not None:
+                            embedding_dimension = table_dim
+
                         break
 
             # Update collection with embedding info

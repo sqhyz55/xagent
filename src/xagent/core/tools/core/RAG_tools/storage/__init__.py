@@ -19,7 +19,14 @@ from .factory import (
     get_metadata_store,
     get_prompt_template_store,
     get_vector_index_store,
+    get_vector_store_raw_connection,
     reset_kb_write_coordinator,
+)
+from .vector_backend import (
+    VECTOR_BACKEND_ENV,
+    VECTOR_BACKEND_ENV_LEGACY,
+    VectorBackend,
+    get_configured_vector_backend,
 )
 
 __all__ = [
@@ -35,6 +42,11 @@ __all__ = [
     "get_kb_write_coordinator",
     "get_metadata_store",
     "get_vector_index_store",
+    "get_vector_store_raw_connection",
+    "VectorBackend",
+    "VECTOR_BACKEND_ENV",
+    "VECTOR_BACKEND_ENV_LEGACY",
+    "get_configured_vector_backend",
     "get_ingestion_status_store",
     "get_prompt_template_store",
     "get_main_pointer_store",

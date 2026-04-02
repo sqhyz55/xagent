@@ -62,13 +62,18 @@ DEFAULT_LANCEDB_BATCH_SIZE: Final[int] = 1000
 DEFAULT_VECTOR_STORE_SCAN_LIMIT: Final[int] = 10_000
 """Default max rows scanned in vector-store document listing operations."""
 
+DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT: Final[int] = 1_000_000
+"""Higher limit for operations like listing all documents in a collection or deleting a collection."""
+
 # Reserved int64 lower bound for internal system sentinel values.
 MIN_INT64: Final[int] = -(2**63)
+"""Minimum 64-bit integer, used as internal sentinel value."""
 
 # Stable expression that always matches no rows for unauthenticated reads.
 UNAUTHENTICATED_NO_ACCESS_FILTER: Final[str] = (
     "(user_id IS NULL and user_id IS NOT NULL)"
 )
+"""A stable LanceDB filter expression that always matches no rows."""
 
 ENABLE_AUTO_EMBEDDINGS_MIGRATION: Final[bool] = (
     os.getenv("ENABLE_AUTO_EMBEDDINGS_MIGRATION", "false").lower() == "true"

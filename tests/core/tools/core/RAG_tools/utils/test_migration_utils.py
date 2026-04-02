@@ -5,6 +5,7 @@ from xagent.core.tools.core.RAG_tools.utils.migration_utils import (
     _model_tag_to_model_id,
     migrate_collection_metadata,
 )
+from xagent.core.tools.core.RAG_tools.utils.tag_mapping import register_tag_mapping
 
 
 class TestMigrateCollectionMetadata:
@@ -67,6 +68,23 @@ class TestMigrateCollectionMetadata:
         assert result["embedding_model_id"] == "text-embedding-ada-002"
         assert result["embedding_dimension"] == 1536
         mock_infer.assert_called_once_with("test_collection")
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.utils.migration_utils._infer_embedding_config_from_collection"
+    )
+    def test_migrate_without_embedding_inference_skips_db(self, mock_infer):
+        """Read-safe migration must not scan LanceDB for embedding config."""
+        legacy_data = {
+            "name": "test_collection",
+            "documents": 10,
+        }
+
+        result = migrate_collection_metadata(legacy_data, infer_embedding=False)
+
+        mock_infer.assert_not_called()
+        assert result["schema_version"] == "1.0.0"
+        assert result["embedding_model_id"] is None
+        assert result["embedding_dimension"] is None
 
 
 class TestInferEmbeddingConfigFromCollection:
@@ -150,6 +168,30 @@ class TestInferEmbeddingConfigFromCollection:
 
         assert result == ("text-embedding-ada-002", 1536)
         mock_logger.warning.assert_called_once()
+
+
+class TestHubTagMapping:
+    """Test tag collision handling when building hub lookup maps."""
+
+    def test_register_hub_tag_mapping_warns_on_collision(self) -> None:
+        mapping = {"OPENAI_text_embedding_3_large": "hub-id-a"}
+        mock_logger = MagicMock()
+
+        register_tag_mapping(
+            mapping,
+            "OPENAI_text_embedding_3_large",
+            "hub-id-b",
+            get_identity=lambda item: item,
+            logger=mock_logger,
+        )
+
+        assert mapping["OPENAI_text_embedding_3_large"] == "hub-id-a"
+        mock_logger.warning.assert_called_once_with(
+            "Tag collision: %s -> %s vs %s",
+            "OPENAI_text_embedding_3_large",
+            "hub-id-a",
+            "hub-id-b",
+        )
 
 
 class TestModelTagToModelId:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple, Type, TypeVar, Union
 
 if TYPE_CHECKING:
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import Runnable
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError as SAOperationalError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -42,6 +44,25 @@ ExceptionType = TypeVar("ExceptionType", bound=RagCoreException)
 
 # Special placeholder values
 _PLACEHOLDER_NONE = {"none", ""}
+
+
+def _hub_init_failure_is_benign_optional_sqlite(exc: BaseException) -> bool:
+    """Return True when the hub DB file is missing or not yet creatable.
+
+    In those cases the model hub is an optional component and env-based config
+    may still work; logging at DEBUG is enough. Permission errors and other DB
+    failures should surface at WARNING with traceback.
+
+    Args:
+        exc: Exception raised while initializing SQLAlchemy / SQLite.
+
+    Returns:
+        True if failure matches a typical \"no sqlite file yet\" operational error.
+    """
+    msg = str(exc).lower()
+    if "unable to open database file" not in msg:
+        return False
+    return isinstance(exc, (SAOperationalError, sqlite3.OperationalError))
 
 
 def _is_placeholder_default(model_id: Optional[str]) -> bool:
@@ -97,7 +118,20 @@ def _get_or_init_model_hub() -> Any:
         Base.metadata.create_all(engine)
         return SQLAlchemyModelHub(db, Model)
     except Exception as e:
-        logger.debug(f"Model hub database not available: {e}")
+        if _hub_init_failure_is_benign_optional_sqlite(e):
+            logger.debug(
+                "Model hub SQLite not available yet (optional component): %s",
+                e,
+            )
+        else:
+            logger.warning(
+                "Model hub database initialization failed; hub-backed model "
+                "resolution is disabled until this is fixed. "
+                "If you rely on env-only configuration, you can ignore this. "
+                "Otherwise check DB URL, permissions, and connectivity: %s",
+                e,
+                exc_info=True,
+            )
         return None
 
 

@@ -105,7 +105,7 @@ class TestReadChunksForEmbedding:
         mock_vector_store.iter_batches.return_value = []
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             malicious_input = "malicious' OR 1=1 --"
@@ -339,7 +339,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.return_value = "below_threshold"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             malicious_doc_id = "malicious' OR 1=1 --"
@@ -402,7 +402,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.return_value = "below_threshold"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -450,7 +450,7 @@ class TestWriteVectorsToDb:
         )
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -497,7 +497,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.return_value = "below_threshold"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -544,7 +544,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.return_value = "below_threshold"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -586,7 +586,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.return_value = "below_threshold"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -627,7 +627,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.upsert_embeddings.side_effect = Exception("upsert failed")
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -679,7 +679,7 @@ class TestWriteVectorsToDb:
 
         with (
             patch(
-                "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
                 return_value=mock_vector_store,
             ),
             patch.dict(os.environ, {"LANCEDB_BATCH_SIZE": "2"}, clear=False),
@@ -752,24 +752,34 @@ class TestWriteVectorsToDb:
             return mock_merge_insert
 
         mock_embeddings_table.merge_insert.side_effect = mock_merge_insert_side_effect
-        # add succeeds for fallback
-        mock_embeddings_table.add.return_value = None
-        mock_embeddings_table.count_rows.return_value = 0
+        # Create mock vector store that uses our mock connection/table
+        mock_vector_store = MagicMock()
+
+        def mock_upsert_side_effect(model_tag, records):
+            # Simulate real upsert behavior by calling merge_insert on our mock table
+            mock_embeddings_table.merge_insert(
+                ["collection", "doc_id", "parse_hash", "chunk_id"]
+            ).when_matched_update_all().when_not_matched_insert_all().execute(records)
+
+        mock_vector_store.upsert_embeddings.side_effect = mock_upsert_side_effect
 
         with (
             patch(
-                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_connection_from_env",
-                return_value=mock_db_connection,
+                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
+                return_value=mock_vector_store,
             ),
             patch.dict(os.environ, {"LANCEDB_BATCH_SIZE": "2"}),
         ):  # Small batch size
-            result = write_vectors_to_db(
-                collection=test_collection,
-                embeddings=embeddings,
+            # Now we expect it to raise DatabaseOperationError instead of partial success
+            from xagent.core.tools.core.RAG_tools.core.exceptions import (
+                DatabaseOperationError,
             )
 
-            # Some batches should have succeeded
-            assert result.upsert_count > 0
+            with pytest.raises(DatabaseOperationError, match="Batch 1 failed"):
+                write_vectors_to_db(
+                    collection=test_collection,
+                    embeddings=embeddings,
+                )
 
     def test_write_vectors_spill_error_reduces_batch_size(
         self, temp_lancedb_dir, test_collection
@@ -803,7 +813,7 @@ class TestWriteVectorsToDb:
 
         with (
             patch(
-                "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
                 return_value=mock_vector_store,
             ),
             patch.dict(os.environ, {"LANCEDB_BATCH_SIZE": "100"}),
@@ -834,7 +844,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.return_value = "below_threshold"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -892,7 +902,7 @@ class TestWriteVectorsToDb:
         ]
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_connection_from_env"
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store"
         ):
             with pytest.raises(
                 VectorValidationError, match="Multiple vector dimensions found"
@@ -919,7 +929,7 @@ class TestWriteVectorsToDb:
         mock_vector_store.create_index.side_effect = Exception("Index creation failed")
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -967,7 +977,7 @@ class TestWriteVectorsToDb:
         )
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_connection_from_env"
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store"
         ):
             with pytest.raises(
                 DocumentValidationError, match="Collection name is required"
@@ -1014,7 +1024,7 @@ class TestWriteVectorsToDb:
         ]
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             result = write_vectors_to_db(
@@ -1057,7 +1067,7 @@ class TestWriteVectorsToDb:
 
         with (
             patch(
-                "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
                 return_value=mock_vector_store,
             ),
             patch.dict(os.environ, {"LANCEDB_BATCH_SIZE": "2"}),
@@ -1115,7 +1125,7 @@ class TestWriteVectorsToDb:
         ]
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             result = write_vectors_to_db(
@@ -1446,7 +1456,7 @@ class TestReindexingFunctionality:
         mock_vector_store.create_index.return_value = "index_building"
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             embedding = ChunkEmbeddingData(
@@ -1494,7 +1504,7 @@ class TestReindexingFunctionality:
 
         with (
             patch(
-                "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+                "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
                 return_value=mock_vector_store,
             ),
         ):
@@ -1557,7 +1567,7 @@ class TestReindexingFunctionality:
         mock_vector_store.iter_batches.return_value = iter([mock_batch])
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             result = read_chunks_for_embedding(
@@ -1616,7 +1626,7 @@ class TestReindexingFunctionality:
         mock_vector_store.iter_batches.return_value = iter([mock_batch])
 
         with patch(
-            "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_index_store",
+            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
             return_value=mock_vector_store,
         ):
             result = read_chunks_for_embedding(

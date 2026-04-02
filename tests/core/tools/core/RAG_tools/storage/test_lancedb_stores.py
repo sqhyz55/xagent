@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -12,6 +13,16 @@ from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
     LanceDBPromptTemplateStore,
     LanceDBVectorIndexStore,
 )
+
+
+def create_mock_arrow_table(data_list: List[Dict[str, Any]]) -> Mock:
+    """Create a mock Arrow table that supports to_pylist() and len()."""
+    mock_table = Mock()
+    mock_table.to_pylist = Mock(return_value=data_list)
+    mock_table.__len__ = Mock(return_value=len(data_list))
+    # Support iteration for 'for row in result' patterns
+    mock_table.__iter__ = Mock(return_value=iter(data_list))
+    return mock_table
 
 
 @pytest.fixture(autouse=True)
@@ -75,17 +86,20 @@ def test_metadata_store_get_collection_config_success(
     mock_table.schema = [SimpleNamespace(name="collection")]
     mock_conn.open_table.return_value = mock_table
 
-    # Mock pandas DataFrame with iloc[0]["config_json"] access pattern
-    # Create a mock that behaves like a pandas Series
-    mock_series = Mock()
-    mock_series.__getitem__ = Mock(return_value='{"parse_method": "default"}')
+    # Mock Arrow table with result[0]["config_json"].as_py() access pattern
+    mock_scalar = Mock()
+    mock_scalar.as_py = Mock(return_value='{"parse_method": "default"}')
+
+    mock_config_col = Mock()
+    mock_config_col.__getitem__ = Mock(return_value=mock_scalar)
 
     mock_result = Mock()
-    mock_result.empty = False
-    mock_result.iloc = Mock()
-    mock_result.iloc.__getitem__ = Mock(return_value=mock_series)
+    mock_result.__len__ = Mock(return_value=1)
+    mock_result.__getitem__ = Mock(
+        side_effect=lambda key: mock_config_col if key == "config_json" else Mock()
+    )
 
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -110,8 +124,8 @@ def test_metadata_store_get_collection_config_not_found(
     mock_table = Mock()
     mock_conn.open_table.return_value = mock_table
     mock_result = Mock()
-    mock_result.empty = True
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_result.__len__ = Mock(return_value=0)
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -126,6 +140,46 @@ def test_metadata_store_get_collection_config_not_found(
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
+def test_metadata_store_get_collection_config_admin_picks_newest(
+    mock_get_connection: Mock,
+) -> None:
+    """When is_admin, multiple tenant rows should resolve to latest updated_at."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    older = datetime(2020, 1, 1)
+    newer = datetime(2021, 6, 1)
+    tbl = pa.table(
+        {
+            "collection": ["test_collection", "test_collection"],
+            "config_json": [
+                '{"parse_method": "default"}',
+                '{"parse_method": "deepdoc"}',
+            ],
+            "updated_at": [older, newer],
+            "user_id": [1, 2],
+        }
+    )
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = tbl
+
+    store = LanceDBMetadataStore()
+    config = asyncio.run(
+        store.get_collection_config(
+            collection="test_collection", user_id=0, is_admin=True
+        )
+    )
+
+    assert config == '{"parse_method": "deepdoc"}'
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
 def test_metadata_store_get_collection_success(mock_get_connection: Mock) -> None:
     """Metadata store should deserialize collection metadata correctly."""
     mock_conn = Mock()
@@ -133,35 +187,30 @@ def test_metadata_store_get_collection_success(mock_get_connection: Mock) -> Non
 
     mock_table = Mock()
     mock_conn.open_table.return_value = mock_table
-    mock_result = Mock()
-    mock_result.empty = False
-    mock_result.iloc = [
-        Mock(
-            to_dict=Mock(
-                return_value={
-                    "name": "test_collection",
-                    "schema_version": "1.0.0",
-                    "embedding_model_id": "text-embedding-v4",
-                    "embedding_dimension": 1024,
-                    "documents": 2,
-                    "processed_documents": 2,
-                    "parses": 2,
-                    "chunks": 8,
-                    "embeddings": 8,
-                    "document_names": '["a.pdf","b.pdf"]',
-                    "collection_locked": False,
-                    "allow_mixed_parse_methods": False,
-                    "skip_config_validation": False,
-                    "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                    "updated_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                    "last_accessed_at": datetime.now(timezone.utc).replace(tzinfo=None),
-                    "extra_metadata": "{}",
-                }
-            )
-        )
-    ]
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-        mock_result
+
+    # Use helper to create mock Arrow table
+    mock_data = {
+        "name": "test_collection",
+        "schema_version": "1.0.0",
+        "embedding_model_id": "text-embedding-v4",
+        "embedding_dimension": 1024,
+        "documents": 2,
+        "processed_documents": 2,
+        "parses": 2,
+        "chunks": 8,
+        "embeddings": 8,
+        "document_names": '["a.pdf","b.pdf"]',
+        "collection_locked": False,
+        "allow_mixed_parse_methods": False,
+        "skip_config_validation": False,
+        "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        "updated_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        "last_accessed_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        "extra_metadata": "{}",
+    }
+
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
+        create_mock_arrow_table([mock_data])
     )
 
     store = LanceDBMetadataStore()
@@ -639,8 +688,8 @@ def test_prompt_template_store_save_and_get(mock_get_connection: Mock) -> None:
 
     # Mock empty result for existing check
     mock_result = Mock()
-    mock_result.empty = True
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_result.__len__ = Mock(return_value=0)
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -657,8 +706,7 @@ def test_prompt_template_store_save_and_get(mock_get_connection: Mock) -> None:
     mock_table.add.assert_called_once()
 
     # Mock get result
-    mock_row = Mock()
-    mock_row.__getitem__ = lambda self, key: {
+    row_data = {
         "id": template_id,
         "name": "test_template",
         "template": "Test prompt content",
@@ -668,13 +716,9 @@ def test_prompt_template_store_save_and_get(mock_get_connection: Mock) -> None:
         "user_id": 1,
         "created_at": None,
         "updated_at": None,
-    }.get(key)
-
-    mock_get_result = Mock()
-    mock_get_result.empty = False
-    mock_get_result.iloc = [mock_row]
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-        mock_get_result
+    }
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
+        create_mock_arrow_table([row_data])
     )
 
     # Get template
@@ -694,8 +738,7 @@ def test_prompt_template_store_get_latest(mock_get_connection: Mock) -> None:
     mock_conn.open_table.return_value = mock_table
 
     # Mock result
-    mock_row = Mock()
-    mock_row.__getitem__ = lambda self, key: {
+    row_data = {
         "id": "test-id",
         "name": "test_template",
         "template": "Latest content",
@@ -705,13 +748,9 @@ def test_prompt_template_store_get_latest(mock_get_connection: Mock) -> None:
         "user_id": 1,
         "created_at": None,
         "updated_at": None,
-    }.get(key)
-
-    mock_result = Mock()
-    mock_result.empty = False
-    mock_result.iloc = [mock_row]
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-        mock_result
+    }
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
+        create_mock_arrow_table([row_data])
     )
 
     store = LanceDBPromptTemplateStore()
@@ -734,19 +773,12 @@ def test_prompt_template_store_delete(mock_get_connection: Mock) -> None:
 
     # Mock existing template
     mock_row = {"is_latest": True, "name": "test-template"}
-    mock_row_obj = Mock()
-    mock_row_obj.__getitem__ = lambda self, key: mock_row[key]
-    mock_result = Mock()
-    mock_result.empty = False
-    mock_result.iloc = [mock_row_obj]
-    mock_result.__len__ = lambda self: 1
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-        mock_result
-    )
+    mock_result = create_mock_arrow_table([mock_row])
+
     # Mock remaining versions after delete (empty for this test)
-    mock_result_empty = Mock()
-    mock_result_empty.empty = True
-    mock_table.search.return_value.where.return_value.to_pandas.side_effect = [
+    mock_result_empty = create_mock_arrow_table([])
+
+    mock_table.search.return_value.where.return_value.to_arrow.side_effect = [
         mock_result,
         mock_result_empty,
     ]
@@ -768,8 +800,6 @@ def test_prompt_template_store_delete(mock_get_connection: Mock) -> None:
 )
 def test_main_pointer_store_set_and_get(mock_get_connection: Mock) -> None:
     """Test setting and getting a main pointer."""
-    import pandas as pd
-
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
     mock_table = Mock()
@@ -777,8 +807,8 @@ def test_main_pointer_store_set_and_get(mock_get_connection: Mock) -> None:
 
     # Mock no existing pointer
     mock_result = Mock()
-    mock_result.empty = True
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_result.__len__ = Mock(return_value=0)
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -804,23 +834,13 @@ def test_main_pointer_store_set_and_get(mock_get_connection: Mock) -> None:
         "model_tag": "",
         "semantic_id": "parse-123",
         "technical_id": "hash-456",
-        "created_at": pd.Timestamp.now(tz="UTC"),
-        "updated_at": pd.Timestamp.now(tz="UTC"),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
         "operator": "unknown",
     }
 
-    mock_get_result = Mock()
-    mock_get_result.empty = False
-    mock_get_result.__len__ = lambda self: 1
-
-    # Create mock row with __getitem__ support
-    mock_row_obj = Mock()
-    mock_row_obj.__getitem__ = lambda self, key: mock_row[key]
-
-    mock_get_result.iloc = [mock_row_obj]
-    mock_get_result.sort_values.return_value = mock_get_result
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
-        mock_get_result
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
+        create_mock_arrow_table([mock_row])
     )
 
     # Get pointer
@@ -844,8 +864,8 @@ def test_main_pointer_store_user_id_warning(mock_get_connection: Mock, caplog) -
 
     # Mock no existing pointer
     mock_result = Mock()
-    mock_result.empty = True
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_result.__len__ = Mock(return_value=0)
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -875,8 +895,6 @@ def test_main_pointer_store_user_id_warning(mock_get_connection: Mock, caplog) -
 )
 def test_main_pointer_store_list(mock_get_connection: Mock) -> None:
     """Test listing main pointers."""
-    import pandas as pd
-
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
     mock_table = Mock()
@@ -893,15 +911,14 @@ def test_main_pointer_store_list(mock_get_connection: Mock) -> None:
         "model_tag": "",
         "semantic_id": "parse-123",
         "technical_id": "hash-456",
-        "created_at": pd.Timestamp.now(tz="UTC"),
-        "updated_at": pd.Timestamp.now(tz="UTC"),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
         "operator": "unknown",
     }
 
-    mock_df = Mock()
-    mock_df.iterrows.return_value = [(None, mock_row_data)]
-    mock_df.empty = False
-    mock_table.search.return_value.where.return_value.limit.return_value.to_pandas.return_value = mock_df
+    mock_table.search.return_value.where.return_value.limit.return_value.to_arrow.return_value = create_mock_arrow_table(
+        [mock_row_data]
+    )
 
     store = LanceDBMainPointerStore()
 
@@ -922,8 +939,8 @@ def test_main_pointer_store_delete(mock_get_connection: Mock) -> None:
 
     # Mock existing pointer
     mock_result = Mock()
-    mock_result.empty = False
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_result.__len__ = Mock(return_value=1)
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -946,8 +963,8 @@ def test_main_pointer_store_delete_not_found(mock_get_connection: Mock) -> None:
 
     # Mock no existing pointer
     mock_result = Mock()
-    mock_result.empty = True
-    mock_table.search.return_value.where.return_value.to_pandas.return_value = (
+    mock_result.__len__ = Mock(return_value=0)
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
         mock_result
     )
 
@@ -998,9 +1015,11 @@ async def test_search_vectors_async_basic(
     mock_search = Mock()
     mock_search.limit.return_value = mock_search
     mock_search.where = Mock(return_value=mock_search)
+
     # to_arrow needs to be a coroutine that returns the arrow table
     async def mock_to_arrow():
         return arrow_table
+
     mock_search.to_arrow = mock_to_arrow
 
     mock_table.search = Mock(return_value=mock_search)
@@ -1059,6 +1078,7 @@ async def test_search_fts_async_basic(
 
     async def mock_to_arrow():
         return arrow_table
+
     mock_search.to_arrow = mock_to_arrow
 
     mock_table.search = Mock(return_value=mock_search)
@@ -1179,10 +1199,13 @@ async def test_upsert_documents_async(
     # Mock merge_insert chain
     mock_merge_builder = Mock()
     mock_merge_builder.when_matched_update_all = Mock(return_value=mock_merge_builder)
-    mock_merge_builder.when_not_matched_insert_all = Mock(return_value=mock_merge_builder)
+    mock_merge_builder.when_not_matched_insert_all = Mock(
+        return_value=mock_merge_builder
+    )
 
     async def mock_execute(records):
         return None
+
     mock_merge_builder.execute = mock_execute
 
     mock_table.merge_insert = Mock(return_value=mock_merge_builder)
@@ -1227,10 +1250,13 @@ async def test_upsert_chunks_async(
     # Mock merge_insert chain
     mock_merge_builder = Mock()
     mock_merge_builder.when_matched_update_all = Mock(return_value=mock_merge_builder)
-    mock_merge_builder.when_not_matched_insert_all = Mock(return_value=mock_merge_builder)
+    mock_merge_builder.when_not_matched_insert_all = Mock(
+        return_value=mock_merge_builder
+    )
 
     async def mock_execute(records):
         return None
+
     mock_merge_builder.execute = mock_execute
 
     mock_table.merge_insert = Mock(return_value=mock_merge_builder)
@@ -1275,10 +1301,13 @@ async def test_upsert_embeddings_async(
     # Mock merge_insert chain
     mock_merge_builder = Mock()
     mock_merge_builder.when_matched_update_all = Mock(return_value=mock_merge_builder)
-    mock_merge_builder.when_not_matched_insert_all = Mock(return_value=mock_merge_builder)
+    mock_merge_builder.when_not_matched_insert_all = Mock(
+        return_value=mock_merge_builder
+    )
 
     async def mock_execute(records):
         return None
+
     mock_merge_builder.execute = mock_execute
 
     mock_table.merge_insert = Mock(return_value=mock_merge_builder)
@@ -1451,9 +1480,7 @@ async def test_search_vectors_async_table_not_found(
     mock_connect_async.return_value = mock_async_conn
 
     # Mock open_table to raise exception
-    mock_async_conn.open_table = AsyncMock(
-        side_effect=Exception("Table not found")
-    )
+    mock_async_conn.open_table = AsyncMock(side_effect=Exception("Table not found"))
 
     store = LanceDBVectorIndexStore()
 
@@ -1477,7 +1504,6 @@ async def test_search_vectors_async_search_failure(
     mock_get_connection: Mock, mock_connect_async: AsyncMock
 ) -> None:
     """Test async vector search handles search failure gracefully."""
-    import pyarrow as pa
 
     mock_conn = Mock()
     mock_conn.uri = "test_uri"
@@ -1498,6 +1524,7 @@ async def test_search_vectors_async_search_failure(
 
     async def mock_to_arrow():
         raise Exception("Search failed")
+
     mock_search.to_arrow = mock_to_arrow
 
     mock_table.search = Mock(return_value=mock_search)
@@ -1571,6 +1598,7 @@ async def test_iter_batches_async_invalid_columns(
     def make_to_batches():
         async def inner(**kwargs):
             raise Exception("Invalid columns")
+
         return inner()
 
     mock_table.to_batches = make_to_batches()
@@ -1608,9 +1636,7 @@ async def test_count_rows_async_table_not_found(
     mock_connect_async.return_value = mock_async_conn
 
     # Mock open_table to raise exception
-    mock_async_conn.open_table = AsyncMock(
-        side_effect=Exception("Table not found")
-    )
+    mock_async_conn.open_table = AsyncMock(side_effect=Exception("Table not found"))
 
     store = LanceDBVectorIndexStore()
 
@@ -1618,3 +1644,185 @@ async def test_count_rows_async_table_not_found(
 
     # Should return 0 on error
     assert count == 0
+
+
+# --- get_vector_dimension Tests (Issue #14) ---
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_get_vector_dimension_success(mock_get_connection: Mock) -> None:
+    """Test get_vector_dimension returns correct dimension from schema."""
+    from types import SimpleNamespace
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table with fixed-size vector field
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock schema with vector field having list_size
+    mock_vector_type = SimpleNamespace(list_size=1536)
+    mock_vector_field = SimpleNamespace(type=mock_vector_type)
+    mock_schema = Mock()
+    mock_schema.field.return_value = mock_vector_field
+    mock_table.schema = mock_schema
+
+    store = LanceDBVectorIndexStore()
+    dimension = store.get_vector_dimension("embeddings_test_model")
+
+    assert dimension == 1536
+    mock_schema.field.assert_called_once_with("vector")
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_get_vector_dimension_table_not_found(mock_get_connection: Mock) -> None:
+    """Test get_vector_dimension returns None when table not found."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock open_table to raise exception
+    mock_conn.open_table.side_effect = Exception("Table not found")
+
+    store = LanceDBVectorIndexStore()
+    dimension = store.get_vector_dimension("nonexistent_table")
+
+    assert dimension is None
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_get_vector_dimension_variable_length(mock_get_connection: Mock) -> None:
+    """Test get_vector_dimension returns None for variable-length vectors."""
+    from types import SimpleNamespace
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table with variable-length vector field (no list_size)
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    # Mock schema with vector field lacking list_size attribute
+    mock_vector_type = SimpleNamespace()  # No list_size
+    mock_vector_field = SimpleNamespace(type=mock_vector_type)
+    mock_schema = Mock()
+    mock_schema.field.return_value = mock_vector_field
+    mock_table.schema = mock_schema
+
+    store = LanceDBVectorIndexStore()
+    dimension = store.get_vector_dimension("embeddings_variable")
+
+    assert dimension is None
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_get_vector_dimension_no_vector_field(mock_get_connection: Mock) -> None:
+    """Test get_vector_dimension returns None when vector field missing."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table without vector field
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    mock_schema = Mock()
+    mock_schema.field.side_effect = Exception("Field 'vector' not found")
+    mock_table.schema = mock_schema
+
+    store = LanceDBVectorIndexStore()
+    dimension = store.get_vector_dimension("embeddings_no_vector")
+
+    assert dimension is None
+
+
+# --- list_table_names Tests (Issue #14) ---
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_list_table_names_success(mock_get_connection: Mock) -> None:
+    """Test list_table_names returns correct table names."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table_names to return list of names
+    mock_conn.table_names.return_value = ["documents", "chunks", "embeddings_test"]
+
+    store = LanceDBVectorIndexStore()
+    names = store.list_table_names()
+
+    assert names == ["documents", "chunks", "embeddings_test"]
+    mock_conn.table_names.assert_called_once()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_list_table_names_connection_error(mock_get_connection: Mock) -> None:
+    """Test list_table_names returns empty list on error."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table_names to raise exception
+    mock_conn.table_names.side_effect = Exception("Connection error")
+
+    store = LanceDBVectorIndexStore()
+    names = store.list_table_names()
+
+    assert names == []
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_list_table_names_no_table_names_attr(mock_get_connection: Mock) -> None:
+    """Test list_table_names returns empty list when connection lacks table_names."""
+    # Mock connection without table_names attribute
+    mock_conn = Mock(spec=[])  # Empty spec means no attributes
+    mock_get_connection.return_value = mock_conn
+
+    store = LanceDBVectorIndexStore()
+    names = store.list_table_names()
+
+    assert names == []
+
+
+# --- get_vector_dimension_async Tests (Issue #14) ---
+
+
+@pytest.mark.asyncio
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_get_vector_dimension_async_delegates_to_sync(
+    mock_get_connection: Mock,
+) -> None:
+    """Test async version delegates to sync implementation."""
+    from types import SimpleNamespace
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table with fixed-size vector field
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    mock_vector_type = SimpleNamespace(list_size=768)
+    mock_vector_field = SimpleNamespace(type=mock_vector_type)
+    mock_schema = Mock()
+    mock_schema.field.return_value = mock_vector_field
+    mock_table.schema = mock_schema
+
+    store = LanceDBVectorIndexStore()
+    dimension = await store.get_vector_dimension_async("embeddings_async_test")
+
+    assert dimension == 768

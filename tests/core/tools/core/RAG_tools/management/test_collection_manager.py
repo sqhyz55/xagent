@@ -12,6 +12,7 @@ from xagent.core.tools.core.RAG_tools.management.collection_manager import (
     resolve_effective_embedding_model_sync,
     update_collection_stats_sync,
 )
+from xagent.core.tools.core.RAG_tools.utils.tag_mapping import register_tag_mapping
 
 
 @pytest.fixture
@@ -172,6 +173,30 @@ class TestSyncFunctions:
         mock_run_loop.assert_called_once()
 
 
+class TestHubTagMapping:
+    """Test collection-manager hub tag mapping collision handling."""
+
+    def test_register_hub_tag_mapping_warns_on_collision(self) -> None:
+        mapping = {"OPENAI_text_embedding_3_large": ("hub-id-a", 1024)}
+        mock_logger = Mock()
+
+        register_tag_mapping(
+            mapping,
+            "OPENAI_text_embedding_3_large",
+            ("hub-id-b", 1536),
+            get_identity=lambda item: item[0],
+            logger=mock_logger,
+        )
+
+        assert mapping["OPENAI_text_embedding_3_large"] == ("hub-id-a", 1024)
+        mock_logger.warning.assert_called_once_with(
+            "Tag collision: %s -> %s vs %s",
+            "OPENAI_text_embedding_3_large",
+            "hub-id-a",
+            "hub-id-b",
+        )
+
+
 class TestCollectionInfoProperties:
     """Test CollectionInfo properties and methods."""
 
@@ -242,3 +267,151 @@ class TestResolveEffectiveEmbeddingModel:
             "test_collection", config_model_id="text-embedding-v4"
         )
         assert resolved == "text-embedding-v4"
+
+
+# --- rebuild_collection_metadata Tests (Issue #14) ---
+
+
+class TestRebuildCollectionMetadata:
+    """Test rebuild_collection_metadata function."""
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
+    )
+    @patch("xagent.core.tools.core.RAG_tools.management.collections")
+    def test_rebuild_with_embeddings_and_dimension(
+        self, mock_collections_module, mock_get_vector_store
+    ):
+        """Test rebuild with embeddings table and vector dimension."""
+        from types import SimpleNamespace
+
+        # Mock collections.list_collections response
+        mock_collection = SimpleNamespace(
+            name="test_collection",
+            embeddings=10,
+            model_copy=lambda update: SimpleNamespace(
+                name="test_collection",
+                embedding_model_id="test-model",
+                embedding_dimension=1536,
+            ),
+        )
+        mock_result = SimpleNamespace(status="success", collections=[mock_collection])
+        mock_collections_module.list_collections.return_value = mock_result
+
+        # Mock vector_store.list_table_names
+        mock_vector_store = Mock()
+        mock_get_vector_store.return_value = mock_vector_store
+        mock_vector_store.list_table_names.return_value = [
+            "documents",
+            "chunks",
+            "embeddings_test_model",
+        ]
+
+        # Mock count_rows_or_zero - only embeddings table has data
+        mock_vector_store.count_rows_or_zero.side_effect = (
+            lambda table_name, **kwargs: (
+                10 if table_name == "embeddings_test_model" else 0
+            )
+        )
+
+        # Mock get_vector_dimension
+        mock_vector_store.get_vector_dimension.return_value = 1536
+
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            rebuild_collection_metadata,
+        )
+
+        rebuild_collection_metadata()
+
+        # Verify count_rows_or_zero was called
+        assert mock_vector_store.count_rows_or_zero.called
+        # Verify get_vector_dimension was called
+        mock_vector_store.get_vector_dimension.assert_called_with(
+            "embeddings_test_model"
+        )
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
+    )
+    @patch("xagent.core.tools.core.RAG_tools.management.collections")
+    def test_rebuild_no_embeddings(
+        self, mock_collections_module, mock_get_vector_store
+    ):
+        """Test rebuild with collection having no embeddings."""
+        from types import SimpleNamespace
+
+        # Mock collection with no embeddings
+        mock_collection = SimpleNamespace(
+            name="empty_collection",
+            embeddings=0,
+            model_copy=lambda update: SimpleNamespace(
+                name="empty_collection",
+                embedding_model_id=None,
+                embedding_dimension=None,
+            ),
+        )
+        mock_result = SimpleNamespace(status="success", collections=[mock_collection])
+        mock_collections_module.list_collections.return_value = mock_result
+
+        # Mock vector_store
+        mock_vector_store = Mock()
+        mock_get_vector_store.return_value = mock_vector_store
+        mock_vector_store.list_table_names.return_value = ["documents"]
+
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            rebuild_collection_metadata,
+        )
+
+        rebuild_collection_metadata()
+
+        # Should not call count_rows_or_zero for collections with no embeddings
+        assert not mock_vector_store.count_rows_or_zero.called
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
+    )
+    @patch("xagent.core.tools.core.RAG_tools.management.collections")
+    def test_rebuild_list_collections_fails(
+        self, mock_collections_module, mock_get_vector_store
+    ):
+        """Test rebuild when list_collections fails."""
+        from types import SimpleNamespace
+
+        # Mock list_collections to return failure
+        mock_result = SimpleNamespace(
+            status="error", message="Failed to list collections"
+        )
+        mock_collections_module.list_collections.return_value = mock_result
+
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            rebuild_collection_metadata,
+        )
+
+        # Should return early without error
+        rebuild_collection_metadata()
+
+        # Vector store should not be accessed
+        assert not mock_get_vector_store.called
+
+    @patch(
+        "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
+    )
+    @patch("xagent.core.tools.core.RAG_tools.management.collections")
+    def test_rebuild_empty_collections_list(
+        self, mock_collections_module, mock_get_vector_store
+    ):
+        """Test rebuild when no collections exist."""
+        from types import SimpleNamespace
+
+        # Mock empty collections list
+        mock_result = SimpleNamespace(status="success", collections=[])
+        mock_collections_module.list_collections.return_value = mock_result
+
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            rebuild_collection_metadata,
+        )
+
+        rebuild_collection_metadata()
+
+        # Vector store should not be accessed for empty list
+        assert not mock_get_vector_store.called

@@ -1319,7 +1319,15 @@ class CollectionInfo(BaseModel):
 
     @classmethod
     def from_storage(cls, data: dict) -> "CollectionInfo":
-        """Factory method to load from LanceDB, handling migration automatically."""
+        """Load from storage dict with in-memory schema normalization.
+
+        Legacy rows (e.g. ``schema_version`` missing / ``0.0.0``) are upgraded
+        **in memory only** via :func:`~.migration_utils.migrate_collection_metadata`
+        with ``infer_embedding=False`` so this path does **not** open LanceDB or
+        scan embedding tables (read-side-effect-free). For full migration with
+        embedding inference, call ``migrate_collection_metadata(data)`` explicitly
+        (e.g. admin repair or write pipeline).
+        """
         import json
         import math
 
@@ -1342,14 +1350,12 @@ class CollectionInfo(BaseModel):
             if isinstance(value, float) and math.isnan(value):
                 data[key] = None
 
-        # 3. Check version and migrate if needed
+        # 3. Check version and migrate if needed (no DB access on read path)
         current_version = "1.0.0"
         data_version = data.get("schema_version", "0.0.0")
 
         if data_version < current_version:
-            data = migrate_collection_metadata(data)
-            # Note: In LanceDB, we don't auto-save migrated data here
-            # It will be saved when the collection is next updated
+            data = migrate_collection_metadata(data, infer_embedding=False)
 
         return cls(**data)
 

@@ -8,13 +8,13 @@ import logging
 import time
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 
 @contextmanager
-def log_operation(operation: str, **extra_context):
+def log_operation(operation: str, **extra_context: Any) -> Iterator[None]:
     """Context manager for logging operation with timing and structured output.
 
     Usage:
@@ -32,29 +32,35 @@ def log_operation(operation: str, **extra_context):
     """
     start_time = time.time()
     try:
-        logger.info("operation_started", extra={
-            "operation": operation,
-            **extra_context
-        })
+        logger.info(
+            "operation_started", extra={"operation": operation, **extra_context}
+        )
         yield
     except Exception as e:
-        logger.error("operation_failed", extra={
-            "operation": operation,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            **extra_context
-        }, exc_info=True)
+        logger.error(
+            "operation_failed",
+            extra={
+                "operation": operation,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                **extra_context,
+            },
+            exc_info=True,
+        )
         raise
     finally:
         duration_ms = (time.time() - start_time) * 1000
-        logger.info("operation_completed", extra={
-            "operation": operation,
-            "duration_ms": round(duration_ms, 2),
-            **extra_context
-        })
+        logger.info(
+            "operation_completed",
+            extra={
+                "operation": operation,
+                "duration_ms": round(duration_ms, 2),
+                **extra_context,
+            },
+        )
 
 
-def log_async_operation(operation: str, **extra_context):
+def log_async_operation(operation: str, **extra_context: Any) -> Callable:
     """Decorator for async operations with automatic timing and structured logging.
 
     Usage:
@@ -69,60 +75,67 @@ def log_async_operation(operation: str, **extra_context):
     Returns:
         Decorator function
     """
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start_time = time.time()
             # Extract context from args/kwargs if possible
             context = dict(extra_context)
 
             # Try to extract self and method name for better logging
-            if args and hasattr(args[0], '__class__'):
-                context['class'] = args[0].__class__.__name__
+            if args and hasattr(args[0], "__class__"):
+                context["class"] = args[0].__class__.__name__
 
             try:
-                logger.info("operation_started", extra={
-                    "operation": operation,
-                    **context
-                })
+                logger.info(
+                    "operation_started", extra={"operation": operation, **context}
+                )
                 result = await func(*args, **kwargs)
 
                 duration_ms = (time.time() - start_time) * 1000
-                logger.info("operation_completed", extra={
-                    "operation": operation,
-                    "duration_ms": round(duration_ms, 2),
-                    **context
-                })
+                logger.info(
+                    "operation_completed",
+                    extra={
+                        "operation": operation,
+                        "duration_ms": round(duration_ms, 2),
+                        **context,
+                    },
+                )
                 return result
             except Exception as e:
                 duration_ms = (time.time() - start_time) * 1000
-                logger.error("operation_failed", extra={
-                    "operation": operation,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "duration_ms": round(duration_ms, 2),
-                    **context
-                }, exc_info=True)
+                logger.error(
+                    "operation_failed",
+                    extra={
+                        "operation": operation,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "duration_ms": round(duration_ms, 2),
+                        **context,
+                    },
+                    exc_info=True,
+                )
                 raise
 
         return wrapper
+
     return decorator
 
 
-def log_audit(operation: str, **context):
+def log_audit(operation: str, **context: Any) -> None:
     """Log an audit event for security and compliance tracking.
 
     Args:
         operation: The operation being performed (e.g., "data_access", "permission_check")
         **context: Audit context (user_id, collection, doc_id, etc.)
     """
-    logger.info("audit", extra={
-        "operation": operation,
-        **context
-    })
+    logger.info("audit", extra={"operation": operation, **context})
 
 
-def log_performance(metric_name: str, value: Optional[float] = None, unit: str = "ms", **context):
+def log_performance(
+    metric_name: str, value: Optional[float] = None, unit: str = "ms", **context: Any
+) -> None:
     """Log a performance metric.
 
     Args:
@@ -131,10 +144,7 @@ def log_performance(metric_name: str, value: Optional[float] = None, unit: str =
         unit: Unit of measurement (default: "ms")
         **context: Additional context
     """
-    extra = {
-        "metric": metric_name,
-        **context
-    }
+    extra: Dict[str, Any] = {"metric": metric_name, **context}
     if value is not None:
         extra["value"] = value
         extra["unit"] = unit

@@ -32,10 +32,10 @@ from .contracts import (
     VectorIndexStore,
     build_filter_from_dict,
 )
-from .logging_utils import log_audit, log_performance
 from .lancedb_filter_utils import (
     translate_filter_expression,
 )
+from .logging_utils import log_audit, log_performance
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,11 @@ class LanceDBMetadataStore(MetadataStore):
         conn = await self._get_connection()
         table = conn.open_table("collection_metadata")
         safe_name = escape_lancedb_string(collection_name)
-        result = table.search().where(f"name = '{safe_name}'").to_pandas()
-        if result.empty:
+        result = table.search().where(f"name = '{safe_name}'").to_arrow()
+        if len(result) == 0:
             raise ValueError(f"Collection '{collection_name}' not found")
-        data = result.iloc[0].to_dict()
+        # Convert Arrow table to list of dicts and take first row
+        data = result.to_pylist()[0]
         return CollectionInfo.from_storage(data)
 
     async def save_collection(self, collection: CollectionInfo) -> None:
@@ -70,8 +71,8 @@ class LanceDBMetadataStore(MetadataStore):
 
         table = conn.open_table("collection_metadata")
         safe_name = escape_lancedb_string(collection.name)
-        existing = table.search().where(f"name = '{safe_name}'").to_pandas()
-        if not existing.empty:
+        existing = table.search().where(f"name = '{safe_name}'").to_arrow()
+        if len(existing) > 0:
             table.delete(f"name = '{safe_name}'")
         table.add([data])
 
@@ -149,8 +150,22 @@ class LanceDBMetadataStore(MetadataStore):
         self,
         collection: str,
         user_id: int,
+        is_admin: bool = False,
     ) -> str | None:
-        """Get collection ingestion configuration from LanceDB."""
+        """Get collection ingestion configuration from LanceDB.
+
+        When ``is_admin`` is True, returns the most recently updated config for
+        the collection across all users (tenant-agnostic listing).
+
+        Args:
+            collection: Collection name.
+            user_id: User ID for multi-tenancy (ignored when ``is_admin``).
+            is_admin: If True, omit ``user_id`` filter and resolve duplicates by
+                latest ``updated_at``.
+
+        Returns:
+            Config JSON string if found, None otherwise.
+        """
         from ..LanceDB.schema_manager import ensure_collection_config_table
 
         try:
@@ -159,15 +174,26 @@ class LanceDBMetadataStore(MetadataStore):
 
             table = conn.open_table("collection_config")
             safe_collection = escape_lancedb_string(collection)
-            result = (
-                table.search()
-                .where(f"collection = '{safe_collection}' AND user_id = {user_id}")
-                .to_pandas()
-            )
+            if is_admin:
+                where_clause = f"collection = '{safe_collection}'"
+            else:
+                where_clause = (
+                    f"collection = '{safe_collection}' AND user_id = {user_id}"
+                )
+            result = table.search().where(where_clause).to_arrow()
 
-            if result.empty:
+            if len(result) == 0:
                 return None
-            return str(result.iloc[0]["config_json"])
+            if not is_admin or len(result) == 1:
+                return str(result["config_json"][0].as_py())
+
+            best_idx = 0
+            for i in range(1, len(result)):
+                cur = result["updated_at"][i].as_py()
+                best = result["updated_at"][best_idx].as_py()
+                if cur is not None and (best is None or cur > best):
+                    best_idx = i
+            return str(result["config_json"][best_idx].as_py())
         except Exception as exc:
             logger.debug("Error reading collection config: %s", exc)
             return None
@@ -181,7 +207,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
     Phase 1A Option C: Provides both sync and async methods.
     Sync methods use legacy lancedb.connect(); async methods use lancedb.connect_async().
-    Async methods return native Arrow format; sync methods return pandas format.
+    Both sync and async methods return native Arrow format for efficient zero-copy operations.
     """
 
     def __init__(self) -> None:
@@ -231,7 +257,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             user_id=user_id or -1,
             is_admin=is_admin,
             collection=collection_name,
-            max_results=max_results
+            max_results=max_results,
         )
 
         # Build filter expression using common function (includes validation)
@@ -306,6 +332,21 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             logger.warning("Failed to list LanceDB tables: %s", exc)
             return []
 
+    def get_vector_dimension(self, table_name: str) -> Optional[int]:
+        """Get the vector dimension from a table's schema."""
+        conn = self._get_connection()
+        try:
+            table = conn.open_table(table_name)
+            schema = table.schema
+            vector_field = schema.field("vector")
+            if hasattr(vector_field, "type"):
+                vector_type = vector_field.type
+                if hasattr(vector_type, "list_size"):
+                    return cast(int, vector_type.list_size)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to get vector dimension for %s: %s", table_name, exc)
+        return None
+
     def delete_collection_data(
         self,
         collection_name: str,
@@ -359,13 +400,12 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         user_id: Optional[int],
         is_admin: bool,
     ) -> Dict[str, Dict[str, int]]:
-        """Aggregate statistics for all collections."""
+        """Aggregate statistics for all collections using memory-efficient batched iteration."""
         from ..LanceDB.schema_manager import (
             ensure_chunks_table,
             ensure_documents_table,
             ensure_parses_table,
         )
-        from ..utils.lancedb_query_utils import query_to_list
 
         stats: Dict[str, Dict[str, int]] = {}
         conn = self._get_connection()
@@ -375,37 +415,42 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         ensure_parses_table(conn)
         ensure_chunks_table(conn)
 
-        # Get user filter for multi-tenancy
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin)
-
         def _count_table(table_name: str, stat_key: str) -> None:
+            """Count records per collection using batched streaming to avoid OOM."""
             try:
-                table = conn.open_table(table_name)
-                if user_filter:
-                    results = query_to_list(table.search().where(user_filter))
-                else:
-                    results = query_to_list(table.search())
+                # Use iter_batches for memory-efficient streaming with default batch_size=1000
+                for batch in self.iter_batches(
+                    table_name=table_name,
+                    columns=["collection"],  # Only need collection column
+                    user_id=user_id,
+                    is_admin=is_admin,
+                ):
+                    # Extract collection column from PyArrow RecordBatch
+                    collection_idx = batch.schema.get_field_index("collection")
+                    if collection_idx == -1:
+                        continue
 
-                for item in results:
-                    collection = str(item.get("collection", ""))
-                    if collection:
-                        if collection not in stats:
-                            stats[collection] = {
-                                "documents": 0,
-                                "parses": 0,
-                                "chunks": 0,
-                                "embeddings": 0,
-                            }
-                        stats[collection][stat_key] += 1
+                    collection_array = batch.column(collection_idx)
+                    for i in range(batch.num_rows):
+                        collection = str(collection_array[i].as_py())
+                        if collection:
+                            if collection not in stats:
+                                stats[collection] = {
+                                    "documents": 0,
+                                    "parses": 0,
+                                    "chunks": 0,
+                                    "embeddings": 0,
+                                }
+                            stats[collection][stat_key] += 1
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Failed to count table '%s': %s", table_name, exc)
 
-        # Count documents
+        # Count documents, parses, and chunks
         _count_table("documents", "documents")
         _count_table("parses", "parses")
         _count_table("chunks", "chunks")
 
-        # Count embeddings
+        # Count embeddings from all embeddings_* tables
         for table_name in self.list_table_names():
             if not table_name.startswith("embeddings_"):
                 continue
@@ -1003,9 +1048,8 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 merge_error,
             )
             try:
-                import pandas as pd
-
-                table.add(pd.DataFrame(records))
+                # Use dict list directly (LanceDB add() accepts list-of-dict)
+                table.add(records)
                 logger.info(
                     "Successfully used add() fallback for %d embeddings after merge_insert failure",
                     len(records),
@@ -1039,7 +1083,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             top_k=top_k,
             vector_dim=len(query_vector),
             table_name=table_name,
-            has_filters=filters is not None
+            has_filters=filters is not None,
         )
 
         async_conn = await self._get_async_connection()
@@ -1086,7 +1130,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             log_performance(
                 "search_vectors_complete",
                 result_count=len(results),
-                table_name=table_name
+                table_name=table_name,
             )
             return results
 
@@ -1172,7 +1216,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             table_name=table_name,
             batch_size=batch_size,
             columns_provided=columns is not None,
-            has_filters=filters is not None
+            has_filters=filters is not None,
         )
 
         async_conn = await self._get_async_connection()
@@ -1274,12 +1318,21 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 "count_rows_complete",
                 table_name=table_name,
                 row_count=count,
-                has_filter=combined_filter is not None
+                has_filter=combined_filter is not None,
             )
             return count
         except Exception as exc:
             logger.debug("Failed to count rows in '%s': %s", table_name, exc)
             return 0
+
+    async def get_vector_dimension_async(self, table_name: str) -> Optional[int]:
+        """Get the vector dimension from a table's schema (async).
+
+        Note: LanceDB schema operations are sync-only, so this wraps the sync
+        implementation. True async I/O will be added in Phase 1B with RDB backend.
+        """
+        # LanceDB schema operations don't have async variants, use sync
+        return self.get_vector_dimension(table_name)
 
     async def upsert_documents_async(self, records: List[Dict[str, Any]]) -> None:
         """Upsert document records using async LanceDB API."""
@@ -1290,9 +1343,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         # Log upsert operation parameters for performance tracking
         log_performance(
-            "upsert_documents_start",
-            record_count=len(records),
-            table="documents"
+            "upsert_documents_start", record_count=len(records), table="documents"
         )
 
         async_conn = await self._get_async_connection()
@@ -1474,9 +1525,12 @@ class LanceDBIngestionStatusStore(IngestionStatusStore):
             search = table.search()
             if filter_expr:
                 search = search.where(filter_expr)
-            df = search.to_pandas()
+            result = search.to_arrow()
 
-            return cast(List[Dict[str, Any]], df.to_dict("records"))
+            # Convert Arrow table to list of dicts (records format)
+            if len(result) == 0:
+                return []
+            return cast(List[Dict[str, Any]], result.to_pylist())
 
         except Exception as e:
             logger.error(f"Failed to load ingestion status: {e}")
@@ -1664,13 +1718,15 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         if user_id is not None:
             base_filter += f" AND user_id == {user_id}"
 
-        existing = table.search().where(base_filter).to_pandas()
-        if not existing.empty:
-            max_version = existing["version"].max()
+        existing = table.search().where(base_filter).to_arrow()
+        if len(existing) > 0:
+            import pyarrow.compute as pc  # type: ignore[import-not-found]
+
+            max_version = pc.max(existing["version"]).as_py()
             new_version = max_version + 1
 
             # Mark previous versions as not latest
-            for _, row in existing.iterrows():
+            for row in existing.to_pylist():
                 if row["is_latest"]:
                     table.update(
                         where=f"id == '{row['id']}'",
@@ -1710,11 +1766,12 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         if user_id is not None:
             base_filter += f" AND user_id == {user_id}"
 
-        result = table.search().where(base_filter).to_pandas()
-        if result.empty:
+        result = table.search().where(base_filter).to_arrow()
+        if len(result) == 0:
             return None
 
-        row = result.iloc[0]
+        # Convert Arrow table to list of dicts and take first row
+        row = result.to_pylist()[0]
         return {
             "id": row["id"],
             "name": row["name"],
@@ -1741,11 +1798,12 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         if user_id is not None:
             base_filter += f" AND user_id == {user_id}"
 
-        result = table.search().where(base_filter).to_pandas()
-        if result.empty:
+        result = table.search().where(base_filter).to_arrow()
+        if len(result) == 0:
             return None
 
-        row = result.iloc[0]
+        # Convert Arrow table to list of dicts and take first row
+        row = result.to_pylist()[0]
         return {
             "id": row["id"],
             "name": row["name"],
@@ -1784,20 +1842,22 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         if filter_expr:
             query = query.where(filter_expr)
 
-        result = query.limit(limit).to_pandas()
+        result = query.limit(limit).to_arrow()
         templates = []
-        for _, row in result.iterrows():
+        for row_dict in result.to_pylist():
             templates.append(
                 {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "template": row["template"],
-                    "version": int(row["version"]),
-                    "is_latest": bool(row["is_latest"]),
-                    "metadata": row["metadata"],
-                    "user_id": int(row["user_id"]) if row["user_id"] else None,
-                    "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
+                    "id": row_dict["id"],
+                    "name": row_dict["name"],
+                    "template": row_dict["template"],
+                    "version": int(row_dict["version"]),
+                    "is_latest": bool(row_dict["is_latest"]),
+                    "metadata": row_dict["metadata"],
+                    "user_id": int(row_dict["user_id"])
+                    if row_dict["user_id"]
+                    else None,
+                    "created_at": row_dict["created_at"],
+                    "updated_at": row_dict["updated_at"],
                 }
             )
 
@@ -1821,13 +1881,15 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
             base_filter += f" AND user_id == {user_id}"
 
         # Check if exists and get info
-        result = table.search().where(base_filter).to_pandas()
-        if result.empty:
+        result = table.search().where(base_filter).to_arrow()
+        if len(result) == 0:
             return False
 
         # Check if this was the latest version and get the name
-        was_latest = result.iloc[0]["is_latest"]
-        template_name = result.iloc[0]["name"]
+        # Convert Arrow table to list of dicts and take first row
+        row_dict = result.to_pylist()[0]
+        was_latest = row_dict["is_latest"]
+        template_name = row_dict["name"]
 
         table.delete(base_filter)
 
@@ -1837,9 +1899,11 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
             if user_id is not None:
                 name_filter += f" AND user_id == {user_id}"
 
-            remaining_versions = table.search().where(name_filter).to_pandas()
-            if not remaining_versions.empty:
-                max_version = remaining_versions["version"].max()
+            remaining_versions = table.search().where(name_filter).to_arrow()
+            if len(remaining_versions) > 0:
+                import pyarrow.compute as pc
+
+                max_version = pc.max(remaining_versions["version"]).as_py()
                 update_filter = f"{name_filter} AND version == {max_version}"
                 table.update(where=update_filter, values={"is_latest": True})
 
@@ -1862,8 +1926,8 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
             base_filter += f" AND user_id == {user_id}"
 
         # Check if exists
-        result = table.search().where(base_filter).to_pandas()
-        if result.empty:
+        result = table.search().where(base_filter).to_arrow()
+        if len(result) == 0:
             return None
 
         # Update metadata
@@ -1903,20 +1967,24 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         if version is not None:
             # Delete specific version
             version_filter = f"{base_filter} AND version == {version}"
-            result = table.search().where(version_filter).to_pandas()
-            if result.empty:
+            result = table.search().where(version_filter).to_arrow()
+            if len(result) == 0:
                 raise DocumentNotFoundError(
                     f"Prompt template '{name}' version {version} not found."
                 )
 
-            was_latest = result.iloc[0]["is_latest"]
+            # Convert Arrow table to list of dicts and take first row
+            row_dict = result.to_pylist()[0]
+            was_latest = row_dict["is_latest"]
             table.delete(version_filter)
 
             # If we deleted the latest version, update the latest flag
             if was_latest:
-                remaining = table.search().where(base_filter).to_pandas()
-                if not remaining.empty:
-                    max_version = remaining["version"].max()
+                remaining = table.search().where(base_filter).to_arrow()
+                if len(remaining) > 0:
+                    import pyarrow.compute as pc
+
+                    max_version = pc.max(remaining["version"]).as_py()
                     table.update(
                         where=f"{base_filter} AND version == {max_version}",
                         values={"is_latest": True},
@@ -1926,8 +1994,8 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
             return 1
         else:
             # Delete all versions
-            result = table.search().where(base_filter).to_pandas()
-            if result.empty:
+            result = table.search().where(base_filter).to_arrow()
+            if len(result) == 0:
                 raise DocumentNotFoundError(f"Prompt template '{name}' not found.")
 
             count = len(result)
@@ -1950,20 +2018,22 @@ class LanceDBPromptTemplateStore(PromptTemplateStore):
         if user_id is not None:
             base_filter += f" AND user_id == {user_id}"
 
-        result = table.search().where(base_filter).limit(limit).to_pandas()
+        result = table.search().where(base_filter).limit(limit).to_arrow()
         templates = []
-        for _, row in result.iterrows():
+        for row_dict in result.to_pylist():
             templates.append(
                 {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "template": row["template"],
-                    "version": int(row["version"]),
-                    "is_latest": bool(row["is_latest"]),
-                    "metadata": row["metadata"],
-                    "user_id": int(row["user_id"]) if row["user_id"] else None,
-                    "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
+                    "id": row_dict["id"],
+                    "name": row_dict["name"],
+                    "template": row_dict["template"],
+                    "version": int(row_dict["version"]),
+                    "is_latest": bool(row_dict["is_latest"]),
+                    "metadata": row_dict["metadata"],
+                    "user_id": int(row_dict["user_id"])
+                    if row_dict["user_id"]
+                    else None,
+                    "created_at": row_dict["created_at"],
+                    "updated_at": row_dict["updated_at"],
                 }
             )
 
@@ -2095,14 +2165,12 @@ class LanceDBMainPointerStore(MainPointerStore):
                 "Schema migration required for multi-tenancy support."
             )
 
-        import pandas as pd
-
         conn = self._get_sync_connection()
         self._ensure_table()
         table = conn.open_table("main_pointers")
 
         normalized_tag = self._normalize_model_tag(model_tag)
-        now = pd.Timestamp.now(tz="UTC")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # Check if pointer already exists to preserve created_at
         existing = self.get_main_pointer(collection, doc_id, step_type, model_tag)
@@ -2110,7 +2178,7 @@ class LanceDBMainPointerStore(MainPointerStore):
         created_at = existing["created_at"] if existing else now
 
         # Prepare data for merge_insert
-        update_data = {
+        update_data: Dict[str, List[Any]] = {
             "collection": [collection],
             "doc_id": [doc_id],
             "step_type": [step_type],
@@ -2121,13 +2189,17 @@ class LanceDBMainPointerStore(MainPointerStore):
             "updated_at": [now],
             "operator": [operator or "unknown"],
         }
-        df = pd.DataFrame(update_data)
+        # Convert dict of lists to list of dicts for merge_insert
+        records = [
+            {key: values[idx] for key, values in update_data.items()}
+            for idx in range(len(update_data["collection"]))
+        ]
 
         (
             table.merge_insert(on=["collection", "doc_id", "step_type", "model_tag"])
             .when_matched_update_all()
             .when_not_matched_insert_all()
-            .execute(df)
+            .execute(records)
         )
 
         logger.info(
@@ -2154,8 +2226,6 @@ class LanceDBMainPointerStore(MainPointerStore):
                 "main_pointers table does not have user_id field. "
                 "Schema migration required for multi-tenancy support."
             )
-
-        import pandas as pd
 
         conn = self._get_sync_connection()
         self._ensure_table()
@@ -2201,26 +2271,35 @@ class LanceDBMainPointerStore(MainPointerStore):
         # Translate to LanceDB syntax using shared utility
         filter_str = translate_filter_expression(filter_expr)
 
-        result = table.search().where(filter_str).to_pandas()
+        result = table.search().where(filter_str).to_arrow()
 
-        if result.empty:
+        if len(result) == 0:
             return None
 
         # Return the first result, preferring non-NULL model_tag if multiple found
         if len(result) > 1:
-            result = result.sort_values("model_tag", ascending=False)
+            import pyarrow.compute as pc
 
-        row = result.iloc[0]
+            # Sort by model_tag descending (NULLs last)
+            sort_indices = pc.sort_indices(
+                result, sort_keys=[("model_tag", "descending")]
+            )
+            result = result.take(sort_indices)
+
+        # Convert Arrow table to list of dicts and take first row
+        row_dict = result.to_pylist()[0]
         return {
-            "collection": row["collection"],
-            "doc_id": row["doc_id"],
-            "step_type": row["step_type"],
-            "model_tag": row["model_tag"] if pd.notna(row["model_tag"]) else None,
-            "semantic_id": row["semantic_id"],
-            "technical_id": row["technical_id"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "operator": row["operator"],
+            "collection": row_dict["collection"],
+            "doc_id": row_dict["doc_id"],
+            "step_type": row_dict["step_type"],
+            "model_tag": row_dict["model_tag"]
+            if row_dict["model_tag"] is not None
+            else None,
+            "semantic_id": row_dict["semantic_id"],
+            "technical_id": row_dict["technical_id"],
+            "created_at": row_dict["created_at"],
+            "updated_at": row_dict["updated_at"],
+            "operator": row_dict["operator"],
         }
 
     def list_main_pointers(
@@ -2238,8 +2317,6 @@ class LanceDBMainPointerStore(MainPointerStore):
                 "Schema migration required for multi-tenancy support."
             )
 
-        import pandas as pd
-
         conn = self._get_sync_connection()
         self._ensure_table()
         table = conn.open_table("main_pointers")
@@ -2254,23 +2331,23 @@ class LanceDBMainPointerStore(MainPointerStore):
         if table.search().where(filter_expr).count_rows() == 0:
             return []
 
-        result = table.search().where(filter_expr).limit(limit).to_pandas()
+        result = table.search().where(filter_expr).limit(limit).to_arrow()
 
         pointers = []
-        for _, row in result.iterrows():
+        for row_dict in result.to_pylist():
             pointers.append(
                 {
-                    "collection": row["collection"],
-                    "doc_id": row["doc_id"],
-                    "step_type": row["step_type"],
-                    "model_tag": row["model_tag"]
-                    if pd.notna(row["model_tag"])
+                    "collection": row_dict["collection"],
+                    "doc_id": row_dict["doc_id"],
+                    "step_type": row_dict["step_type"],
+                    "model_tag": row_dict["model_tag"]
+                    if row_dict["model_tag"] is not None
                     else None,
-                    "semantic_id": row["semantic_id"],
-                    "technical_id": row["technical_id"],
-                    "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
-                    "operator": row["operator"],
+                    "semantic_id": row_dict["semantic_id"],
+                    "technical_id": row_dict["technical_id"],
+                    "created_at": row_dict["created_at"],
+                    "updated_at": row_dict["updated_at"],
+                    "operator": row_dict["operator"],
                 }
             )
 
@@ -2337,8 +2414,8 @@ class LanceDBMainPointerStore(MainPointerStore):
         filter_str = translate_filter_expression(filter_expr)
 
         # Check if exists
-        result = table.search().where(filter_str).to_pandas()
-        if result.empty:
+        result = table.search().where(filter_str).to_arrow()
+        if len(result) == 0:
             return False
 
         table.delete(filter_str)

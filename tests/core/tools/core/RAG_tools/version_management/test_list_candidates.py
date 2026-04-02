@@ -509,11 +509,13 @@ class TestListCandidates:
             result = list_candidates(collection_name, malicious_doc_id, StepType.PARSE)
 
             # Assert that the where clause was called with the correctly escaped string
-            # The escape_lancedb_string function converts ' to '' and \ to \\.
-            # The build_lancedb_filter_expression will wrap the escaped value in single quotes.
             # Updated for Phase 1A: filter builder adds parentheses for better operator precedence
-            # Updated for Phase 2: filter builder includes user_id filter with -1 for no user filtering
-            expected_where_clause = f"((collection == '{collection_name}') AND (doc_id == 'test_doc'' OR 1=1 --')) AND (user_id == -1)"
+            # Updated for PR #128 security: uses stable no-access filter
+            from xagent.core.tools.core.RAG_tools.core.config import (
+                UNAUTHENTICATED_NO_ACCESS_FILTER,
+            )
+
+            expected_where_clause = f"((collection == '{collection_name}') AND (doc_id == 'test_doc'' OR 1=1 --')) AND ({UNAUTHENTICATED_NO_ACCESS_FILTER})"
 
             mock_table.search.assert_called_once()
             mock_table.search.return_value.where.assert_called_once_with(

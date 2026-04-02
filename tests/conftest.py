@@ -82,6 +82,13 @@ def pytest_collection_modifyitems(config, items):
 # ==========================================
 
 
+def _security_test_subdir(tmp_path: Path, name: str) -> str:
+    """Create ``tmp_path / name`` and return its path as a string."""
+    subdir = tmp_path / name
+    subdir.mkdir()
+    return str(subdir)
+
+
 @pytest.fixture
 def temp_dir():
     """Provide a temporary directory for tests."""
@@ -90,24 +97,14 @@ def temp_dir():
 
 
 @pytest.fixture(autouse=True, scope="function")
-def reset_kb_storage_singleton():
-    """Reset KB storage singleton before and after each test.
-
-    In production we keep a process-wide singleton coordinator.
-    In tests this fixture guarantees each test sees an isolated LanceDB view.
-    """
-    reset_kb_write_coordinator()
-    yield
-    reset_kb_write_coordinator()
-
-
-@pytest.fixture(autouse=True, scope="function")
 def isolate_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Isolate LanceDB directory for every test by default.
+    """Isolate LanceDB and reset KB storage singletons for every test.
 
-    If a test explicitly sets `LANCEDB_DIR`, this fixture respects it.
-    Otherwise, it forces `LANCEDB_DIR` to a per-test temporary directory to
-    prevent polluting the default on-disk LanceDB location.
+    - If ``LANCEDB_DIR`` is unset, points it at a per-test directory under
+      ``tmp_path`` so the default on-disk LanceDB location is not polluted.
+    - Clears the LanceDB connection cache and resets the process-wide KB
+      write coordinator before and after each test (replaces a separate
+      autouse reset fixture to avoid duplicate teardown work).
     """
     original = os.environ.get("LANCEDB_DIR")
     if original is None:
@@ -123,27 +120,21 @@ def isolate_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 
 @pytest.fixture
-def test_workspace_dir(tmp_path):
-    """Create test workspace directory for security testing."""
-    workspace_dir = tmp_path / "test_workspace"
-    workspace_dir.mkdir()
-    return str(workspace_dir)
+def test_workspace_dir(tmp_path: Path) -> str:
+    """Directory used as workspace root in ``test_service_security``."""
+    return _security_test_subdir(tmp_path, "test_workspace")
 
 
 @pytest.fixture
-def test_access_dir(tmp_path):
-    """Create test access directory for security testing."""
-    access_dir = tmp_path / "test_access_restriction"
-    access_dir.mkdir()
-    return str(access_dir)
+def test_access_dir(tmp_path: Path) -> str:
+    """Directory used for access-restriction scenarios in security tests."""
+    return _security_test_subdir(tmp_path, "test_access_restriction")
 
 
 @pytest.fixture
-def test_security_dir(tmp_path):
-    """Create test security directory for security testing."""
-    security_dir = tmp_path / "test_security"
-    security_dir.mkdir()
-    return str(security_dir)
+def test_security_dir(tmp_path: Path) -> str:
+    """Directory used for outside-access rejection scenarios in security tests."""
+    return _security_test_subdir(tmp_path, "test_security")
 
 
 @pytest.fixture(autouse=True, scope="function")

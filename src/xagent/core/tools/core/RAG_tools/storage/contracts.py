@@ -326,12 +326,14 @@ class MetadataStore(ABC):
         self,
         collection: str,
         user_id: int,
+        is_admin: bool = False,
     ) -> str | None:
         """Get collection ingestion configuration.
 
         Args:
             collection: Collection name.
             user_id: User ID for multi-tenancy.
+            is_admin: Whether user has admin privileges (bypasses user_id filter).
 
         Returns:
             Config JSON string if found, None otherwise.
@@ -433,6 +435,21 @@ class VectorIndexStore(ABC):
     @abstractmethod
     def list_table_names(self) -> Sequence[str]:
         """List backend table names."""
+
+    @abstractmethod
+    def get_vector_dimension(self, table_name: str) -> Optional[int]:
+        """Get the vector dimension from a table's schema.
+
+        Reads the vector field's fixed_size dimension from the table schema.
+        Returns None if the vector field is variable-length or dimension cannot
+        be determined.
+
+        Args:
+            table_name: Name of the embeddings table to inspect.
+
+        Returns:
+            Vector dimension as int, or None if variable-length/unavailable.
+        """
 
     @abstractmethod
     def iter_batches(
@@ -706,6 +723,20 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
+    async def get_vector_dimension_async(self, table_name: str) -> Optional[int]:
+        """Get the vector dimension from a table's schema (async).
+
+        Args:
+            table_name: Name of the embeddings table to inspect.
+
+        Returns:
+            Vector dimension as int, or None if variable-length/unavailable.
+
+        Note: Current implementation uses sync operations under the hood.
+        True async I/O will be added in Phase 1B with RDB backend.
+        """
+
+    @abstractmethod
     async def upsert_documents_async(self, records: List[Dict[str, Any]]) -> None:
         """Upsert document records (async).
 
@@ -812,7 +843,14 @@ class VectorIndexStore(ABC):
 
 
 class KBWriteCoordinator(ABC):
-    """Coordinator contract for write/delete orchestration."""
+    """Contract for knowledge-base write/delete orchestration (Phase 1A shell).
+
+    Phase 1A exposes only accessors to the configured metadata and vector
+    stores; concrete implementations delegate without extra coordination.
+    This type is a stable injection point for future write-path behavior such
+    as distributed locking, write batching, and conflict resolution across
+    metadata and vector backends.
+    """
 
     @abstractmethod
     def metadata_store(self) -> MetadataStore:

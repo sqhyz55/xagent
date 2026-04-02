@@ -13,18 +13,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..core.schemas import SearchResult
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.contracts import FilterExpression
-from ..storage.factory import get_vector_index_store
+from ..storage.factory import (
+    get_vector_index_store,
+)
+from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
 from ..utils.filter_utils import parse_legacy_filters, validate_filter_depth
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata
 from ..utils.model_resolver import resolve_embedding_adapter
 
 logger = logging.getLogger(__name__)
-
-
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
 
 
 def search_dense_engine(

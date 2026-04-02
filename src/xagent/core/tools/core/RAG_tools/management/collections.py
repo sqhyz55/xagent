@@ -6,6 +6,8 @@ system, including listing collections, managing documents, and handling deletion
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import warnings as py_warnings
 from collections import defaultdict
@@ -17,7 +19,7 @@ from lancedb.db import DBConnection
 
 from ..core.config import (
     DEFAULT_LANCEDB_SCAN_BATCH_SIZE,
-    DEFAULT_VECTOR_STORE_SCAN_LIMIT,
+    DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,
 )
 from ..core.schemas import (
     CollectionInfo,
@@ -29,6 +31,7 @@ from ..core.schemas import (
     DocumentStats,
     DocumentStatsResult,
     DocumentSummary,
+    IngestionConfig,
     ListCollectionsResult,
 )
 from ..LanceDB.model_tag_utils import embeddings_table_name
@@ -448,6 +451,46 @@ def _coerce_timestamp(value: Any) -> datetime | None:
     return None
 
 
+async def _load_collection_ingestion_configs(
+    collection_keys: List[str],
+    user_id: Optional[int],
+    is_admin: bool,
+) -> Dict[str, IngestionConfig]:
+    """Load ingestion configs for the given collections using metadata store rules.
+
+    Args:
+        collection_keys: Collection names returned by stats / document scan.
+        user_id: Caller user id; None is treated as 0 for non-admin lookups.
+        is_admin: When True, ``get_collection_config`` returns the latest config
+            per collection across tenants.
+
+    Returns:
+        Map of collection name to parsed ingestion configuration.
+    """
+    metadata_store = get_metadata_store()
+    collection_configs: Dict[str, IngestionConfig] = {}
+    uid = 0 if user_id is None else user_id
+    for collection in collection_keys:
+        try:
+            config_json = await metadata_store.get_collection_config(
+                collection, uid, is_admin=is_admin
+            )
+            if not config_json:
+                continue
+            try:
+                config_dict = json.loads(config_json)
+                collection_configs[collection] = IngestionConfig(**config_dict)
+            except Exception as e:
+                logger.warning(
+                    "Failed to parse config for collection %s: %s",
+                    collection,
+                    e,
+                )
+        except Exception as e:
+            logger.debug("Could not load config for collection %s: %s", collection, e)
+    return collection_configs
+
+
 def list_collections(
     user_id: Optional[int] = None, is_admin: bool = False
 ) -> ListCollectionsResult:
@@ -514,39 +557,14 @@ def list_collections(
 
         collection_keys = sorted(stats.keys() | document_names.keys())
 
-        # Load configs for collections
-        collection_configs = {}
+        # Load configs for collections (single event loop; admin sees cross-tenant configs)
+        collection_configs: Dict[str, IngestionConfig] = {}
         try:
-            metadata_store = get_metadata_store()
-            # For now, we need to iterate through collections to get their configs
-            # This could be optimized with a batch method in the future
-            for collection in collection_keys:
-                try:
-                    import asyncio
-
-                    config_json = asyncio.run(
-                        metadata_store.get_collection_config(collection, user_id or 0)
-                    )
-                    if config_json:
-                        import json
-
-                        from ..core.schemas import IngestionConfig
-
-                        try:
-                            config_dict = json.loads(config_json)
-                            collection_configs[collection] = IngestionConfig(
-                                **config_dict
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to parse config for collection {collection}: {e}"
-                            )
-                except Exception as e:
-                    logger.debug(
-                        f"Could not load config for collection {collection}: {e}"
-                    )
+            collection_configs = asyncio.run(
+                _load_collection_ingestion_configs(collection_keys, user_id, is_admin)
+            )
         except Exception as e:
-            logger.warning(f"Could not load collection configs: {e}")
+            logger.warning("Could not load collection configs: %s", e)
 
         # Ensure all collections have complete stats
         for collection in collection_keys:
@@ -779,8 +797,7 @@ def list_documents(
             collection_name=collection,
             user_id=user_id,
             is_admin=is_admin,
-            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT
-            * 100,  # Higher limit for listing
+            max_results=DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,  # Higher limit for listing
         )
 
         # Collect document info from records
@@ -924,8 +941,7 @@ def delete_collection(
             collection_name=collection,
             user_id=user_id,
             is_admin=is_admin,
-            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT
-            * 100,  # Higher limit for collection deletion
+            max_results=DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,  # Higher limit for collection deletion
         )
         doc_ids = sorted({r.doc_id for r in doc_records})
 
@@ -1137,8 +1153,7 @@ def cancel_collection(
             collection_name=collection,
             user_id=user_id,
             is_admin=is_admin,
-            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT
-            * 100,  # Higher limit for collection operations
+            max_results=DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT,  # Higher limit for collection operations
         )
         doc_ids = sorted({r.doc_id for r in doc_records})
 

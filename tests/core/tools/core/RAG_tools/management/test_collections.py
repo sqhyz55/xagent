@@ -43,6 +43,9 @@ def temp_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
 
     original = os.environ.get("LANCEDB_DIR")
     monkeypatch.setenv("LANCEDB_DIR", str(tmp_path))
+    from src.xagent.core.tools.core.RAG_tools.storage.factory import StorageFactory
+
+    StorageFactory.get_factory().reset_all()
     yield str(tmp_path)
     if original is None:
         monkeypatch.delenv("LANCEDB_DIR", raising=False)
@@ -206,6 +209,54 @@ def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
     # document_names now contains source_path values
     assert sorted(collection_info.document_names) == sorted(["other.pdf", "sample.pdf"])
     assert result.warnings == []
+
+
+def test_list_collections_admin_includes_config_from_other_user(
+    temp_lancedb_dir: str,
+) -> None:
+    """Admin listing should attach ingestion_config stored under a tenant user_id."""
+
+    import asyncio
+    import json
+
+    from src.xagent.core.tools.core.RAG_tools.storage.factory import (
+        get_metadata_store,
+    )
+
+    collection = "cfg_tenant_collection"
+    doc_id = "doc-cfg"
+    now = datetime.utcnow()
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": doc_id,
+                "source_path": "/path/x.pdf",
+                "file_type": "pdf",
+                "content_hash": "h1",
+                "uploaded_at": now,
+                "title": "T",
+                "language": "zh",
+            }
+        ]
+    )
+
+    async def _save_cfg() -> None:
+        await get_metadata_store().save_collection_config(
+            collection,
+            json.dumps({}),
+            user_id=99,
+        )
+
+    asyncio.run(_save_cfg())
+
+    result = list_collections(user_id=None, is_admin=True)
+
+    assert result.status == "success"
+    assert result.total_count == 1
+    info = next(c for c in result.collections if c.name == collection)
+    assert info.ingestion_config is not None
 
 
 def test_get_document_stats_missing_document(temp_lancedb_dir: str) -> None:

@@ -5,22 +5,26 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, cast
 
 from ..LanceDB.model_tag_utils import to_model_tag
-from ..storage.factory import get_vector_index_store
+from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
 from .string_utils import escape_lancedb_string
+from .tag_mapping import register_tag_mapping
 
 logger = logging.getLogger(__name__)
 
 
-def get_connection_from_env() -> Any:
-    """Compatibility connection accessor for tests and legacy call sites."""
-    return get_vector_index_store().get_raw_connection()
-
-
-def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
+def migrate_collection_metadata(
+    legacy_data: Dict[str, Any],
+    *,
+    infer_embedding: bool = True,
+) -> Dict[str, Any]:
     """Migrate legacy collection metadata to current schema version.
 
     Args:
         legacy_data: Legacy collection data from storage
+        infer_embedding: If True (default), ``0.0.0 -> 1.0.0`` may scan LanceDB
+            embedding tables to infer ``embedding_model_id`` / dimension. Use
+            **False** for read-only deserialization (e.g. :meth:`CollectionInfo.from_storage`)
+            to avoid I/O, heavy work, and log noise on hot paths.
 
     Returns:
         Migrated data compatible with current schema
@@ -30,7 +34,8 @@ def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
     data_version = data.get("schema_version", "0.0.0")
     collection_name = data.get("name", "unknown")
 
-    logger.info(
+    log_info = logger.info if infer_embedding else logger.debug
+    log_info(
         f"[MIGRATION_START] Collection: {collection_name}, From: {data_version}, To: {current_version}"
     )
     logger.debug(
@@ -42,14 +47,14 @@ def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
         while data_version < current_version:
             previous_version = data_version
             if data_version == "0.0.0":
-                data = _migrate_0_0_0_to_1_0_0(data)
+                data = _migrate_0_0_0_to_1_0_0(data, infer_embedding=infer_embedding)
                 data_version = "1.0.0"
 
-            logger.info(
+            log_info(
                 f"[MIGRATION_STEP] {collection_name}: {previous_version} -> {data_version} completed."
             )
 
-        logger.info(
+        log_info(
             f"[MIGRATION_SUCCESS] Collection '{collection_name}' is now at version {data_version}"
         )
         return data
@@ -62,14 +67,21 @@ def migrate_collection_metadata(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
         raise
 
 
-def _migrate_0_0_0_to_1_0_0(data: Dict[str, Any]) -> Dict[str, Any]:
+def _migrate_0_0_0_to_1_0_0(
+    data: Dict[str, Any],
+    *,
+    infer_embedding: bool = True,
+) -> Dict[str, Any]:
     """Migrate from pre-versioned schema to 1.0.0."""
     collection_name = data.get("name", "")
 
-    # Try to infer embedding config from existing data
-    embedding_model_id, embedding_dimension = _infer_embedding_config_from_collection(
-        collection_name
-    )
+    if infer_embedding:
+        embedding_model_id, embedding_dimension = (
+            _infer_embedding_config_from_collection(collection_name)
+        )
+    else:
+        embedding_model_id = data.get("embedding_model_id")
+        embedding_dimension = data.get("embedding_dimension")
 
     if embedding_model_id:
         logger.info(
@@ -251,16 +263,25 @@ def _infer_embedding_config_from_collection(
 
             hub = _get_or_init_model_hub()
             if hub is not None:
-                models = list(hub.list().values())
-                for cfg in models:
+                hub_tag_to_id: Dict[str, str] = {}
+                for cfg in hub.list().values():
                     if not isinstance(cfg, EmbeddingModelConfig):
                         continue
-                    if (
-                        to_model_tag(cfg.id) == model_tag
-                        or to_model_tag(cfg.model_name) == model_tag
-                    ):
-                        embedding_model_id = cfg.id
-                        break
+                    register_tag_mapping(
+                        hub_tag_to_id,
+                        to_model_tag(cfg.id),
+                        cfg.id,
+                        get_identity=lambda item: item,
+                        logger=logger,
+                    )
+                    register_tag_mapping(
+                        hub_tag_to_id,
+                        to_model_tag(cfg.model_name),
+                        cfg.id,
+                        get_identity=lambda item: item,
+                        logger=logger,
+                    )
+                embedding_model_id = hub_tag_to_id.get(model_tag)
         except Exception:
             embedding_model_id = None
 
