@@ -32,6 +32,7 @@ from .contracts import (
     VectorIndexStore,
     build_filter_from_dict,
 )
+from .logging_utils import log_audit, log_performance
 from .lancedb_filter_utils import (
     translate_filter_expression,
 )
@@ -223,6 +224,16 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
     ) -> List[DocumentRecord]:
+        # Audit log for data access
+        log_audit(
+            "data_access",
+            action="list_documents",
+            user_id=user_id or -1,
+            is_admin=is_admin,
+            collection=collection_name,
+            max_results=max_results
+        )
+
         # Build filter expression using common function (includes validation)
         filter_expr_obj = build_filter_from_dict({"collection": collection_name})
         combined_filter = self.build_filter_expression(
@@ -1022,6 +1033,15 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         Returns native Arrow format converted to list of dicts.
         """
+        # Log search parameters for performance tracking
+        log_performance(
+            "search_vectors_start",
+            top_k=top_k,
+            vector_dim=len(query_vector),
+            table_name=table_name,
+            has_filters=filters is not None
+        )
+
         async_conn = await self._get_async_connection()
 
         try:
@@ -1061,6 +1081,13 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                         value = col_array[i].as_py()
                         row[col_name] = value
                     results.append(row)
+
+            # Log performance metric
+            log_performance(
+                "search_vectors_complete",
+                result_count=len(results),
+                table_name=table_name
+            )
             return results
 
         except Exception as exc:
@@ -1134,11 +1161,20 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         filters: Optional[Dict[str, Any]] = None,
         user_id: Optional[int] = None,
         is_admin: bool = False,
-    ) -> Any:  # Returns AsyncIterator (async generator), see contract for details
+    ) -> Any:  # # Returns AsyncIterator (async generator), see contract for details
         """Iterate over table data in batches using async LanceDB API.
 
         Yields PyArrow RecordBatch objects (native async format).
         """
+        # Log batch iteration parameters for performance tracking
+        log_performance(
+            "iter_batches_start",
+            table_name=table_name,
+            batch_size=batch_size,
+            columns_provided=columns is not None,
+            has_filters=filters is not None
+        )
+
         async_conn = await self._get_async_connection()
 
         try:
@@ -1229,8 +1265,18 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         try:
             if combined_filter:
-                return int(await table.count_rows(combined_filter))
-            return int(await table.count_rows())
+                count = int(await table.count_rows(combined_filter))
+            else:
+                count = int(await table.count_rows())
+
+            # Log performance metric
+            log_performance(
+                "count_rows_complete",
+                table_name=table_name,
+                row_count=count,
+                has_filter=combined_filter is not None
+            )
+            return count
         except Exception as exc:
             logger.debug("Failed to count rows in '%s': %s", table_name, exc)
             return 0
@@ -1241,6 +1287,13 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         if not records:
             return
+
+        # Log upsert operation parameters for performance tracking
+        log_performance(
+            "upsert_documents_start",
+            record_count=len(records),
+            table="documents"
+        )
 
         async_conn = await self._get_async_connection()
 

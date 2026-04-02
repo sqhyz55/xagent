@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -956,3 +956,665 @@ def test_main_pointer_store_delete_not_found(mock_get_connection: Mock) -> None:
     result = store.delete_main_pointer("test_collection", "test_doc", "parse")
     assert result is False
     mock_table.delete.assert_not_called()
+
+
+# =============================================================================
+# Async Method Tests (Phase 1A Coverage Improvement)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_search_vectors_async_basic(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test basic async vector search."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock Arrow table with results
+    data = {
+        "doc_id": ["doc1", "doc2"],
+        "score": [0.95, 0.87],
+        "vector": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+    }
+    arrow_table = pa.Table.from_pydict(data)
+
+    # Mock table and vector search
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock vector search - chain needs to return mock objects
+    mock_search = Mock()
+    mock_search.limit.return_value = mock_search
+    mock_search.where = Mock(return_value=mock_search)
+    # to_arrow needs to be a coroutine that returns the arrow table
+    async def mock_to_arrow():
+        return arrow_table
+    mock_search.to_arrow = mock_to_arrow
+
+    mock_table.search = Mock(return_value=mock_search)
+
+    store = LanceDBVectorIndexStore()
+
+    # Create a query vector
+    query_vector = [0.1, 0.2, 0.3]
+
+    results = await store.search_vectors_async(
+        table_name="embeddings_test",
+        query_vector=query_vector,
+        top_k=5,
+    )
+
+    assert len(results) == 2
+    assert results[0]["doc_id"] == "doc1"
+    assert results[0]["score"] == 0.95
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_search_fts_async_basic(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test basic async FTS search."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock Arrow table with FTS results
+    data = {
+        "doc_id": ["doc1", "doc2"],
+        "text": ["hello world", "test content"],
+        "score": [0.9, 0.8],
+    }
+    arrow_table = pa.Table.from_pydict(data)
+
+    # Mock table and FTS search
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock search to return our table
+    mock_search = Mock()
+    mock_search.limit.return_value = mock_search
+    mock_search.where = Mock(return_value=mock_search)
+
+    async def mock_to_arrow():
+        return arrow_table
+    mock_search.to_arrow = mock_to_arrow
+
+    mock_table.search = Mock(return_value=mock_search)
+
+    store = LanceDBVectorIndexStore()
+
+    results = await store.search_fts_async(
+        table_name="chunks",
+        query_text="hello",
+        top_k=5,
+    )
+
+    assert len(results) == 2
+    assert results[0]["doc_id"] == "doc1"
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_iter_batches_async_basic(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async batch iteration."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table and to_batches
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Create mock batches
+    batch1_schema = pa.schema([("doc_id", pa.string()), ("text", pa.string())])
+    batch1_data = {"doc_id": ["doc1"], "text": ["text1"]}
+    batch1 = pa.RecordBatch.from_pydict(batch1_data, schema=batch1_schema)
+
+    # Mock to_batches as async generator
+    async def mock_to_batches(**kwargs):
+        yield batch1
+
+    mock_table.to_batches = mock_to_batches
+
+    store = LanceDBVectorIndexStore()
+
+    batches = []
+    async for batch in store.iter_batches_async(
+        table_name="chunks",
+        batch_size=100,
+    ):
+        batches.append(batch)
+
+    assert len(batches) == 1
+    assert batches[0].num_rows == 1
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_count_rows_async_basic(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async row counting."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table and count_rows
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+    mock_table.count_rows = AsyncMock(return_value=100)
+
+    store = LanceDBVectorIndexStore()
+
+    count = await store.count_rows_async(table_name="chunks")
+
+    assert count == 100
+    mock_table.count_rows.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_upsert_documents_async(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async document upsert."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock sync connection for ensure_documents_table
+    mock_conn.open_table.return_value = Mock()
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table and merge_insert
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock merge_insert chain
+    mock_merge_builder = Mock()
+    mock_merge_builder.when_matched_update_all = Mock(return_value=mock_merge_builder)
+    mock_merge_builder.when_not_matched_insert_all = Mock(return_value=mock_merge_builder)
+
+    async def mock_execute(records):
+        return None
+    mock_merge_builder.execute = mock_execute
+
+    mock_table.merge_insert = Mock(return_value=mock_merge_builder)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {"doc_id": "doc1", "source_path": "/tmp/test.pdf"},
+        {"doc_id": "doc2", "source_path": "/tmp/test2.pdf"},
+    ]
+
+    await store.upsert_documents_async(records)
+
+    # Verify merge_insert was called
+    mock_table.merge_insert.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_upsert_chunks_async(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async chunk upsert."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock sync connection for ensure_chunks_table
+    mock_conn.open_table.return_value = Mock()
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table and merge_insert
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock merge_insert chain
+    mock_merge_builder = Mock()
+    mock_merge_builder.when_matched_update_all = Mock(return_value=mock_merge_builder)
+    mock_merge_builder.when_not_matched_insert_all = Mock(return_value=mock_merge_builder)
+
+    async def mock_execute(records):
+        return None
+    mock_merge_builder.execute = mock_execute
+
+    mock_table.merge_insert = Mock(return_value=mock_merge_builder)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {"chunk_id": "chunk1", "text": "test content 1"},
+        {"chunk_id": "chunk2", "text": "test content 2"},
+    ]
+
+    await store.upsert_chunks_async(records)
+
+    # Verify merge_insert was called
+    mock_table.merge_insert.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_upsert_embeddings_async(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async embedding upsert."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock sync connection for ensure_embeddings_table
+    mock_conn.open_table.return_value = Mock()
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table and merge_insert
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock merge_insert chain
+    mock_merge_builder = Mock()
+    mock_merge_builder.when_matched_update_all = Mock(return_value=mock_merge_builder)
+    mock_merge_builder.when_not_matched_insert_all = Mock(return_value=mock_merge_builder)
+
+    async def mock_execute(records):
+        return None
+    mock_merge_builder.execute = mock_execute
+
+    mock_table.merge_insert = Mock(return_value=mock_merge_builder)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {"chunk_id": "chunk1", "vector": [0.1, 0.2, 0.3]},
+        {"chunk_id": "chunk2", "vector": [0.4, 0.5, 0.6]},
+    ]
+
+    await store.upsert_embeddings_async("bge_large", records)
+
+    # Verify merge_insert was called
+    mock_table.merge_insert.assert_called_once()
+
+
+# ============================================================================
+# Core Sync Upsert Method Tests
+# ============================================================================
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_documents_basic(mock_get_connection: Mock) -> None:
+    """Test basic document upsert."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table and merge_insert
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    mock_merge = Mock()
+    mock_merge.when_matched_update_all = Mock(return_value=mock_merge)
+    mock_merge.when_not_matched_insert_all = Mock(return_value=mock_merge)
+    mock_merge.execute = Mock(return_value=None)
+    mock_table.merge_insert = Mock(return_value=mock_merge)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {"doc_id": "doc1", "source_path": "/tmp/test.pdf"},
+        {"doc_id": "doc2", "source_path": "/tmp/test2.pdf"},
+    ]
+
+    store.upsert_documents(records)
+
+    # Verify merge_insert was called with correct keys
+    mock_table.merge_insert.assert_called_once_with(["collection", "doc_id"])
+    mock_merge.execute.assert_called_once_with(records)
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_documents_empty(mock_get_connection: Mock) -> None:
+    """Test document upsert with empty records returns early."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    store = LanceDBVectorIndexStore()
+
+    # Should return early without opening table
+    store.upsert_documents([])
+
+    # Verify table was never opened
+    mock_conn.open_table.assert_not_called()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_parses_basic(mock_get_connection: Mock) -> None:
+    """Test basic parse upsert."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table and merge_insert
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    mock_merge = Mock()
+    mock_merge.when_matched_update_all = Mock(return_value=mock_merge)
+    mock_merge.when_not_matched_insert_all = Mock(return_value=mock_merge)
+    mock_merge.execute = Mock(return_value=None)
+    mock_table.merge_insert = Mock(return_value=mock_merge)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {"doc_id": "doc1", "parse_hash": "hash1", "parse_status": "success"},
+        {"doc_id": "doc2", "parse_hash": "hash2", "parse_status": "success"},
+    ]
+
+    store.upsert_parses(records)
+
+    # Verify merge_insert was called with correct keys
+    mock_table.merge_insert.assert_called_once_with(
+        ["collection", "doc_id", "parse_hash"]
+    )
+    mock_merge.execute.assert_called_once_with(records)
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_chunks_basic(mock_get_connection: Mock) -> None:
+    """Test basic chunk upsert."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table and merge_insert
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    mock_merge = Mock()
+    mock_merge.when_matched_update_all = Mock(return_value=mock_merge)
+    mock_merge.when_not_matched_insert_all = Mock(return_value=mock_merge)
+    mock_merge.execute = Mock(return_value=None)
+    mock_table.merge_insert = Mock(return_value=mock_merge)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [
+        {
+            "chunk_id": "chunk1",
+            "doc_id": "doc1",
+            "parse_hash": "hash1",
+            "text": "test content 1",
+        },
+        {
+            "chunk_id": "chunk2",
+            "doc_id": "doc1",
+            "parse_hash": "hash1",
+            "text": "test content 2",
+        },
+    ]
+
+    store.upsert_chunks(records)
+
+    # Verify merge_insert was called with correct keys
+    mock_table.merge_insert.assert_called_once_with(
+        ["collection", "doc_id", "parse_hash", "chunk_id"]
+    )
+    mock_merge.execute.assert_called_once_with(records)
+
+
+# ============================================================================
+# Error Handling Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_search_vectors_async_table_not_found(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async vector search handles missing table gracefully."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock open_table to raise exception
+    mock_async_conn.open_table = AsyncMock(
+        side_effect=Exception("Table not found")
+    )
+
+    store = LanceDBVectorIndexStore()
+
+    query_vector = [0.1, 0.2, 0.3]
+    results = await store.search_vectors_async(
+        table_name="nonexistent_table",
+        query_vector=query_vector,
+        top_k=5,
+    )
+
+    # Should return empty list on error
+    assert results == []
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_search_vectors_async_search_failure(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async vector search handles search failure gracefully."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock search that fails
+    mock_search = Mock()
+    mock_search.limit.return_value = mock_search
+    mock_search.where = Mock(return_value=mock_search)
+
+    async def mock_to_arrow():
+        raise Exception("Search failed")
+    mock_search.to_arrow = mock_to_arrow
+
+    mock_table.search = Mock(return_value=mock_search)
+
+    store = LanceDBVectorIndexStore()
+
+    query_vector = [0.1, 0.2, 0.3]
+    results = await store.search_vectors_async(
+        table_name="embeddings_test",
+        query_vector=query_vector,
+        top_k=5,
+    )
+
+    # Should return empty list on search error
+    assert results == []
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_upsert_documents_with_invalid_data(mock_get_connection: Mock) -> None:
+    """Test document upsert handles invalid data gracefully."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    # Mock table and merge_insert that raises exception
+    mock_table = Mock()
+    mock_conn.open_table.return_value = mock_table
+
+    mock_merge = Mock()
+    mock_merge.when_matched_update_all = Mock(return_value=mock_merge)
+    mock_merge.when_not_matched_insert_all = Mock(return_value=mock_merge)
+    mock_merge.execute = Mock(side_effect=Exception("Invalid data"))
+    mock_table.merge_insert = Mock(return_value=mock_merge)
+
+    store = LanceDBVectorIndexStore()
+
+    records = [{"doc_id": "doc1", "invalid_field": "value"}]
+
+    # Should raise exception on invalid data
+    with pytest.raises(Exception, match="Invalid data"):
+        store.upsert_documents(records)
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_iter_batches_async_invalid_columns(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async iter_batches handles invalid columns gracefully."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock table
+    mock_table = Mock()
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    # Mock to_batches generator that raises exception
+    async def mock_to_batches(**kwargs):
+        raise Exception("Invalid columns")
+
+    # Make to_batches return an async generator that raises
+    def make_to_batches():
+        async def inner(**kwargs):
+            raise Exception("Invalid columns")
+        return inner()
+
+    mock_table.to_batches = make_to_batches()
+
+    store = LanceDBVectorIndexStore()
+
+    # Should handle exception gracefully and not yield any batches
+    batches = []
+    async for batch in store.iter_batches_async(
+        table_name="chunks",
+        batch_size=100,
+        columns=["nonexistent_column"],
+    ):
+        batches.append(batch)
+
+    # Should get no batches due to error
+    assert len(batches) == 0
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_count_rows_async_table_not_found(
+    mock_get_connection: Mock, mock_connect_async: AsyncMock
+) -> None:
+    """Test async count_rows handles missing table gracefully."""
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    # Mock async connection
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    # Mock open_table to raise exception
+    mock_async_conn.open_table = AsyncMock(
+        side_effect=Exception("Table not found")
+    )
+
+    store = LanceDBVectorIndexStore()
+
+    count = await store.count_rows_async(table_name="nonexistent_table")
+
+    # Should return 0 on error
+    assert count == 0
