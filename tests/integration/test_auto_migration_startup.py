@@ -802,6 +802,7 @@ async def test_startup_event_triggers_background_auto_migration(
     """Startup should create task and execute backfill when enabled and needed."""
     import importlib
 
+    _patch_channel_modules_disabled(monkeypatch)
     web_app_module = importlib.import_module("xagent.web.app")
 
     class _FakeManager:
@@ -906,6 +907,7 @@ async def test_startup_event_no_task_when_no_table_needs_migration(
     """Startup should not create migration task when no table needs migration."""
     import importlib
 
+    _patch_channel_modules_disabled(monkeypatch)
     web_app_module = importlib.import_module("xagent.web.app")
 
     class _FakeManager:
