@@ -576,6 +576,17 @@ async def ingest_cloud(
                         )
                         return result
                     except Exception as e:
+                        # Clean up the file record and physical file on failure
+                        try:
+                            db.delete(file_record)
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                        try:
+                            if file_path.exists():
+                                file_path.unlink()
+                        except OSError:
+                            pass
                         return IngestionResult(
                             status="error",
                             message=f"Ingestion failed: {str(e)}",
@@ -1358,24 +1369,13 @@ async def delete_document_api(
             current_file_id = doc_info.get("file_id")
             if current_file_id:
                 remaining_file_ids.discard(current_file_id)
-                remaining_after_delete = {
-                    next_file_id
-                    for next_file_id in (
-                        _get_document_record_file_id(record)
-                        for record in _list_documents_for_user(
-                            user_id=int(_user.id),
-                            is_admin=bool(_user.is_admin),
-                        )
-                    )
-                    if next_file_id
-                }
                 if _delete_uploaded_file_if_orphaned(
                     db,
                     file_id=current_file_id,
                     user_id=int(_user.id),
-                    remaining_file_ids=remaining_after_delete,
+                    remaining_file_ids=remaining_file_ids,
                 ):
-                    db.commit()
+                    pass
             logger.info(
                 "Deleted document '%s' (doc_id: %s) from collection '%s'",
                 doc_info.get("filename", filename),
@@ -1386,6 +1386,12 @@ async def delete_document_api(
             error_msg = f"Failed to delete doc_id {doc_id}: {str(e)}"
             deletion_errors.append(error_msg)
             logger.error("%s", error_msg)
+
+    # Commit all orphan file cleanups in a single batch after the loop
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
 
     if deletion_errors:
         return {

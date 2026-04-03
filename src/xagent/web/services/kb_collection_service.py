@@ -113,6 +113,7 @@ def delete_collection_uploaded_files(
 ) -> int:
     """Delete orphan UploadedFile rows for a collection, with legacy path fallback."""
     deleted_uploaded_files = 0
+    deleted_file_ids: Set[str] = set()
 
     for current_file_id in collection_file_ids:
         if delete_uploaded_file_if_orphaned(
@@ -122,21 +123,22 @@ def delete_collection_uploaded_files(
             remaining_file_ids=remaining_file_ids,
         ):
             deleted_uploaded_files += 1
+            deleted_file_ids.add(current_file_id)
 
     if collection_dir is not None:
         prefix = str(collection_dir.resolve()) + os.sep
         dir_str = str(collection_dir.resolve())
-        deleted = (
-            db.query(UploadedFile)
-            .filter(
-                UploadedFile.user_id == user_id,
-                or_(
-                    UploadedFile.storage_path.startswith(prefix),
-                    UploadedFile.storage_path == dir_str,
-                ),
-            )
-            .delete(synchronize_session=False)
+        query = db.query(UploadedFile).filter(
+            UploadedFile.user_id == user_id,
+            or_(
+                UploadedFile.storage_path.startswith(prefix),
+                UploadedFile.storage_path == dir_str,
+            ),
         )
+        # Exclude file_ids already deleted in the first pass to avoid double-count
+        if deleted_file_ids:
+            query = query.filter(UploadedFile.file_id.notin_(deleted_file_ids))
+        deleted = query.delete(synchronize_session=False)
         deleted_uploaded_files += int(deleted or 0)
 
     if deleted_uploaded_files:

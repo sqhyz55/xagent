@@ -1,5 +1,4 @@
 import logging
-from unittest.mock import patch
 
 import pytest
 
@@ -67,18 +66,15 @@ class TestFormatGenerationPrompt:
     def test_format_generation_prompt_empty_contexts_produces_warning_and_formats(
         self,
         sample_prompt_template: str,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test that empty formatted contexts produce a warning but still format."""
-        with patch(
-            "xagent.core.tools.core.RAG_tools.generate.format_generation_prompt.logger.warning"
-        ) as mock_warning:
+        with caplog.at_level(logging.WARNING):
             result = format_generation_prompt(
                 prompt_template=sample_prompt_template,
                 formatted_contexts="",
             )
-        mock_warning.assert_called_once()
-        warning_msg = str(mock_warning.call_args[0][0])
-        assert "Formatted contexts are empty" in warning_msg
+            assert "Formatted contexts are empty" in caplog.text
 
         expected_prompt_for_empty_context = (
             f"{sample_prompt_template}\n\nContext:\n\n\nAnswer:"

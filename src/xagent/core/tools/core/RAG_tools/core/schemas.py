@@ -1367,9 +1367,7 @@ class CollectionInfo(BaseModel):
         if data.get("ingestion_config"):
             data["ingestion_config"] = json.dumps(data["ingestion_config"])
         else:
-            # Persist JSON null as a string so older non-null LanceDB schemas
-            # can still accept rows while preserving the semantic "no config".
-            data["ingestion_config"] = "null"
+            data["ingestion_config"] = None
 
         return data
 
