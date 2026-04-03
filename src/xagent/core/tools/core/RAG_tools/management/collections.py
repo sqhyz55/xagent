@@ -167,9 +167,17 @@ def _iter_batches(
                         arrow_table["user_id"], pa.scalar(user_val, type=pa.int64())
                     )
                     arrow_table = arrow_table.filter(mask)
+                else:
+                    # Unrecognized filter format — return empty to prevent data leak.
+                    logger.warning(
+                        "Unrecognized user filter format, returning empty: %s",
+                        user_filter,
+                    )
+                    arrow_table = arrow_table.slice(0, 0)
         except Exception as filter_exc:
             logger.warning("Failed to apply user filter on Arrow table: %s", filter_exc)
-            # Continue without filter if filtering fails
+            # Safety: if filtering fails, return empty result to prevent data leak.
+            arrow_table = arrow_table.slice(0, 0)
 
     if column_list is not None:
         try:

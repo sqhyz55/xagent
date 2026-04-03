@@ -142,7 +142,13 @@ def _build_record_update_filter(
     return " and ".join(filter_parts)
 
 
-def _remap_legacy_orphaned_user_ids(conn: DBConnection, dry_run: bool = False) -> dict:
+def _remap_legacy_orphaned_user_ids(
+    conn: DBConnection,
+    dry_run: bool = False,
+    *,
+    chunks_only: bool = False,
+    embeddings_only: bool = False,
+) -> dict:
     """One-time compatibility remap for legacy orphan marker values.
 
     Historical migration runs used ``-1`` as temporary orphan marker, which now
@@ -152,7 +158,12 @@ def _remap_legacy_orphaned_user_ids(conn: DBConnection, dry_run: bool = False) -
     """
 
     remapped_counts: dict[str, int] = {}
-    target_tables = ["chunks", *_get_embeddings_tables(conn)]
+    tables: list[str] = []
+    if not embeddings_only:
+        tables.append("chunks")
+    if not chunks_only:
+        tables.extend(_get_embeddings_tables(conn))
+    target_tables = tables
 
     for table_name in target_tables:
         try:
@@ -463,8 +474,21 @@ def backfill_orphaned_embeddings(
     }
 
 
-def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dict:
-    """Run full two-phase backfill for all tables."""
+def backfill_all(
+    dry_run: bool = False,
+    conn: DBConnection | None = None,
+    *,
+    chunks_only: bool = False,
+    embeddings_only: bool = False,
+) -> dict:
+    """Run full two-phase backfill for all tables.
+
+    Args:
+        dry_run: If True, don't make actual changes.
+        conn: Optional LanceDB connection (created from env if None).
+        chunks_only: Only process chunks table (skip embeddings).
+        embeddings_only: Only process embeddings tables (skip chunks).
+    """
     if conn is None:
         conn = get_connection_from_env()
 
@@ -483,7 +507,12 @@ def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dic
         logger.info("LanceDB User ID Backfill Migration (Two-Phase)")
         logger.info("=" * 60)
 
-        legacy_remap = _remap_legacy_orphaned_user_ids(conn=conn, dry_run=dry_run)
+        legacy_remap = _remap_legacy_orphaned_user_ids(
+            conn=conn,
+            dry_run=dry_run,
+            chunks_only=chunks_only,
+            embeddings_only=embeddings_only,
+        )
         if legacy_remap:
             logger.info("Legacy orphan remap summary: %s", legacy_remap)
         has_legacy_chunk_orphans = legacy_remap.get("chunks", 0) > 0
@@ -493,24 +522,45 @@ def backfill_all(dry_run: bool = False, conn: DBConnection | None = None) -> dic
         )
 
         # Phase 1
-        chunks_res = backfill_chunks_table(dry_run=dry_run, conn=conn)
-        embeddings_res = backfill_embeddings_table(dry_run=dry_run, conn=conn)
+        if not embeddings_only:
+            chunks_res = backfill_chunks_table(dry_run=dry_run, conn=conn)
+        else:
+            chunks_res = {
+                "total": 0,
+                "backfilled": 0,
+                "skipped": 0,
+                "failed": 0,
+                "table": "chunks",
+            }
+
+        if not chunks_only:
+            embeddings_res = backfill_embeddings_table(dry_run=dry_run, conn=conn)
+        else:
+            embeddings_res = {
+                "total": 0,
+                "backfilled": 0,
+                "skipped": 0,
+                "failed": 0,
+                "details": [],
+                "table": "embeddings",
+            }
 
         # Phase 2
-        chunks_retry = {"backfilled": 0, "skipped": chunks_res["skipped"]}
-        embeddings_retry = {"backfilled": 0, "skipped": embeddings_res["skipped"]}
+        if not embeddings_only:
+            if chunks_res["skipped"] > 0 or has_legacy_chunk_orphans:
+                chunks_retry = backfill_orphaned_chunks(dry_run=dry_run, conn=conn)
+                chunks_res["backfilled"] += chunks_retry["backfilled"]
+                chunks_res["skipped"] = chunks_retry["skipped"]
+                chunks_res["failed"] += chunks_retry["failed"]
 
-        if chunks_res["skipped"] > 0 or has_legacy_chunk_orphans:
-            chunks_retry = backfill_orphaned_chunks(dry_run=dry_run, conn=conn)
-            chunks_res["backfilled"] += chunks_retry["backfilled"]
-            chunks_res["skipped"] = chunks_retry["skipped"]
-            chunks_res["failed"] += chunks_retry["failed"]
-
-        if embeddings_res["skipped"] > 0 or has_legacy_embedding_orphans:
-            embeddings_retry = backfill_orphaned_embeddings(dry_run=dry_run, conn=conn)
-            embeddings_res["backfilled"] += embeddings_retry["backfilled"]
-            embeddings_res["skipped"] = embeddings_retry["skipped"]
-            embeddings_res["failed"] += embeddings_retry["failed"]
+        if not chunks_only:
+            if embeddings_res["skipped"] > 0 or has_legacy_embedding_orphans:
+                embeddings_retry = backfill_orphaned_embeddings(
+                    dry_run=dry_run, conn=conn
+                )
+                embeddings_res["backfilled"] += embeddings_retry["backfilled"]
+                embeddings_res["skipped"] = embeddings_retry["skipped"]
+                embeddings_res["failed"] += embeddings_retry["failed"]
 
         return {
             "chunks": chunks_res,
@@ -552,12 +602,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        if args.chunks_only:
-            result = backfill_chunks_table(dry_run=args.dry_run)
-        elif args.embeddings_only:
-            result = backfill_embeddings_table(dry_run=args.dry_run)
-        else:
-            result = backfill_all(dry_run=args.dry_run)
+        result = backfill_all(
+            dry_run=args.dry_run,
+            chunks_only=args.chunks_only,
+            embeddings_only=args.embeddings_only,
+        )
+        if "error" in result:
+            logger.error("Migration aborted: %s", result["error"])
+            sys.exit(1)
         sys.exit(0)
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
