@@ -639,6 +639,8 @@ class FeishuBotInstance:
 
 
 class FeishuChannelManager:
+    enabled = True  # Always enabled, we load dynamically
+
     def __init__(self) -> None:
         self.bots: Dict[str, FeishuBotInstance] = {}
 

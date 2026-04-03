@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import tempfile
+from types import ModuleType
 
 import pyarrow as pa
 import pytest
@@ -26,6 +28,48 @@ from xagent.migrations.lancedb.backfill_user_id import (
     backfill_orphaned_embeddings,
 )
 from xagent.providers.vector_store.lancedb import get_connection_from_env
+
+
+def _patch_channel_modules_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid Telegram/Feishu startup errors when optional deps are missing.
+
+    ``startup_event`` optionally starts the Telegram and Feishu channel managers.
+    These managers pull optional dependencies (aiogram, feishu) that CI may omit.
+
+    We inject lightweight stub modules into ``sys.modules`` instead of
+    ``monkeypatch.setattr("...telegram.bot...", ...)``, because importing the real
+    ``telegram.bot`` or ``feishu.bot`` pulls optional dependencies.
+    """
+
+    class _FakeTelegramChannel:
+        enabled = False
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class _FakeFeishuChannel:
+        enabled = False  # Disabled to prevent task creation in tests
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    # Create fake telegram.bot module
+    fake_telegram_bot = ModuleType("xagent.web.channels.telegram.bot")
+    fake_telegram_bot.get_telegram_channel = lambda: _FakeTelegramChannel()
+    monkeypatch.setitem(
+        sys.modules, "xagent.web.channels.telegram.bot", fake_telegram_bot
+    )
+
+    # Create fake feishu.bot module
+    fake_feishu_bot = ModuleType("xagent.web.channels.feishu.bot")
+    fake_feishu_bot.get_feishu_channel = lambda: _FakeFeishuChannel()
+    monkeypatch.setitem(sys.modules, "xagent.web.channels.feishu.bot", fake_feishu_bot)
 
 
 @pytest.fixture
@@ -653,6 +697,7 @@ async def test_startup_event_skips_when_auto_migrate_disabled(
     """Startup should not create migration task when auto migration is disabled."""
     import importlib
 
+    _patch_channel_modules_disabled(monkeypatch)
     web_app_module = importlib.import_module("xagent.web.app")
 
     class _FakeManager:

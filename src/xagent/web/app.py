@@ -346,7 +346,10 @@ async def startup_event() -> None:
             logger.info("Telegram channel background task created successfully")
 
         feishu_channel = get_feishu_channel()
-        app.state.feishu_task = asyncio.create_task(feishu_channel.start())
+        if feishu_channel.enabled:
+            logger.info("Initializing Feishu channel manager...")
+            app.state.feishu_task = asyncio.create_task(feishu_channel.start())
+            logger.info("Feishu channel background task created successfully")
     except Exception as e:
         logger.error(f"Failed to start Telegram channel manager: {e}", exc_info=True)
 
