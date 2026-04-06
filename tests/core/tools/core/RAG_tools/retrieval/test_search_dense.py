@@ -17,6 +17,7 @@ import pytest
 from xagent.core.tools.core.RAG_tools.core.exceptions import DocumentValidationError
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     DenseSearchResponse,
+    IndexResult,
     IndexStatus,
     SearchResult,
 )
@@ -116,7 +117,11 @@ class TestSearchDenseEngine:
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_collection'"
         )
-        mock_vector_store.create_index.return_value = "index_ready"
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=False,  # Dense search doesn't use FTS
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
@@ -182,7 +187,11 @@ class TestSearchDenseEngine:
             "collection == 'test_collection'",
             expected_filter_clause,
         ]
-        mock_vector_store.create_index.return_value = "index_ready"
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=False,  # Dense search doesn't use FTS
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
@@ -229,7 +238,11 @@ class TestSearchDenseEngine:
         # Mock vector store
         mock_vector_store = Mock()
         mock_vector_store.build_filter_expression.return_value = "collection == 'my_kb'"
-        mock_vector_store.create_index.return_value = "index_ready"
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=False,  # Dense search doesn't use FTS
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
@@ -732,7 +745,11 @@ class TestSearchDenseIntegration:
         # Mock vector store
         mock_vector_store = Mock()
         mock_vector_store.build_filter_expression.return_value = None
-        mock_vector_store.create_index.return_value = "index_ready"
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=False,  # Dense search doesn't use FTS
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"
@@ -803,7 +820,11 @@ class TestSearchDenseIntegration:
         # Mock vector store
         mock_vector_store = Mock()
         mock_vector_store.build_filter_expression.return_value = None
-        mock_vector_store.create_index.return_value = "index_ready"
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=False,  # Dense search doesn't use FTS
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_index_store"

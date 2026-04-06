@@ -10,7 +10,7 @@ Phase 1A Option C: Provides both sync and async search functions.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.schemas import SearchResult
+from ..core.schemas import IndexResult, SearchResult
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.contracts import FilterExpression
 from ..storage.factory import get_vector_index_store, get_vector_store_raw_connection
@@ -82,24 +82,15 @@ def search_dense_engine(
 
         # Check and create index if needed (using storage abstraction)
         vector_store = get_vector_index_store()
-        index_result = vector_store.create_index(model_tag, readonly)
-        # Parse status and advice from combined result
-        if "advice:" in index_result:
-            index_status, index_advice = index_result.split("advice:", 1)
-            index_status = index_status.strip()
-            index_advice = index_advice.strip()
-        else:
-            index_status = index_result
-            index_advice = None
+        index_result_obj = vector_store.create_index(model_tag, readonly)
+        index_status = index_result_obj.status
+        index_advice = index_result_obj.advice
 
         # Build LanceDB search query using query builder pattern
         search_query = table.search(
             query_vector,
             vector_column_name="vector",
         )
-
-        # Build backend-specific filter via storage abstraction (Phase 1A contract).
-        vector_store = get_vector_index_store()
 
         # Convert API-facing dict filters into abstract FilterExpression
         filter_expr: Optional[FilterExpression] = None

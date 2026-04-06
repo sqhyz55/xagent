@@ -203,7 +203,18 @@ class LanceDBMetadataStore(MetadataStore):
             return None
 
     def get_raw_connection(self) -> DBConnection:
-        return get_connection_from_env() if self._conn is None else self._conn
+        """Get the underlying LanceDB connection.
+
+        This method provides access to the raw connection for operations that
+        cannot be performed through the storage abstraction. It initializes
+        and caches the connection for consistency with async methods.
+
+        Returns:
+            DBConnection: The LanceDB connection object
+        """
+        if self._conn is None:
+            self._conn = get_connection_from_env()
+        return self._conn
 
 
 class LanceDBVectorIndexStore(VectorIndexStore):
@@ -508,7 +519,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
         return stats
 
-    def create_index(self, model_tag: str, readonly: bool = False) -> str:
+    def create_index(self, model_tag: str, readonly: bool = False) -> IndexResult:
         """Create or check vector index for embeddings table.
 
         This method implements the full index management logic previously in
@@ -520,10 +531,10 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             readonly: If True, don't trigger index creation.
 
         Returns:
-            Index status string. If advice is available, it's appended with
-            "advice:" prefix (e.g., "index_building advice: Creating HNSW index").
+            IndexResult containing status, advice, and FTS enabled state.
         """
         from ..core.config import IndexPolicy
+        from ..core.schemas import IndexResult
         from ..LanceDB.model_tag_utils import to_model_tag
 
         # Import LanceDB index types
@@ -537,15 +548,17 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         table_name = f"embeddings_{to_model_tag(model_tag)}"
 
         if readonly:
-            return (
-                f"readonly advice: Readonly mode - no index operations for {table_name}"
+            return IndexResult(
+                status="readonly",
+                advice=f"Readonly mode - no index operations for {table_name}",
+                fts_enabled=False,
             )
 
         try:
             table = conn.open_table(table_name)
         except Exception as exc:
             logger.debug("Unable to open table '%s': %s", table_name, exc)
-            return "failed"
+            return IndexResult(status="failed", advice=None, fts_enabled=False)
 
         # Use default index policy
         policy = IndexPolicy()
@@ -620,27 +633,41 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 f"Vector index check failed for {table_name}: {str(e)}"
             )
 
+        # Check actual FTS index status (not just whether we tried to create it)
+        fts_enabled = False
+        try:
+            indexes = table.list_indices()
+            fts_enabled = any(
+                idx.index_type == "FTS" and "text" in idx.columns for idx in indexes
+            )
+        except Exception as e:
+            logger.warning(f"Failed to check FTS index status: {e}")
+
         # FTS Index Management (if enabled)
-        if policy.fts_enabled:
+        if policy.fts_enabled and not fts_enabled:
             try:
-                # Check if FTS index exists
-                indexes = table.list_indices()
-                has_fts = any(
-                    idx.index_type == "FTS" and "text" in idx.columns for idx in indexes
-                )
-                if not has_fts:
-                    fts_params = {"with_position": True, **(policy.fts_params or {})}
-                    table.create_fts_index("text", replace=True, **fts_params)
-                    logger.info("Created FTS index on 'text' column for %s", table_name)
+                fts_params = {"with_position": True, **(policy.fts_params or {})}
+                table.create_fts_index("text", replace=True, **fts_params)
+                logger.info("Created FTS index on 'text' column for %s", table_name)
+                # Re-check FTS status after creation
+                try:
+                    indexes = table.list_indices()
+                    fts_enabled = any(
+                        idx.index_type == "FTS" and "text" in idx.columns
+                        for idx in indexes
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning(
                     f"FTS index creation/check failed for {table_name}: {str(e)}"
                 )
 
-        # Combine status and advice
-        if vector_index_advice:
-            return f"{vector_index_status} advice: {vector_index_advice}"
-        return vector_index_status
+        return IndexResult(
+            status=vector_index_status,
+            advice=vector_index_advice,
+            fts_enabled=fts_enabled,
+        )
 
     # --- Index Management (Phase 1A Part 2) ---
 

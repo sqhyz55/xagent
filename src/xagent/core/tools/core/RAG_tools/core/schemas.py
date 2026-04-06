@@ -799,6 +799,29 @@ class HybridSearchResponse(BaseModel):
     )
 
 
+class IndexResult(BaseModel):
+    """Structured result from index creation operations.
+
+    This model replaces the previous string-based return format for create_index,
+    providing type-safe access to index status, advice, and FTS enabled state.
+
+    Attributes:
+        status: Index creation status (e.g., "index_ready", "readonly", "failed")
+        advice: Optional advice message for further actions
+        fts_enabled: Whether FTS index is actually enabled (separate from vector index)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(..., description="Index creation status")
+    advice: Optional[str] = Field(
+        default=None, description="Human-readable index advice"
+    )
+    fts_enabled: bool = Field(
+        default=False, description="Whether FTS index is enabled on text column"
+    )
+
+
 class SearchConfig(BaseModel):
     """Configuration for the unified document search pipeline."""
 

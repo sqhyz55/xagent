@@ -9,6 +9,7 @@ import pyarrow as pa  # type: ignore
 from pyarrow import Table as PyArrowTable
 
 from ..core.schemas import (
+    IndexResult,
     SearchFallbackAction,
     SearchResult,
     SearchWarning,
@@ -79,17 +80,10 @@ def search_sparse(
 
         # Use storage abstraction for index management
         vector_store = get_vector_index_store()
-        _ = vector_store.create_index(model_tag, readonly)
+        index_result_obj = vector_store.create_index(model_tag, readonly)
 
-        # Check FTS index status (LanceDB-specific, using raw table)
-        _fts_enabled = False
-        try:
-            indexes = table.list_indices()
-            _fts_enabled = any(
-                idx.index_type == "FTS" and "text" in idx.columns for idx in indexes
-            )
-        except Exception as e:
-            logger.warning(f"Failed to check FTS index status: {e}")
+        # Use FTS enabled status from index result
+        _fts_enabled = index_result_obj.fts_enabled
 
         if not _fts_enabled:
             current_warnings.append(
@@ -102,9 +96,6 @@ def search_sparse(
             )
 
         search_query = table.search(query_text, query_type="fts").limit(top_k)
-
-        # Build filter expression using the abstract layer
-        vector_store = get_vector_index_store()
 
         # Convert legacy dict format to FilterExpression if needed
         filter_expr: Optional[FilterExpression] = None
@@ -409,10 +400,8 @@ async def search_sparse_async(
 
         # Check and create FTS index if needed (reuse sync index_manager)
         if not readonly:
-            index_status = vector_store.create_index(model_tag, readonly=False)
-            # Note: We can't easily check FTS index status without raw table access
-            # For now, assume FTS is enabled if index creation succeeded
-            _fts_enabled = index_status != "failed"
+            index_result_obj = vector_store.create_index(model_tag, readonly=False)
+            _fts_enabled = index_result_obj.fts_enabled
 
         if not _fts_enabled:
             current_warnings.append(

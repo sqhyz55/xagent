@@ -22,7 +22,7 @@ from typing import (
 )
 
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
-from ..core.schemas import CollectionInfo
+from ..core.schemas import CollectionInfo, IndexResult
 
 # Field name whitelist for filter validation
 # Derived from all LanceDB table schemas in schema_manager.py
@@ -604,7 +604,7 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
-    def create_index(self, model_tag: str, readonly: bool = False) -> str:
+    def create_index(self, model_tag: str, readonly: bool = False) -> IndexResult:
         """Create or check vector index for embeddings table.
 
         Args:
@@ -612,7 +612,7 @@ class VectorIndexStore(ABC):
             readonly: If True, don't trigger index creation.
 
         Returns:
-            Index status string.
+            IndexResult containing status, advice, and FTS enabled state.
         """
 
     # --- Async variants (Phase 1A Option C: Hybrid approach) ---

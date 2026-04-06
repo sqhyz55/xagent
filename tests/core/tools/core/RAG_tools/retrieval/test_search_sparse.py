@@ -48,7 +48,13 @@ class TestSearchSparse:
 
         # Mock vector store
         mock_vector_store = Mock()
-        mock_vector_store.create_index.return_value = "index_ready"
+        # Return IndexResult object instead of string
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_col'"
         )
@@ -131,7 +137,13 @@ class TestSearchSparse:
 
             # Mock vector store
             mock_vector_store = Mock()
-            mock_vector_store.create_index.return_value = "index_ready"
+            # Return IndexResult object instead of string
+            from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+            mock_vector_store.create_index.return_value = IndexResult(
+                status="index_ready",
+                advice=None,
+                fts_enabled=True,
+            )
             mock_vector_store.build_filter_expression.return_value = (
                 "doc_id = 'filtered_doc' AND collection = 'test_col'"
             )
@@ -200,7 +212,13 @@ class TestSearchSparse:
 
             # Mock vector store
             mock_vector_store = Mock()
-            mock_vector_store.create_index.return_value = "index_ready"
+            # Return IndexResult object instead of string
+            from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+            mock_vector_store.create_index.return_value = IndexResult(
+                status="index_ready",
+                advice=None,
+                fts_enabled=True,
+            )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'my_kb'"
             )
@@ -246,7 +264,13 @@ class TestSearchSparse:
 
             # Mock vector store - index status returned but FTS not enabled on table
             mock_vector_store = Mock()
-            mock_vector_store.create_index.return_value = "index_ready"
+            # Return IndexResult object instead of string
+            from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+            mock_vector_store.create_index.return_value = IndexResult(
+                status="index_ready",
+                advice=None,
+                fts_enabled=False,  # FTS not enabled
+            )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'test_col'"
             )
@@ -301,7 +325,13 @@ class TestSearchSparse:
 
             # Mock vector store
             mock_vector_store = Mock()
-            mock_vector_store.create_index.return_value = "index_ready"
+            # Return IndexResult object instead of string
+            from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+            mock_vector_store.create_index.return_value = IndexResult(
+                status="index_ready",
+                advice=None,
+                fts_enabled=True,
+            )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'test_col'"
             )
@@ -409,7 +439,13 @@ class TestSearchSparse:
 
             # Mock vector store
             mock_vector_store = Mock()
-            mock_vector_store.create_index.return_value = "index_ready"
+            # Return IndexResult object instead of string
+            from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+            mock_vector_store.create_index.return_value = IndexResult(
+                status="index_ready",
+                advice=None,
+                fts_enabled=True,
+            )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'test_col'"
             )
@@ -490,7 +526,13 @@ class TestSearchSparse:
 
         # Mock vector store
         mock_vector_store = Mock()
-        mock_vector_store.create_index.return_value = "index_ready"
+        # Return IndexResult object instead of string
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_col'"
         )
@@ -547,7 +589,13 @@ class TestSearchSparse:
 
         # Mock vector store
         mock_vector_store = Mock()
-        mock_vector_store.create_index.return_value = "index_ready"
+        # Return IndexResult object instead of string
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_col'"
         )
