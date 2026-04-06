@@ -116,12 +116,15 @@ def _is_non_recoverable_merge_error(error: Exception) -> bool:
 def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
     """Open an embeddings table for model_id with legacy fallback.
 
-    If only the legacy table exists, this function performs a forward migration:
-    it creates the Hub-ID-named table and copies legacy rows into it (rewriting
-    the per-row ``model`` field to the Hub model ID).
+    This function attempts to open the Hub ID-based table first. If it doesn't
+    exist, it falls back to the legacy table name. No automatic migration is
+    performed - migration should be done explicitly via migrate_embeddings_table().
 
     Returns:
         (table, table_name_used)
+
+    Raises:
+        VectorValidationError: If model_id is empty or no table exists.
     """
     cleaned = (model_id or "").strip()
     if not cleaned:
@@ -135,7 +138,7 @@ def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
     except Exception as primary_exc:  # noqa: BLE001
         last_error: Exception | None = primary_exc
 
-    # 2) Legacy fallback + forward migration
+    # 2) Legacy fallback (no migration)
     legacy_table_name: str | None = None
     try:
         from ..utils.model_resolver import resolve_embedding_adapter
@@ -148,96 +151,25 @@ def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
     if legacy_table_name:
         try:
             legacy_table = conn.open_table(legacy_table_name)
+            logger.info(
+                "Using legacy embeddings table '%s' for hub_id=%s. "
+                "To migrate to the new table name, run migrate_embeddings_table('%s')",
+                legacy_table_name,
+                cleaned,
+                cleaned,
+            )
+            return legacy_table, legacy_table_name
         except Exception as legacy_exc:  # noqa: BLE001
             last_error = legacy_exc
-        else:
-            # Check if auto-migration is enabled
-            from ..core.config import ENABLE_AUTO_EMBEDDINGS_MIGRATION
 
-            if not ENABLE_AUTO_EMBEDDINGS_MIGRATION:
-                # Auto-migration disabled: use legacy table directly
-                logger.info(
-                    "Auto-migration disabled. Using legacy embeddings table '%s' for hub_id=%s. "
-                    "To enable automatic migration, set ENABLE_AUTO_EMBEDDINGS_MIGRATION=true",
-                    legacy_table_name,
-                    cleaned,
-                )
-                return legacy_table, legacy_table_name
-
-            # Migrate legacy -> primary (best-effort, idempotent)
-            try:
-                vector_dim: int | None = None
-                try:
-                    vector_field = legacy_table.schema.field("vector")
-                    list_size = getattr(vector_field.type, "list_size", None)
-                    if list_size is not None:
-                        vector_dim = int(list_size)
-                except Exception:
-                    vector_dim = None
-
-                if vector_dim is None:
-                    sample = legacy_table.search().limit(1).to_pandas()
-                    if not sample.empty and "vector" in sample.columns:
-                        vector_dim = len(sample.iloc[0]["vector"])
-
-                ensure_embeddings_table(
-                    conn, to_model_tag(cleaned), vector_dim=vector_dim
-                )
-                primary_table = conn.open_table(primary_table_name)
-
-                # Copy all rows (small batches). Rewrite model -> Hub ID.
-                # NOTE: This is an automatic forward migration and should be safe to re-run.
-                batch_size = int(
-                    os.getenv("LANCEDB_BATCH_SIZE", str(DEFAULT_LANCEDB_BATCH_SIZE))
-                )
-                offset = 0
-                while True:
-                    df = (
-                        legacy_table.search()
-                        .limit(batch_size)
-                        .offset(offset)
-                        .to_pandas()
-                    )
-                    if df.empty:
-                        break
-                    df["model"] = cleaned
-                    (
-                        primary_table.merge_insert(
-                            on=[
-                                "collection",
-                                "doc_id",
-                                "chunk_id",
-                                "parse_hash",
-                                "model",
-                            ]
-                        )
-                        .when_matched_update_all()
-                        .when_not_matched_insert_all()
-                        .execute(df)
-                    )
-                    offset += len(df)
-
-                logger.info(
-                    "Forward-migrated embeddings table '%s' -> '%s' for hub_id=%s",
-                    legacy_table_name,
-                    primary_table_name,
-                    cleaned,
-                )
-                return primary_table, primary_table_name
-            except Exception as migrate_exc:  # noqa: BLE001
-                logger.warning(
-                    "Failed to forward-migrate legacy embeddings table '%s' -> '%s' (hub_id=%s): %s. "
-                    "Falling back to legacy table for this request.",
-                    legacy_table_name,
-                    primary_table_name,
-                    cleaned,
-                    migrate_exc,
-                )
-                return legacy_table, legacy_table_name
-
-    raise VectorValidationError(
-        f"Embeddings table for model '{cleaned}' does not exist or is inaccessible: {last_error}"
-    )
+    # 3) Neither table exists
+    error_msg = f"Embeddings table not found for model_id='{cleaned}'"
+    if primary_table_name:
+        error_msg += f" (tried: '{primary_table_name}'"
+        if legacy_table_name:
+            error_msg += f", '{legacy_table_name}'"
+        error_msg += ")"
+    raise VectorValidationError(error_msg) from last_error
 
 
 def validate_query_vector(

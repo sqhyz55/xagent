@@ -121,10 +121,11 @@ def _insert_embeddings(model_name: str, records: List[Dict[str, object]]) -> Non
         )
 
 
-def test_list_collections_empty(temp_lancedb_dir: str) -> None:
+@pytest.mark.asyncio
+async def test_list_collections_empty(temp_lancedb_dir: str) -> None:
     """When no data exists the result should be empty but successful."""
 
-    result = list_collections(user_id=None, is_admin=True)
+    result = await list_collections(user_id=None, is_admin=True)
 
     assert result.status == "success"
     assert result.total_count == 0
@@ -132,7 +133,8 @@ def test_list_collections_empty(temp_lancedb_dir: str) -> None:
     assert result.warnings == []
 
 
-def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
+@pytest.mark.asyncio
+async def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
     """Aggregate statistics should include counts per collection and document names."""
 
     collection = "demo_collection"
@@ -196,7 +198,7 @@ def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
         ],
     )
 
-    result = list_collections(user_id=None, is_admin=True)
+    result = await list_collections(user_id=None, is_admin=True)
 
     assert result.status == "success"
     assert result.total_count == 1
@@ -211,12 +213,12 @@ def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
     assert result.warnings == []
 
 
-def test_list_collections_admin_includes_config_from_other_user(
+@pytest.mark.asyncio
+async def test_list_collections_admin_includes_config_from_other_user(
     temp_lancedb_dir: str,
 ) -> None:
     """Admin listing should attach ingestion_config stored under a tenant user_id."""
 
-    import asyncio
     import json
 
     from src.xagent.core.tools.core.RAG_tools.storage.factory import (
@@ -242,16 +244,13 @@ def test_list_collections_admin_includes_config_from_other_user(
         ]
     )
 
-    async def _save_cfg() -> None:
-        await get_metadata_store().save_collection_config(
-            collection,
-            json.dumps({}),
-            user_id=99,
-        )
+    await get_metadata_store().save_collection_config(
+        collection,
+        json.dumps({}),
+        user_id=99,
+    )
 
-    asyncio.run(_save_cfg())
-
-    result = list_collections(user_id=None, is_admin=True)
+    result = await list_collections(user_id=None, is_admin=True)
 
     assert result.status == "success"
     assert result.total_count == 1

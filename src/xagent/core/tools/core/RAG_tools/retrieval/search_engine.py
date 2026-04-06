@@ -13,10 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..core.schemas import SearchResult
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.contracts import FilterExpression
-from ..storage.factory import (
-    get_vector_index_store,
-)
-from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
+from ..storage.factory import get_vector_index_store, get_vector_store_raw_connection
 from ..utils.filter_utils import parse_legacy_filters, validate_filter_depth
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata
@@ -58,7 +55,7 @@ def search_dense_engine(
     """
     try:
         # Get database connection
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
 
         # Build primary table name (Hub model ID is the single source of truth)
         table_name = f"embeddings_{to_model_tag(model_tag)}"

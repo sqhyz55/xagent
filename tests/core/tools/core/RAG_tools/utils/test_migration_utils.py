@@ -91,7 +91,7 @@ class TestInferEmbeddingConfigFromCollection:
     """Test embedding config inference."""
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.utils.migration_utils.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.utils.migration_utils.get_vector_store_raw_connection"
     )
     def test_infer_no_tables_found(self, mock_conn):
         """Test inference when no embedding tables exist."""
@@ -104,7 +104,7 @@ class TestInferEmbeddingConfigFromCollection:
         assert result == (None, None)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.utils.migration_utils.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.utils.migration_utils.get_vector_store_raw_connection"
     )
     def test_infer_single_model(self, mock_conn):
         """Test inference with single embedding model."""
@@ -134,7 +134,7 @@ class TestInferEmbeddingConfigFromCollection:
         assert result == ("text-embedding-ada-002", 1536)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.utils.migration_utils.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.utils.migration_utils.get_vector_store_raw_connection"
     )
     def test_infer_multiple_models_choose_most_used(self, mock_conn):
         """Test inference with multiple models chooses most used."""

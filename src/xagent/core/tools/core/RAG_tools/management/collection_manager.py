@@ -557,20 +557,18 @@ def resolve_effective_embedding_model_sync(
         raise
 
 
-def rebuild_collection_metadata() -> None:
+async def rebuild_collection_metadata() -> None:
     """Rebuild collection_metadata table from existing data.
 
     This function reads all collections from documents/parses/chunks/embeddings tables
     and creates corresponding entries in the collection_metadata table.
 
     Use this to migrate existing data when collection_metadata table is missing or outdated.
-
-    This is a synchronous blocking operation.
     """
     from . import collections
 
     # Get all existing collections (use is_admin=True to bypass user filtering)
-    result = collections.list_collections(is_admin=True)
+    result = await collections.list_collections(is_admin=True)
 
     if result.status != "success":
         logger.error(f"Failed to list collections: {result.message}")
@@ -611,7 +609,16 @@ def rebuild_collection_metadata() -> None:
                     get_identity=lambda item: item[0],
                     logger=logger,
                 )
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Model hub initialization failed during collection metadata rebuild: "
+            "error_type=%s, error_message=%s, fallback_behavior=%s, impact=%s",
+            type(e).__name__,
+            str(e),
+            "legacy_model_resolution",
+            "May use suboptimal model selection or missing embeddings",
+            exc_info=True,
+        )
         hub_tag_to_id = {}
 
     # Save each collection to metadata table

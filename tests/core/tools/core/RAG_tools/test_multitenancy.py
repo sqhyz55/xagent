@@ -40,7 +40,9 @@ from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 from xagent.web.api.kb import delete_collection_api, list_collections_api
 
 
@@ -136,7 +138,7 @@ class TestMultiTenancyCollections:
 
     def _insert_test_documents(self, user_id: int | None):
         """Insert test documents with specific user_id."""
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_documents_table,
         )
@@ -160,7 +162,8 @@ class TestMultiTenancyCollections:
         ]
         table.add(records)
 
-    def test_list_collections_admin_sees_all(self, temp_lancedb_dir: str) -> None:
+    @pytest.mark.asyncio
+    async def test_list_collections_admin_sees_all(self, temp_lancedb_dir: str) -> None:
         """Admin users should see all collections regardless of user_id."""
         # Insert documents for different users
         self._insert_test_documents(user_id=1)
@@ -168,7 +171,7 @@ class TestMultiTenancyCollections:
         self._insert_test_documents(user_id=None)  # Legacy data
 
         # Admin sees everything
-        result = list_collections(user_id=None, is_admin=True)
+        result = await list_collections(user_id=None, is_admin=True)
         assert result.status == "success"
         # Should see at least one collection
         assert len(result.collections) >= 1
@@ -176,7 +179,8 @@ class TestMultiTenancyCollections:
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 15  # 5 docs per user * 3 users
 
-    def test_list_collections_regular_user_sees_only_own(
+    @pytest.mark.asyncio
+    async def test_list_collections_regular_user_sees_only_own(
         self, temp_lancedb_dir: str
     ) -> None:
         """Regular users should only see their own documents."""
@@ -186,13 +190,13 @@ class TestMultiTenancyCollections:
         self._insert_test_documents(user_id=None)
 
         # User 1 sees only user 1's data
-        result = list_collections(user_id=1, is_admin=False)
+        result = await list_collections(user_id=1, is_admin=False)
         assert result.status == "success"
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 5
 
         # User 2 sees only user 2's data
-        result = list_collections(user_id=2, is_admin=False)
+        result = await list_collections(user_id=2, is_admin=False)
         assert result.status == "success"
         total_docs = sum(c.documents for c in result.collections)
         assert total_docs == 5
@@ -300,7 +304,7 @@ class TestMultiTenancySearch:
         # Setup: Create embeddings table and insert test data for different users
         import pandas as pd
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
 
         # Create embeddings table
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
@@ -554,7 +558,8 @@ class TestCollectionManagementMultiTenancy:
     @patch(
         "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
     )
-    def test_list_collections_with_user_filter(self, mock_get_store):
+    @pytest.mark.asyncio
+    async def test_list_collections_with_user_filter(self, mock_get_store):
         """Test list_collections applies user filtering."""
         mock_store = MagicMock()
         mock_conn = MagicMock()
@@ -587,12 +592,12 @@ class TestCollectionManagementMultiTenancy:
 
         mock_conn.open_table.side_effect = mock_open_table_side_effect
 
-        result = list_collections(user_id=123, is_admin=False)
+        result = await list_collections(user_id=123, is_admin=False)
         assert hasattr(result, "status")
         assert hasattr(result, "collections")
         assert hasattr(result, "total_count")
 
-        result = list_collections(user_id=None, is_admin=True)
+        result = await list_collections(user_id=None, is_admin=True)
         assert hasattr(result, "status")
         assert hasattr(result, "collections")
         assert hasattr(result, "total_count")
@@ -756,6 +761,7 @@ class TestAPIMultiTenancy:
     """Test multi-tenancy at the API level."""
 
     @patch("xagent.web.api.kb.list_collections")
+    @pytest.mark.asyncio
     async def test_list_collections_api_with_user(self, mock_list_collections):
         """Test list_collections_api passes user context."""
         from xagent.web.models.user import User
@@ -764,12 +770,23 @@ class TestAPIMultiTenancy:
         mock_user.id = 123
         mock_user.is_admin = False
 
-        mock_list_collections.return_value = {"collections": [], "total": 0}
+        # Mock async function return value
+        from xagent.core.tools.core.RAG_tools.core.schemas import ListCollectionsResult
+
+        mock_result = ListCollectionsResult(
+            status="success",
+            total_count=0,
+            collections=[],
+            message="No collections found",
+            warnings=[],
+        )
+        mock_list_collections.return_value = mock_result
 
         result = await list_collections_api(_user=mock_user)
 
-        mock_list_collections.assert_called_once_with(123, False)
-        assert result == {"collections": [], "total": 0}
+        mock_list_collections.assert_called_once_with(user_id=123, is_admin=False)
+        assert result.status == "success"
+        assert result.total_count == 0
 
     @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
     @patch("xagent.web.api.kb.delete_collection_physical_dir")

@@ -21,9 +21,11 @@ from xagent.core.tools.core.RAG_tools.file.register_document import (
     register_document,
 )
 from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 from xagent.providers.vector_store.lancedb import (
     LanceDBVectorStore,
-    get_connection_from_env,
 )
 
 
@@ -222,7 +224,7 @@ class TestLanceDBProviderIntegration:
 
         # Test environment variable connection
         with patch.dict(os.environ, {"TEST_LANCEDB_DIR": db_dir}):
-            conn = get_connection_from_env("TEST_LANCEDB_DIR")
+            conn = get_vector_store_raw_connection()
             assert conn is not None
 
             # Should be able to create tables
@@ -287,7 +289,7 @@ class TestKnowledgeBaseIsolationIntegration:
             write_vectors_to_db,
         )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         model_tag = "kb_isolate_test_model"
         table_name = f"embeddings_{model_tag}"
         try:

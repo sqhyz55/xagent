@@ -497,9 +497,11 @@ class TestChunkDocument:
         )
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] > 0
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -541,9 +543,11 @@ class TestChunkDocument:
         )
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] > 0
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -594,9 +598,11 @@ class TestChunkDocument:
         )
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] > 0
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -715,9 +721,11 @@ class TestChunkDocument:
         assert chunk_result2["created"] is False  # Should not write again
 
         # Verify database state - both should reference same config_hash
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -781,9 +789,11 @@ class TestChunkDocument:
         assert chunk_result2["created"] is True
 
         # Verify database has two different config_hash versions
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -836,9 +846,11 @@ class TestChunkDocument:
         assert chunk_result["created"] is True
         assert chunk_result["chunk_count"] >= 1
 
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -896,9 +908,11 @@ class TestChunkDocument:
         assert chunk_default["created"] is True
         assert chunk_custom["created"] is True
         # Different separators must yield different config_hash (hence different version)
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -948,9 +962,11 @@ class TestChunkDocument:
         assert chunk_result["chunk_count"] > 1  # Need multiple chunks for this test
 
         # Step 3: Verify row-level chunk_hash uniqueness
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()
@@ -1057,9 +1073,11 @@ class TestChunkDocument:
         assert chunk_result["created"] is True
 
         # Step 3: Verify table structure
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
 
         # Table should exist and be accessible
@@ -1250,9 +1268,11 @@ class TestChunkDocument:
         from xagent.core.tools.core.RAG_tools.utils.metadata_utils import (
             deserialize_metadata,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         table = conn.open_table("chunks")
         df = (
             table.search()

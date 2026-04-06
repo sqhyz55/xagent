@@ -89,7 +89,7 @@ async def list_knowledge_bases(
         RuntimeError: If listing knowledge bases fails
     """
     try:
-        result = list_collections(user_id=user_id, is_admin=is_admin)
+        result = await list_collections(user_id=user_id, is_admin=is_admin)
 
         kb_list = []
         for collection in result.collections:
@@ -138,7 +138,7 @@ async def search_knowledge_base(
     """
     try:
         # List all collections
-        collections_result = list_collections(user_id=user_id, is_admin=is_admin)
+        collections_result = await list_collections(user_id=user_id, is_admin=is_admin)
 
         if not collections_result.collections:
             return KnowledgeSearchResult(

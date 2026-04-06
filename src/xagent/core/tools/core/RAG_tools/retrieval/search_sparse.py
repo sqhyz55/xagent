@@ -18,8 +18,8 @@ from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.contracts import FilterExpression
 from ..storage.factory import (
     get_vector_index_store,
+    get_vector_store_raw_connection,
 )
-from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
 from ..utils.filter_utils import parse_legacy_filters, validate_filter_depth
 from ..utils.metadata_utils import deserialize_metadata
 from ..utils.model_resolver import resolve_embedding_adapter
@@ -57,7 +57,7 @@ def search_sparse(
         )
 
     try:
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         try:
             table = conn.open_table(table_name)
         except Exception as primary_exc:  # noqa: BLE001
@@ -73,7 +73,9 @@ def search_sparse(
                 )
                 table_name = legacy_table_name
             except Exception:
-                raise
+                # Keep the original open_table error for deterministic failure semantics
+                # (tests and callers rely on this message/class when storage is unavailable).
+                raise primary_exc
 
         # Use storage abstraction for index management
         vector_store = get_vector_index_store()

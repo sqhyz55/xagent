@@ -699,7 +699,7 @@ def process_document(
                 "collection": collection,
                 "doc_id": doc_id,
                 "parse_hash": parse_hash,
-                "embedding_model": selected_model_id,
+                "embedding_model": embedding_config.id,
             },
         )
         read_start = time.time()
@@ -707,7 +707,9 @@ def process_document(
             collection=collection,
             doc_id=doc_id,
             parse_hash=parse_hash,
-            model=selected_model_id,
+            # IMPORTANT: Use Hub model ID as the single source of truth,
+            # matching the write path (embedding writes use embedding_config.id).
+            model=embedding_config.id,
             user_id=user_id,
             is_admin=is_admin,
         )

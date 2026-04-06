@@ -149,7 +149,7 @@ class LanceDBMetadataStore(MetadataStore):
     async def get_collection_config(
         self,
         collection: str,
-        user_id: int,
+        user_id: Optional[int],
         is_admin: bool = False,
     ) -> str | None:
         """Get collection ingestion configuration from LanceDB.
@@ -159,7 +159,8 @@ class LanceDBMetadataStore(MetadataStore):
 
         Args:
             collection: Collection name.
-            user_id: User ID for multi-tenancy (ignored when ``is_admin``).
+            user_id: User ID for multi-tenancy. None is treated as 0 for non-admin,
+                and as "load all configs" for admin mode (ignored when ``is_admin``).
             is_admin: If True, omit ``user_id`` filter and resolve duplicates by
                 latest ``updated_at``.
 
@@ -176,6 +177,9 @@ class LanceDBMetadataStore(MetadataStore):
             safe_collection = escape_lancedb_string(collection)
             if is_admin:
                 where_clause = f"collection = '{safe_collection}'"
+            elif user_id is None:
+                # Non-admin with user_id=None: treat as user_id=0 for backward compatibility
+                where_clause = f"collection = '{safe_collection}' AND user_id = 0"
             else:
                 where_clause = (
                     f"collection = '{safe_collection}' AND user_id = {user_id}"
@@ -711,6 +715,32 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         """
         # Delegate to sync implementation for now
         return self.trigger_reindex(table_name)
+
+    def migrate_embeddings_table(
+        self,
+        model_id: str,
+        batch_size: int = 1000,
+    ) -> dict[str, Any]:
+        """Migrate legacy embeddings table to Hub ID-based naming.
+
+        This method copies data from a legacy table (embeddings_{model_name})
+        to a new Hub ID-based table (embeddings_{hub_id}), rewriting the
+        per-row ``model`` field to the Hub model ID.
+
+        Args:
+            model_id: Hub model ID to migrate.
+            batch_size: Number of rows to copy per batch.
+
+        Returns:
+            Dictionary with migration results.
+        """
+        from ..utils import migration_utils
+
+        return migration_utils.migrate_embeddings_table(
+            model_id=model_id,
+            batch_size=batch_size,
+            conn=self._get_connection(),
+        )
 
     def get_raw_connection(self) -> DBConnection:
         return self._get_connection()
@@ -1454,7 +1484,7 @@ class LanceDBIngestionStatusStore(IngestionStatusStore):
             async with self._async_lock:
                 if self._async_conn is None:
                     self._async_conn = await lancedb.connect_async(  # type: ignore[attr-defined]
-                        get_connection_from_env().uri  # type: ignore[attr-defined]
+                        get_connection_from_env().uri
                     )
         return self._async_conn
 

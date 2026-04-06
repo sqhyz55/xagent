@@ -78,7 +78,7 @@ class TestSearchDenseEngine:
         return _create_mock_chain
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_engine_basic(self, mock_get_conn: Mock, mock_search_chain) -> None:
         """Test basic search engine functionality."""
@@ -155,7 +155,7 @@ class TestSearchDenseEngine:
             mock_vector_store.build_filter_expression.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_engine_with_filters(
         self, mock_get_conn: Mock, mock_search_chain
@@ -211,7 +211,7 @@ class TestSearchDenseEngine:
             search_query.where.return_value.limit.assert_called_once_with(5)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_dense_engine_applies_collection_filter(
         self, mock_get_conn: Mock, mock_search_chain
@@ -252,7 +252,7 @@ class TestSearchDenseEngine:
             assert "collection" in where_arg.lower() or "my_kb" in where_arg
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_engine_readonly_mode(
         self, mock_get_conn: Mock, mock_search_chain
@@ -308,7 +308,7 @@ class TestSearchDenseEngine:
             mock_vector_store.build_filter_expression.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_engine_error_handling(self, mock_get_conn: Mock) -> None:
         """Test error handling in search engine."""
@@ -400,7 +400,7 @@ class TestSearchDense:
         with (
             patch.object(search_dense_module, "search_dense_engine") as mock_engine,
             patch.object(
-                search_dense_module, "get_connection_from_env"
+                search_dense_module, "get_vector_store_raw_connection"
             ) as mock_get_conn,
             patch.object(search_dense_module, "validate_query_vector") as mock_validate,
         ):
@@ -455,11 +455,11 @@ class TestSearchDense:
         with (
             patch.object(search_dense_module, "search_dense_engine") as mock_engine,
             patch.object(
-                search_dense_module, "get_connection_from_env"
+                search_dense_module, "get_vector_store_raw_connection"
             ) as mock_get_conn,
             patch.object(search_dense_module, "validate_query_vector") as mock_validate,
         ):
-            # Mock connection failure - get_connection_from_env fails before validation
+            # Mock connection failure - get_vector_store_raw_connection fails before validation
             mock_get_conn.side_effect = Exception("Connection failed")
 
             # Mock validation: only fallback call (without conn) will happen
@@ -486,7 +486,7 @@ class TestSearchDense:
                 is_admin=True,
             )
 
-            # Verify fallback behavior - since get_connection_from_env fails, only fallback call happens
+            # Verify fallback behavior - since get_vector_store_raw_connection fails, only fallback call happens
             assert mock_validate.call_count == 1  # Only fallback call without conn
             # Verify the call was made without conn parameter
             mock_validate.assert_called_with([0.1, 0.2, 0.3])
@@ -508,7 +508,7 @@ class TestSearchDense:
             with (
                 patch.object(search_dense_module, "search_dense_engine") as mock_engine,
                 patch.object(search_dense_module, "validate_query_vector"),
-                patch("xagent.providers.vector_store.lancedb.get_connection_from_env"),
+                patch("xagent.core.tools.core.RAG_tools.storage.factory.get_vector_store_raw_connection"),
             ):
                 mock_engine.return_value = ([], engine_status, "test advice")
 
@@ -547,9 +547,11 @@ class TestSearchDenseIntegration:
         from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
             write_vectors_to_db,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         model_tag = "integration_test_model"
 
         # Step 1: Clean up any existing table and create fresh table
@@ -632,9 +634,11 @@ class TestSearchDenseIntegration:
         from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
             write_vectors_to_db,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         model_tag = "filter_test_model"
 
         # Clean up any existing table and create fresh table
@@ -686,7 +690,7 @@ class TestSearchDenseIntegration:
         assert response.results[0].doc_id == "doc1"
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_engine_arrow_fallback_to_list(self, mock_get_conn: Mock) -> None:
         """Test search engine fallback from to_arrow() to to_list()."""
@@ -752,7 +756,7 @@ class TestSearchDenseIntegration:
             mock_limit.to_list.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_engine.get_vector_store_raw_connection"
     )
     def test_search_engine_arrow_fallback_to_pandas_with_nan(
         self, mock_get_conn: Mock

@@ -30,7 +30,9 @@ from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 
 
 class _StubEmbeddingAdapter(BaseEmbedding):
@@ -138,7 +140,7 @@ class TestMetadataPropagationParseToChunk:
         assert chunk_result["chunk_count"] > 0
 
         # Step 4: Verify metadata in chunks table
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         chunks_table = conn.open_table("chunks")
         df = (
             chunks_table.search()
@@ -204,9 +206,11 @@ class TestMetadataPropagationChunkToEmbedding:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         ensure_embeddings_table(conn, "test_model", vector_dim=2)
 
         # Step 4: Read chunks for embedding
@@ -255,7 +259,7 @@ class TestMetadataPropagationChunkToEmbedding:
         assert write_response.upsert_count > 0
 
         # Step 6: Verify metadata in embeddings table
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         embeddings_table = conn.open_table("embeddings_test_model")
         df = (
             embeddings_table.search()
@@ -327,9 +331,11 @@ class TestMetadataPropagationEmbeddingToSearch:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         ensure_embeddings_table(conn, "test_model", vector_dim=2)
 
         read_response = read_chunks_for_embedding(
@@ -445,9 +451,11 @@ class TestMetadataPropagationEndToEnd:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage.factory import (
+            get_vector_store_raw_connection,
+        )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         ensure_embeddings_table(conn, "test_model", vector_dim=2)
 
         read_response = read_chunks_for_embedding(

@@ -21,7 +21,7 @@ from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
     ensure_parses_table,
     ensure_prompt_templates_table,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
+from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
 
 
 def test_get_sql_default_for_pa_type():
@@ -40,7 +40,7 @@ def test_auto_migration_adds_missing_columns(tmp_path: Path, monkeypatch):
     """Test that missing columns are automatically added with correct defaults."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # 1. Create a table with an OLD schema (missing 'language' and 'title')
     old_schema = pa.schema(
@@ -82,7 +82,7 @@ def test_ensure_schema_fields_idempotency(tmp_path: Path, monkeypatch):
     """Test that calling migration on an up-to-date table is safe."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Create table with FULL schema first
     ensure_collection_metadata_table(conn)
@@ -136,7 +136,7 @@ def test_manual_migration_helper(tmp_path: Path, monkeypatch):
     """Test the low-level _ensure_schema_fields helper directly."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Setup simple table
     conn.create_table("test_manual", schema=pa.schema([("a", pa.int32())]))
@@ -163,7 +163,7 @@ def test_ensure_schema_fields_type_mismatch_keeps_existing_type(
     """Type mismatch should not rewrite existing column types."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     conn.create_table("test_type_mismatch", schema=pa.schema([("a", pa.int32())]))
     conn.open_table("test_type_mismatch").add([{"a": 7}])
@@ -187,7 +187,7 @@ def test_ensure_schema_fields_partial_failure_raises(
     """When add_columns fails, migration should raise instead of silently masking."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     conn.create_table("test_partial_failure", schema=pa.schema([("a", pa.int32())]))
     table = conn.open_table("test_partial_failure")
@@ -235,7 +235,7 @@ def test_create_table_existing_with_schema_triggers_migration(
     """_create_table should migrate existing table when schema is provided."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     conn.create_table("create_table_migrate", schema=pa.schema([("a", pa.int32())]))
     target_schema = pa.schema([("a", pa.int32()), ("b", pa.string())])
@@ -252,7 +252,7 @@ def test_ensure_embeddings_table_with_fixed_vector_dim(
     """ensure_embeddings_table should use fixed-size list when vector_dim is set."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     ensure_embeddings_table(conn, "test_fixed", vector_dim=8)
     schema = conn.open_table("embeddings_test_fixed").schema
@@ -266,7 +266,7 @@ def test_ensure_embeddings_table_with_variable_vector_dim(
     """ensure_embeddings_table should use variable list when vector_dim is None."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     ensure_embeddings_table(conn, "test_variable", vector_dim=None)
     schema = conn.open_table("embeddings_test_variable").schema
@@ -280,7 +280,7 @@ def test_ensure_collection_config_table_create_and_idempotent(
     """ensure_collection_config_table should be creatable and idempotent."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     ensure_collection_config_table(conn)
     schema_before = conn.open_table("collection_config").schema
@@ -298,7 +298,7 @@ def test_ensure_parses_table_migrates_missing_user_id(
     """ensure_parses_table should add user_id for legacy schema."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     old_schema = pa.schema(
         [
@@ -337,7 +337,7 @@ def test_ensure_prompt_templates_table_migrates_missing_user_id(
     """ensure_prompt_templates_table should add user_id for legacy schema."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     old_schema = pa.schema(
         [
@@ -380,7 +380,7 @@ def test_ensure_ingestion_runs_table_migrates_missing_user_id(
     """ensure_ingestion_runs_table should add user_id for legacy schema."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     old_schema = pa.schema(
         [
@@ -419,7 +419,7 @@ def test_concurrent_ensure_collection_metadata_table_is_safe(
     """Concurrent ensure_collection_metadata_table calls should be safe."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     errors: list[Exception] = []
 

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import DocumentValidationError, VectorValidationError
 from ..core.schemas import DenseSearchResponse, IndexStatus
-from ..storage.factory import get_vector_store_raw_connection as get_connection_from_env
+from ..storage.factory import get_vector_store_raw_connection
 from ..vector_storage.vector_manager import validate_query_vector
 from .search_engine import search_dense_engine
 
@@ -70,7 +70,7 @@ def search_dense(
     # Validate query vector (with model and dimension check)
     try:
         # Get database connection for validation
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         validate_query_vector(query_vector, model_tag, conn=conn)
     except Exception as e:
         if isinstance(e, VectorValidationError):
@@ -186,7 +186,7 @@ async def search_dense_async(
     # Validate query vector
     try:
         # Get database connection for validation
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         validate_query_vector(query_vector, model_tag, conn=conn)
     except Exception as e:
         if isinstance(e, VectorValidationError):

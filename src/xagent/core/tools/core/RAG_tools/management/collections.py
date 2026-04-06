@@ -6,7 +6,6 @@ system, including listing collections, managing documents, and handling deletion
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import warnings as py_warnings
@@ -469,7 +468,12 @@ async def _load_collection_ingestion_configs(
     """
     metadata_store = get_metadata_store()
     collection_configs: Dict[str, IngestionConfig] = {}
-    uid = 0 if user_id is None else user_id
+    # Handle user_id=None explicitly: admin mode keeps None (load all configs),
+    # non-admin mode converts to 0 (backward compatible)
+    if is_admin and user_id is None:
+        uid = None
+    else:
+        uid = 0 if user_id is None else user_id
     for collection in collection_keys:
         try:
             config_json = await metadata_store.get_collection_config(
@@ -491,7 +495,7 @@ async def _load_collection_ingestion_configs(
     return collection_configs
 
 
-def list_collections(
+async def list_collections(
     user_id: Optional[int] = None, is_admin: bool = False
 ) -> ListCollectionsResult:
     """List all knowledge base collections along with aggregated statistics.
@@ -557,11 +561,11 @@ def list_collections(
 
         collection_keys = sorted(stats.keys() | document_names.keys())
 
-        # Load configs for collections (single event loop; admin sees cross-tenant configs)
+        # Load configs for collections (admin sees cross-tenant configs)
         collection_configs: Dict[str, IngestionConfig] = {}
         try:
-            collection_configs = asyncio.run(
-                _load_collection_ingestion_configs(collection_keys, user_id, is_admin)
+            collection_configs = await _load_collection_ingestion_configs(
+                collection_keys, user_id, is_admin
             )
         except Exception as e:
             logger.warning("Could not load collection configs: %s", e)

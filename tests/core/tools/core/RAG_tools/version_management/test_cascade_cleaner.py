@@ -38,7 +38,7 @@ def _create_mock_table_with_schema() -> MagicMock:
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_document_preview_then_confirm(mock_get_conn: MagicMock) -> None:
     """Test document cascade cleanup with preview and confirm modes.
@@ -92,7 +92,7 @@ def test_cleanup_document_preview_then_confirm(mock_get_conn: MagicMock) -> None
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_parse_preview(mock_get_conn: MagicMock) -> None:
     """Preview counts for parse scope (embeddings, chunks, parses)."""
@@ -111,7 +111,7 @@ def test_cleanup_parse_preview(mock_get_conn: MagicMock) -> None:
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_chunk_preview(mock_get_conn: MagicMock) -> None:
     """Preview counts for chunk scope (embeddings, chunks)."""
@@ -130,7 +130,7 @@ def test_cleanup_chunk_preview(mock_get_conn: MagicMock) -> None:
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_embed(mock_get_conn: MagicMock) -> None:
     """Test embeddings cascade cleanup functionality.
@@ -153,7 +153,7 @@ def test_cleanup_embed(mock_get_conn: MagicMock) -> None:
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_handles_missing_tables(mock_get_conn: MagicMock) -> None:
     """Gracefully handle cases where required tables do not exist.
@@ -198,7 +198,7 @@ def test_cleanup_handles_missing_tables(mock_get_conn: MagicMock) -> None:
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_embed_with_multiple_models(mock_get_conn: MagicMock) -> None:
     """Test that cleanup_embed respects model_tag and doesn't touch other models.
@@ -263,7 +263,7 @@ def test_cleanup_embed_with_multiple_models(mock_get_conn: MagicMock) -> None:
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_embed_without_model_tag_affects_all_tables(
     mock_get_conn: MagicMock,
@@ -301,7 +301,7 @@ def test_cleanup_embed_without_model_tag_affects_all_tables(
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_document_injection_attack_prevention(mock_get_conn: MagicMock) -> None:
     """Test that SQL injection attacks are properly prevented in document cleanup.
@@ -350,7 +350,7 @@ def test_cleanup_document_injection_attack_prevention(mock_get_conn: MagicMock) 
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_parse_injection_attack_prevention(mock_get_conn: MagicMock) -> None:
     """Test that SQL injection attacks are properly prevented in parse cleanup.
@@ -411,7 +411,7 @@ def test_cleanup_parse_injection_attack_prevention(mock_get_conn: MagicMock) -> 
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cleanup_document_preview_respects_model_tag(mock_get_conn: MagicMock) -> None:
     """Test that preview mode respects model_tag filter and doesn't inflate counts.

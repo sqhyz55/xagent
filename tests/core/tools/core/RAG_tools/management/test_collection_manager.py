@@ -29,16 +29,17 @@ def sample_collection():
 
 
 class TestCollectionManager:
-    """Test CollectionManager class."""
+    """Test CollectionManager class with real storage layer."""
 
     @pytest.fixture
     def manager(self):
-        """Create a CollectionManager instance."""
+        """Create a CollectionManager instance with real storage."""
+        # The isolate_lancedb_dir fixture in conftest.py already handles directory isolation
         return CollectionManager()
 
     @pytest.mark.asyncio
     async def test_get_collection_success(self, manager):
-        """Test successful collection retrieval."""
+        """Test successful collection retrieval from real storage."""
         expected = CollectionInfo(
             name="test_collection",
             embedding_model_id="text-embedding-ada-002",
@@ -47,8 +48,11 @@ class TestCollectionManager:
             processed_documents=3,
             document_names=["doc1.pdf", "doc2.md"],
         )
-        manager._metadata_store = Mock()
-        manager._metadata_store.get_collection = AsyncMock(return_value=expected)
+
+        # Save to real storage first
+        await manager.save_collection(expected)
+
+        # Retrieve and verify
         result = await manager.get_collection("test_collection")
 
         assert result.name == "test_collection"
@@ -56,84 +60,84 @@ class TestCollectionManager:
         assert result.embedding_dimension == 1536
         assert result.documents == 5
         assert result.processed_documents == 3
-        assert result.document_names == ["doc1.pdf", "doc2.md"]
+        assert sorted(result.document_names) == sorted(["doc1.pdf", "doc2.md"])
 
     @pytest.mark.asyncio
     async def test_get_collection_not_found(self, manager):
-        """Test collection retrieval when not found."""
-        manager._metadata_store = Mock()
-        manager._metadata_store.get_collection = AsyncMock(
-            side_effect=ValueError("Collection 'test_collection' not found")
-        )
-        with pytest.raises(ValueError, match="Collection 'test_collection' not found"):
-            await manager.get_collection("test_collection")
+        """Test collection retrieval when not found in real storage."""
+        with pytest.raises(ValueError, match="Collection 'non_existent' not found"):
+            await manager.get_collection("non_existent")
 
     @pytest.mark.asyncio
     async def test_save_collection_success(self, manager, sample_collection):
-        """Test successful collection saving."""
-        manager._metadata_store = Mock()
-        manager._metadata_store.save_collection = AsyncMock(return_value=None)
+        """Test successful collection saving to real storage."""
         await manager.save_collection(sample_collection)
-        manager._metadata_store.save_collection.assert_awaited_once()
+
+        # Verify it was actually saved
+        saved = await manager.get_collection(sample_collection.name)
+        assert saved.name == sample_collection.name
+        assert saved.embedding_model_id == sample_collection.embedding_model_id
 
     @pytest.mark.asyncio
     async def test_initialize_collection_embedding_success(self, manager):
-        """Test successful collection embedding initialization."""
-        # Mock data for existing collection
-        existing_collection = CollectionInfo(
-            name="test_collection",
+        """Test successful collection embedding initialization with real storage."""
+        # Create and save initial collection
+        collection_name = "init_test"
+        initial = CollectionInfo(
+            name=collection_name,
             embedding_model_id=None,
             embedding_dimension=None,
-            documents=0,
-            processed_documents=0,
-            document_names=[],
         )
+        await manager.save_collection(initial)
 
-        # Mock embedding adapter resolution
+        # Mock embedding adapter resolution (keep this mock as it involves external model logic)
         mock_config = Mock()
+        mock_config.id = "text-embedding-ada-002"
         mock_config.dimension = 1536
         mock_resolve = Mock(return_value=(mock_config, Mock()))
 
-        with patch.object(
-            manager, "get_collection", AsyncMock(return_value=existing_collection)
+        with patch(
+            "xagent.core.tools.core.RAG_tools.management.collection_manager.resolve_embedding_adapter",
+            mock_resolve,
         ):
-            with patch.object(manager, "_save_collection_with_retry") as mock_save:
-                with patch(
-                    "xagent.core.tools.core.RAG_tools.management.collection_manager.resolve_embedding_adapter",
-                    mock_resolve,
-                ):
-                    result = await manager.initialize_collection_embedding(
-                        "test_collection", "text-embedding-ada-002"
-                    )
+            result = await manager.initialize_collection_embedding(
+                collection_name, "text-embedding-ada-002"
+            )
 
-        assert result.name == "test_collection"
+        assert result.name == collection_name
         assert result.embedding_model_id == "text-embedding-ada-002"
         assert result.embedding_dimension == 1536
-        mock_save.assert_called_once()
+
+        # Verify persistence
+        saved = await manager.get_collection(collection_name)
+        assert saved.embedding_model_id == "text-embedding-ada-002"
 
     @pytest.mark.asyncio
     async def test_update_collection_stats_success(self, manager):
-        """Test successful collection stats update."""
-        with patch.object(manager, "get_collection") as mock_get:
-            existing = CollectionInfo(
-                name="test_collection", documents=5, processed_documents=3
-            )
-            mock_get.return_value = existing
+        """Test successful collection stats update in real storage."""
+        collection_name = "stats_test"
+        initial = CollectionInfo(
+            name=collection_name, documents=5, processed_documents=3
+        )
+        await manager.save_collection(initial)
 
-            with patch.object(manager, "_save_collection_with_retry") as mock_save:
-                result = await manager.update_collection_stats(
-                    "test_collection",
-                    documents_delta=1,
-                    processed_documents_delta=1,
-                    embeddings_delta=100,
-                    document_name="new_doc.pdf",
-                )
+        result = await manager.update_collection_stats(
+            collection_name,
+            documents_delta=1,
+            processed_documents_delta=1,
+            embeddings_delta=100,
+            document_name="new_doc.pdf",
+        )
 
-                assert result.documents == 6
-                assert result.processed_documents == 4
-                assert result.embeddings == 100
-                assert "new_doc.pdf" in result.document_names
-                mock_save.assert_called_once()
+        assert result.documents == 6
+        assert result.processed_documents == 4
+        assert result.embeddings == 100
+        assert "new_doc.pdf" in result.document_names
+
+        # Verify persistence
+        saved = await manager.get_collection(collection_name)
+        assert saved.documents == 6
+        assert "new_doc.pdf" in saved.document_names
 
 
 class TestSyncFunctions:
@@ -279,24 +283,27 @@ class TestRebuildCollectionMetadata:
         "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
     )
     @patch("xagent.core.tools.core.RAG_tools.management.collections")
-    def test_rebuild_with_embeddings_and_dimension(
+    @pytest.mark.asyncio
+    async def test_rebuild_with_embeddings_and_dimension(
         self, mock_collections_module, mock_get_vector_store
     ):
         """Test rebuild with embeddings table and vector dimension."""
         from types import SimpleNamespace
 
-        # Mock collections.list_collections response
-        mock_collection = SimpleNamespace(
-            name="test_collection",
-            embeddings=10,
-            model_copy=lambda update: SimpleNamespace(
+        # Mock collections.list_collections response (async)
+        async def mock_list_collections(**kwargs):
+            mock_collection = SimpleNamespace(
                 name="test_collection",
-                embedding_model_id="test-model",
-                embedding_dimension=1536,
-            ),
-        )
-        mock_result = SimpleNamespace(status="success", collections=[mock_collection])
-        mock_collections_module.list_collections.return_value = mock_result
+                embeddings=10,
+                model_copy=lambda update: SimpleNamespace(
+                    name="test_collection",
+                    embedding_model_id="test-model",
+                    embedding_dimension=1536,
+                ),
+            )
+            return SimpleNamespace(status="success", collections=[mock_collection])
+
+        mock_collections_module.list_collections = mock_list_collections
 
         # Mock vector_store.list_table_names
         mock_vector_store = Mock()
@@ -321,7 +328,7 @@ class TestRebuildCollectionMetadata:
             rebuild_collection_metadata,
         )
 
-        rebuild_collection_metadata()
+        await rebuild_collection_metadata()
 
         # Verify count_rows_or_zero was called
         assert mock_vector_store.count_rows_or_zero.called
@@ -334,7 +341,8 @@ class TestRebuildCollectionMetadata:
         "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
     )
     @patch("xagent.core.tools.core.RAG_tools.management.collections")
-    def test_rebuild_no_embeddings(
+    @pytest.mark.asyncio
+    async def test_rebuild_no_embeddings(
         self, mock_collections_module, mock_get_vector_store
     ):
         """Test rebuild with collection having no embeddings."""
@@ -351,7 +359,11 @@ class TestRebuildCollectionMetadata:
             ),
         )
         mock_result = SimpleNamespace(status="success", collections=[mock_collection])
-        mock_collections_module.list_collections.return_value = mock_result
+
+        async def mock_list_collections(**kwargs):
+            return mock_result
+
+        mock_collections_module.list_collections = mock_list_collections
 
         # Mock vector_store
         mock_vector_store = Mock()
@@ -362,7 +374,7 @@ class TestRebuildCollectionMetadata:
             rebuild_collection_metadata,
         )
 
-        rebuild_collection_metadata()
+        await rebuild_collection_metadata()
 
         # Should not call count_rows_or_zero for collections with no embeddings
         assert not mock_vector_store.count_rows_or_zero.called
@@ -371,7 +383,8 @@ class TestRebuildCollectionMetadata:
         "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
     )
     @patch("xagent.core.tools.core.RAG_tools.management.collections")
-    def test_rebuild_list_collections_fails(
+    @pytest.mark.asyncio
+    async def test_rebuild_list_collections_fails(
         self, mock_collections_module, mock_get_vector_store
     ):
         """Test rebuild when list_collections fails."""
@@ -381,14 +394,18 @@ class TestRebuildCollectionMetadata:
         mock_result = SimpleNamespace(
             status="error", message="Failed to list collections"
         )
-        mock_collections_module.list_collections.return_value = mock_result
+
+        async def mock_list_collections(**kwargs):
+            return mock_result
+
+        mock_collections_module.list_collections = mock_list_collections
 
         from xagent.core.tools.core.RAG_tools.management.collection_manager import (
             rebuild_collection_metadata,
         )
 
         # Should return early without error
-        rebuild_collection_metadata()
+        await rebuild_collection_metadata()
 
         # Vector store should not be accessed
         assert not mock_get_vector_store.called
@@ -397,7 +414,8 @@ class TestRebuildCollectionMetadata:
         "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
     )
     @patch("xagent.core.tools.core.RAG_tools.management.collections")
-    def test_rebuild_empty_collections_list(
+    @pytest.mark.asyncio
+    async def test_rebuild_empty_collections_list(
         self, mock_collections_module, mock_get_vector_store
     ):
         """Test rebuild when no collections exist."""
@@ -405,13 +423,17 @@ class TestRebuildCollectionMetadata:
 
         # Mock empty collections list
         mock_result = SimpleNamespace(status="success", collections=[])
-        mock_collections_module.list_collections.return_value = mock_result
+
+        async def mock_list_collections(**kwargs):
+            return mock_result
+
+        mock_collections_module.list_collections = mock_list_collections
 
         from xagent.core.tools.core.RAG_tools.management.collection_manager import (
             rebuild_collection_metadata,
         )
 
-        rebuild_collection_metadata()
+        await rebuild_collection_metadata()
 
         # Vector store should not be accessed for empty list
         assert not mock_get_vector_store.called

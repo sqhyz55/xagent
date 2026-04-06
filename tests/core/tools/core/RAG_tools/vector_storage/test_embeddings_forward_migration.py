@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 from typing import Any
 from unittest.mock import patch
 
@@ -15,47 +14,27 @@ from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_index_store,
     reset_kb_write_coordinator,
 )
-from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-    validate_embed_model,
-)
 
 
 def test_forward_migrate_legacy_embeddings_table_to_hub_id(
     tmp_path: Any, monkeypatch: Any
 ) -> None:
-    """Legacy embeddings tables should auto-migrate to Hub-ID table names.
+    """Legacy embeddings tables can be migrated to Hub-ID table names using storage API.
 
     Scenario:
     - Only legacy table exists: embeddings_{to_model_tag(model_name)}
     - Primary Hub-ID table missing: embeddings_{to_model_tag(hub_id)}
-    - When validating/opening using hub_id, the system should create the primary
-      table and copy rows from legacy, rewriting row["model"] to hub_id.
+    - Using migrate_embeddings_table() creates the primary table and copies rows
+      from legacy, rewriting row["model"] to hub_id.
     """
     hub_id = "text-embedding-v4-openai-1"
     legacy_model_name = "text-embedding-v4"
     vector_dim = 3
 
-    # Enable auto-migration for this test
-    monkeypatch.setenv("ENABLE_AUTO_EMBEDDINGS_MIGRATION", "true")
-    # Reload config module to pick up the new environment variable
-    import sys
-
-    if "xagent.core.tools.core.RAG_tools.core.config" in sys.modules:
-        importlib.reload(sys.modules["xagent.core.tools.core.RAG_tools.core.config"])
-        # Reload vector_manager to pick up the new config value
-        if (
-            "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager"
-            in sys.modules
-        ):
-            importlib.reload(
-                sys.modules[
-                    "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager"
-                ]
-            )
-
     monkeypatch.setenv("LANCEDB_DIR", str(tmp_path / ".lancedb"))
     reset_kb_write_coordinator()
-    conn = get_vector_index_store().get_raw_connection()
+    vector_store = get_vector_index_store()
+    conn = vector_store.get_raw_connection()
 
     legacy_tag = to_model_tag(legacy_model_name)
     legacy_table_name = f"embeddings_{legacy_tag}"
@@ -102,9 +81,15 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
         "xagent.core.tools.core.RAG_tools.utils.model_resolver.resolve_embedding_adapter",
         return_value=(cfg, object()),
     ):
-        # This should trigger forward migration and succeed.
-        validate_embed_model(conn, hub_id)
+        # Use the storage layer migration method
+        result = vector_store.migrate_embeddings_table(hub_id)
 
+        assert result["success"] is True
+        assert result["source_table"] == legacy_table_name
+        assert result["target_table"] == primary_table_name
+        assert result["rows_migrated"] == 1
+
+    # Verify primary table was created
     assert primary_table_name in set(conn.table_names())  # type: ignore[attr-defined]
     primary_table = conn.open_table(primary_table_name)
     rows = primary_table.search().to_pandas()

@@ -27,7 +27,7 @@ class TestSearchSparse:
     """Test search_sparse main function."""
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_success_no_filters(
         self,
@@ -110,7 +110,7 @@ class TestSearchSparse:
             assert "collection" in where_arg.lower() or "test_col" in where_arg
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_with_filters(self, mock_get_conn: Mock) -> None:
         """Test sparse search with filters."""
@@ -180,7 +180,7 @@ class TestSearchSparse:
             mock_where.to_pandas.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_applies_collection_filter(
         self,
@@ -231,7 +231,7 @@ class TestSearchSparse:
             mock_limit.where.assert_called_once()
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_fts_index_missing(
         self,
@@ -286,7 +286,7 @@ class TestSearchSparse:
             mock_search.limit.assert_called_once_with(1)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_readonly_mode(
         self,
@@ -345,7 +345,7 @@ class TestSearchSparse:
             mock_search.limit.assert_called_once_with(1)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     @patch(
         "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.resolve_embedding_adapter"
@@ -394,7 +394,7 @@ class TestSearchSparse:
         mock_conn.open_table.assert_any_call("embeddings_legacy_model")
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_empty_results(
         self,
@@ -452,7 +452,7 @@ class TestSearchSparse:
             mock_search.limit.assert_called_once_with(5)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_triggers_fallback_with_results(
         self,
@@ -531,7 +531,7 @@ class TestSearchSparse:
         assert any(w.code == "FTS_FALLBACK" for w in response.warnings)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_connection_from_env"
+        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
     )
     def test_search_sparse_score_clamping(
         self,

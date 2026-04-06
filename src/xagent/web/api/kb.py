@@ -602,7 +602,7 @@ async def list_collections_api(
 
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(list_collections, int(_user.id), bool(_user.is_admin)),
+            list_collections(user_id=int(_user.id), is_admin=bool(_user.is_admin)),
             timeout=kb_collections_timeout_seconds,
         )
         return result

@@ -240,9 +240,9 @@ class TestIndexManagerIntegration:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         model_tag = "test_model"
 
         # Create embeddings table
@@ -284,7 +284,7 @@ class TestIndexManagerIntegration:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
 
         # Create custom policy with lower threshold
         custom_policy = IndexPolicy(
@@ -292,7 +292,7 @@ class TestIndexManagerIntegration:
             hnsw_params={"ef_construction": 100},
         )
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         model_tag = "custom_policy_model"
 
         # Create table and add minimal data

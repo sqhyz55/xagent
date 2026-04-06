@@ -1255,9 +1255,8 @@ class TestValidateQueryVectorExtended:
         from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
             validate_embed_model,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
-
-        conn = get_connection_from_env()
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
+        conn = get_vector_store_raw_connection()
 
         # Invalid characters in model_tag
         with pytest.raises(VectorValidationError, match="Invalid model_tag format"):
@@ -1268,7 +1267,7 @@ class TestValidateQueryVectorExtended:
 
         # Valid format with hyphen should not raise exception
         # (This will fail because table doesn't exist, but not due to format)
-        with pytest.raises(VectorValidationError, match="does not exist"):
+        with pytest.raises(VectorValidationError, match="not found"):
             validate_embed_model(conn, "model-with-dash")
 
     def test_model_validation_table_not_exists(self, temp_lancedb_dir):
@@ -1279,9 +1278,8 @@ class TestValidateQueryVectorExtended:
         from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
             validate_embed_model,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
-
-        conn = get_connection_from_env()
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
+        conn = get_vector_store_raw_connection()
 
         # Table doesn't exist
         try:
@@ -1298,9 +1296,8 @@ class TestValidateQueryVectorExtended:
         from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
             get_stored_vector_dimension,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
-
-        conn = get_connection_from_env()
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
+        conn = get_vector_store_raw_connection()
         model_tag = "test_model"
 
         # Create embeddings table
@@ -1353,9 +1350,8 @@ class TestValidateQueryVectorExtended:
         from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
             get_stored_vector_dimension,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
-
-        conn = get_connection_from_env()
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
+        conn = get_vector_store_raw_connection()
         model_tag = "empty_model"
 
         # Create empty embeddings table
@@ -1373,9 +1369,8 @@ class TestValidateQueryVectorExtended:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.providers.vector_store.lancedb import get_connection_from_env
-
-        conn = get_connection_from_env()
+        from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
+        conn = get_vector_store_raw_connection()
         model_tag = "integration_test_model"
 
         # Create table and add test data
@@ -1405,9 +1400,7 @@ class TestValidateQueryVectorExtended:
 
         # Test model validation failure - model_tag is normalized by to_model_tag(),
         # so "invalid@model" becomes "invalid_model", then fails because table doesn't exist
-        with pytest.raises(
-            VectorValidationError, match="does not exist or is inaccessible"
-        ):
+        with pytest.raises(VectorValidationError, match="not found"):
             validate_query_vector(
                 [0.5, 0.7], "invalid@model", conn=conn, user_id=None, is_admin=True
             )

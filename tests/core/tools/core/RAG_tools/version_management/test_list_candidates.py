@@ -21,14 +21,14 @@ class TestListCandidates:
     """Test cases for list_candidates function."""
 
     def _patch_get_connection_from_env(self, mock_conn):
-        """Helper method to patch get_connection_from_env in the list_candidates module."""
+        """Helper method to patch get_vector_store_raw_connection in the list_candidates module."""
         import importlib
 
         list_candidates_module = importlib.import_module(
             "xagent.core.tools.core.RAG_tools.version_management.list_candidates"
         )
         return patch.object(
-            list_candidates_module, "get_connection_from_env", return_value=mock_conn
+            list_candidates_module, "get_vector_store_raw_connection", return_value=mock_conn
         )
 
     def setup_method(self):
@@ -62,7 +62,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -85,7 +85,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -139,7 +139,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -207,7 +207,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 
@@ -267,7 +267,7 @@ class TestListCandidates:
         )
 
         with patch.object(
-            list_candidates_module, "get_connection_from_env"
+            list_candidates_module, "get_vector_store_raw_connection"
         ) as mock_get_db:
             mock_get_db.return_value = mock_conn
 

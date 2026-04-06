@@ -325,14 +325,15 @@ class MetadataStore(ABC):
     async def get_collection_config(
         self,
         collection: str,
-        user_id: int,
+        user_id: Optional[int],
         is_admin: bool = False,
     ) -> str | None:
         """Get collection ingestion configuration.
 
         Args:
             collection: Collection name.
-            user_id: User ID for multi-tenancy.
+            user_id: User ID for multi-tenancy. None is treated as 0 for non-admin,
+                and as "load all configs" for admin mode.
             is_admin: Whether user has admin privileges (bypasses user_id filter).
 
         Returns:
@@ -830,6 +831,47 @@ class VectorIndexStore(ABC):
         Note: Current implementation uses sync operations under the hood.
         True async I/O will be added in Phase 1B with RDB backend.
         """
+
+    @abstractmethod
+    def migrate_embeddings_table(
+        self,
+        model_id: str,
+        batch_size: int = 1000,
+    ) -> dict[str, Any]:
+        """Migrate legacy embeddings table to Hub ID-based naming.
+
+        This method copies data from a legacy table (embeddings_{model_name})
+        to a new Hub ID-based table (embeddings_{hub_id}), rewriting the
+        per-row ``model`` field to the Hub model ID.
+
+        This is the proper location for migration logic, as it's part of
+        the storage implementation. Migration should be run during maintenance
+        windows, not during normal read operations.
+
+        Args:
+            model_id: Hub model ID to migrate (e.g., "text-embedding-ada-002").
+            batch_size: Number of rows to copy per batch.
+
+        Returns:
+            Dictionary with migration results:
+            {
+                "success": bool,
+                "source_table": str (legacy table name),
+                "target_table": str (Hub ID table name),
+                "rows_migrated": int,
+                "error": str | None (if success=False)
+            }
+
+        Raises:
+            VectorValidationError: If model_id is empty.
+            DatabaseOperationError: If migration fails.
+
+        Note:
+            - This method uses file-based locking to prevent concurrent migrations.
+            - The migration is idempotent and can be safely re-run.
+            - Source table is preserved after migration.
+        """
+        pass
 
     @abstractmethod
     def get_raw_connection(self) -> Any:

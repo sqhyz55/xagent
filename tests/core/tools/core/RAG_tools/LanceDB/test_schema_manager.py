@@ -12,13 +12,13 @@ from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
     ensure_embeddings_table,
     ensure_parses_table,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
+from xagent.core.tools.core.RAG_tools.storage import get_vector_store_raw_connection
 
 
 def test_ensure_tables(tmp_path: Path, monkeypatch) -> None:
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
     ensure_documents_table(conn)
     ensure_parses_table(conn)
     ensure_chunks_table(conn)

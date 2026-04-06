@@ -35,7 +35,9 @@ from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
 )
-from xagent.providers.vector_store.lancedb import get_connection_from_env
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 
 
 class _FakeEmbeddingAdapter(BaseEmbedding):
@@ -206,7 +208,7 @@ def test_document_search_end_to_end(
     )
 
     # FTS index should have been created without config errors
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
     table = conn.open_table(f"embeddings_{to_model_tag(embedding_model_id)}")
     assert idx_instance.get_fts_index_status(table) is True
 
@@ -390,7 +392,7 @@ def test_chinese_sparse_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             print("  ⚠️  使用了子串匹配回退（FTS 可能不支持中文分词）")
 
     # Verify FTS index status
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
     table = conn.open_table(f"embeddings_{to_model_tag(embedding_model_id)}")
     fts_enabled = idx_instance.get_fts_index_status(table)
     print(f"\nFTS 索引状态: {fts_enabled}")
