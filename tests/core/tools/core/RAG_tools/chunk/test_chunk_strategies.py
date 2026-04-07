@@ -344,6 +344,57 @@ class TestMarkdownHeadersAndSection:
         assert "No headers" in chunks[0].get("text", "")
 
 
+class TestChunkingPerformance:
+    """Performance benchmark tests for chunking operations."""
+
+    def test_large_document_performance(self) -> None:
+        """Verify chunking performance for large documents (100+ pages)."""
+        import time
+
+        # 100页文档
+        paragraphs = [
+            {"text": "Content " * 100, "metadata": {"page_number": i}}
+            for i in range(100)
+        ]
+
+        start = time.perf_counter()
+        chunks = apply_recursive_strategy(
+            paragraphs, {"chunk_size": 1000, "chunk_overlap": 200}
+        )
+        elapsed = time.perf_counter() - start
+
+        # Performance assertion: should complete within 2 seconds
+        assert elapsed < 2.0, f"Chunking took {elapsed:.3f}s, expected < 2.0s"
+        assert len(chunks) > 0, "Should produce chunks from input"
+
+    def test_multi_page_positions_performance(self) -> None:
+        """Verify positions collection doesn't degrade performance significantly."""
+        import time
+
+        # 50页跨页面文档
+        paragraphs = [
+            {"text": f"Page {i} content " * 50, "metadata": {"page_number": i}}
+            for i in range(50)
+        ]
+
+        start = time.perf_counter()
+        chunks = apply_recursive_strategy(
+            paragraphs, {"chunk_size": 500, "chunk_overlap": 100}
+        )
+        elapsed = time.perf_counter() - start
+
+        # Performance assertion
+        assert elapsed < 1.0, (
+            f"Multi-page chunking took {elapsed:.3f}s, expected < 1.0s"
+        )
+
+        # Verify positions are collected correctly
+        chunks_with_positions = [
+            c for c in chunks if c.get("metadata", {}).get("positions")
+        ]
+        assert len(chunks_with_positions) > 0, "Should have chunks with positions"
+
+
 class TestAttachMediaContext:
     """Unit tests for P2 attach_media_context (table/image context)."""
 

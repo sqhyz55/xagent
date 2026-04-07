@@ -239,15 +239,26 @@ async def _parse_document_internal(
         raw_page = paragraph.metadata.get("page_number")
         if isinstance(raw_page, int) and raw_page > 0:
             page_numbers.append(raw_page)
-    unique_pages = sorted(set(page_numbers))
-    page_count = len(unique_pages)
+
+    # Handle empty documents gracefully
+    if page_numbers:
+        unique_pages = sorted(set(page_numbers))
+        page_count = len(unique_pages)
+    else:
+        unique_pages = []
+        page_count = 0
 
     try:
         # Inject page stats into params so they are persisted in params_json
+        # Use _derived namespace to avoid conflicts with user-provided params
         params_with_page_stats = {
             **params,
-            "page_count": page_count,
-            "page_numbers": unique_pages,
+            "_derived": {
+                "page_stats": {
+                    "page_count": page_count,
+                    "page_numbers": unique_pages,
+                }
+            },
         }
 
         written = _write_parse_to_db(
