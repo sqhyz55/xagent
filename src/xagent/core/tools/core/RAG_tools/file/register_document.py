@@ -128,12 +128,17 @@ def _register_document(request: RegisterDocumentRequest) -> RegisterDocumentResp
         except DocumentValidationError as e:
             raise DocumentValidationError(f"File type detection failed: {e}") from e
 
+    # Normalize file_id for storage compatibility:
+    # use blank string instead of NULL to avoid non-nullable decode issues
+    # in historical LanceDB datasets.
+    normalized_file_id = str(file_id).strip() if file_id else ""
+
     # Generate document ID if not provided
     # Use deterministic ID from (collection, file_id/source_path) for idempotent registration:
     # same file re-upload or double-submit updates one record instead of creating two
     if not doc_id:
         try:
-            stable_key = file_id or source_path
+            stable_key = normalized_file_id or source_path
             doc_id = generate_deterministic_doc_id(collection, stable_key)
         except Exception as e:
             # Fallback to UUID if deterministic generation fails
@@ -180,7 +185,7 @@ def _register_document(request: RegisterDocumentRequest) -> RegisterDocumentResp
         doc_record = {
             "collection": collection,
             "doc_id": doc_id,
-            "file_id": file_id,
+            "file_id": normalized_file_id,
             "source_path": source_path,
             "file_type": file_type,
             "content_hash": content_hash,

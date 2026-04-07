@@ -31,10 +31,13 @@ from src.xagent.core.tools.core.RAG_tools.management import (
     delete_collection,
     get_document_stats,
     list_collections,
+    list_documents,
     retry_document,
 )
 from src.xagent.core.tools.core.RAG_tools.management.status import load_ingestion_status
 from src.xagent.core.tools.core.RAG_tools.storage import get_vector_index_store
+from xagent.core.tools.core.RAG_tools.file.register_document import register_document
+from src.xagent.providers.vector_store.lancedb import get_connection_from_env
 
 
 @pytest.fixture()
@@ -389,3 +392,48 @@ def test_delete_collection_invokes_cleanup_all_documents(
 
     assert result.status == "success"
     assert "documents" in result.deleted_counts
+
+
+def test_e2e_register_and_list_documents_with_legacy_null_file_id(
+    tmp_path: Path, temp_lancedb_dir: str
+) -> None:
+    """E2E: ingestion remains visible when legacy rows contain null file_id."""
+    conn = get_connection_from_env()
+    ensure_documents_table(conn)
+    table = conn.open_table("documents")
+
+    # Simulate legacy row created before file_id normalization.
+    table.add(
+        [
+            {
+                "collection": "xagent",
+                "doc_id": "legacy-doc",
+                "file_id": None,
+                "source_path": "/legacy/README.md",
+                "file_type": "md",
+                "content_hash": "legacy-hash",
+                "uploaded_at": datetime.utcnow(),
+                "title": "legacy",
+                "language": "en",
+                "user_id": None,
+            }
+        ]
+    )
+
+    # Trigger schema ensure path again (startup/runtime behavior) to backfill.
+    ensure_documents_table(conn)
+
+    new_file = tmp_path / "README.md"
+    new_file.write_text("# hello\n\nworld", encoding="utf-8")
+    reg_result = register_document(
+        collection="xagent",
+        source_path=str(new_file),
+        file_id=None,
+        user_id=58,
+    )
+    assert reg_result["doc_id"]
+
+    list_result = list_documents(collection="xagent", user_id=58, is_admin=False)
+    assert list_result.status == "success"
+    listed_ids = {doc.doc_id for doc in list_result.documents}
+    assert reg_result["doc_id"] in listed_ids

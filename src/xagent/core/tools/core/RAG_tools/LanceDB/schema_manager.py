@@ -133,6 +133,31 @@ def _add_user_id_column(conn: DBConnection, table_name: str) -> None:
         logger.warning("Failed to check/migrate '%s' table schema: %s", table_name, e)
 
 
+def _backfill_documents_file_id_non_null(conn: DBConnection) -> None:
+    """Best-effort repair for legacy ``documents.file_id`` null values.
+
+    Some historical datasets may contain null ``file_id`` values while newer
+    Lance decoding paths treat this field as non-nullable during batch decode.
+    Backfilling nulls to empty strings keeps read paths resilient and aligns
+    with API semantics where blank file_id is treated as missing.
+    """
+    table_name = "documents"
+    if not _table_exists(conn, table_name):
+        return
+
+    try:
+        table = conn.open_table(table_name)
+        if "file_id" not in table.schema.names:
+            return
+        table.update("file_id IS NULL", {"file_id": ""})
+    except Exception as exc:  # noqa: BLE001 - best effort compatibility repair
+        logger.warning(
+            "Failed to backfill null file_id values in '%s': %s",
+            table_name,
+            exc,
+        )
+
+
 def ensure_documents_table(conn: DBConnection) -> None:
     schema = pa.schema(
         [
@@ -151,6 +176,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
 
     _add_user_id_column(conn, "documents")
     _create_table(conn, "documents", schema=schema)
+    _backfill_documents_file_id_non_null(conn)
 
 
 def ensure_parses_table(conn: DBConnection) -> None:

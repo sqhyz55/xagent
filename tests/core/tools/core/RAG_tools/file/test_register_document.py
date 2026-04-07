@@ -70,6 +70,34 @@ class TestRegisterDocument:
         )
         assert record["file_id"] == "file-123"
 
+    def test_register_document_normalizes_empty_file_id(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Registrations without file_id should persist an empty string."""
+        db_dir = tmp_path / "lancedb"
+        monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+
+        test_file = tmp_path / "test_no_file_id.txt"
+        test_file.write_text("Test content without file_id")
+
+        response = register_document(
+            collection="test_collection",
+            source_path=str(test_file),
+            file_id=None,
+        )
+
+        conn = get_connection_from_env()
+        table = conn.open_table("documents")
+        record = (
+            table.search()
+            .where(
+                f"collection = 'test_collection' AND doc_id = '{response['doc_id']}'"
+            )
+            .to_pandas()
+            .iloc[0]
+        )
+        assert record["file_id"] == ""
+
     def test_register_document_auto_file_type_detection(
         self, tmp_path: Path, monkeypatch
     ) -> None:

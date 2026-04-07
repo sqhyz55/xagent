@@ -108,3 +108,51 @@ def test_check_table_needs_migration_with_ensure_tables(
     assert check_table_needs_migration(conn, "documents") is False
     assert check_table_needs_migration(conn, "chunks") is False
     assert check_table_needs_migration(conn, "parses") is False
+
+
+def test_ensure_documents_table_backfills_null_file_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ensure_documents_table should backfill NULL file_id values."""
+    db_dir = tmp_path / "db"
+    monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+    conn = get_connection_from_env()
+
+    schema = pa.schema(
+        [
+            pa.field("collection", pa.string()),
+            pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
+            pa.field("source_path", pa.string()),
+            pa.field("file_type", pa.string()),
+            pa.field("content_hash", pa.string()),
+            pa.field("uploaded_at", pa.timestamp("us")),
+            pa.field("title", pa.string()),
+            pa.field("language", pa.string()),
+            pa.field("user_id", pa.int64()),
+        ]
+    )
+    conn.create_table("documents", schema=schema)
+    table = conn.open_table("documents")
+    table.add(
+        [
+            {
+                "collection": "c1",
+                "doc_id": "d1",
+                "file_id": None,
+                "source_path": "/tmp/a.md",
+                "file_type": "md",
+                "content_hash": "h1",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
+                "user_id": None,
+            }
+        ]
+    )
+
+    ensure_documents_table(conn)
+
+    refreshed = conn.open_table("documents")
+    updated = refreshed.search().where("doc_id = 'd1'").to_list()[0]
+    assert updated["file_id"] == ""
