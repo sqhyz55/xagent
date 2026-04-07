@@ -335,7 +335,13 @@ class TestWriteVectorsToDb:
         # Create mock vector store
         mock_vector_store = MagicMock()
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -398,7 +404,13 @@ class TestWriteVectorsToDb:
         # Create mock vector store
         mock_vector_store = MagicMock()
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -493,7 +505,13 @@ class TestWriteVectorsToDb:
         mock_vector_store.upsert_embeddings.side_effect = TypeError(
             "Type mismatch: invalid type for field"
         )
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -540,7 +558,13 @@ class TestWriteVectorsToDb:
         mock_vector_store.upsert_embeddings.side_effect = ValueError(
             "Vector dimension mismatch: expected 3, got 2"
         )
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -582,7 +606,13 @@ class TestWriteVectorsToDb:
 
         # Mock upsert_embeddings to succeed (it handles fallback internally)
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -660,7 +690,13 @@ class TestWriteVectorsToDb:
 
         # Mock upsert_embeddings to succeed (it handles spill retry internally)
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         embeddings = [
             ChunkEmbeddingData(
@@ -793,7 +829,13 @@ class TestWriteVectorsToDb:
 
         # Mock upsert_embeddings to succeed (it handles spill retry internally)
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         # Create embeddings to trigger batch processing
         embeddings = [
@@ -840,7 +882,13 @@ class TestWriteVectorsToDb:
 
         # Mock upsert_embeddings to succeed (it handles schema mismatch internally)
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -997,7 +1045,13 @@ class TestWriteVectorsToDb:
 
         # Mock upsert_embeddings to succeed
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         embeddings = [
             ChunkEmbeddingData(
@@ -1047,7 +1101,13 @@ class TestWriteVectorsToDb:
 
         # Mock upsert_embeddings to succeed
         mock_vector_store.upsert_embeddings.return_value = None
-        mock_vector_store.create_index.return_value = "below_threshold"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="below_threshold",
+            advice=None,
+            fts_enabled=False,
+        )
 
         # Create enough embeddings to trigger multiple batches
         embeddings = [
@@ -1095,9 +1155,19 @@ class TestWriteVectorsToDb:
         # Mock upsert_embeddings to succeed
         mock_vector_store.upsert_embeddings.return_value = None
         # Mock create_index with different statuses for different models
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
         mock_vector_store.create_index.side_effect = [
-            "index_building",  # First model
-            "failed",  # Second model
+            IndexResult(
+                status="index_building",
+                advice=None,
+                fts_enabled=False,
+            ),  # First model
+            IndexResult(
+                status="failed",
+                advice=None,
+                fts_enabled=False,
+            ),  # Second model
         ]
 
         embeddings = [
@@ -1281,7 +1351,13 @@ class TestReindexingFunctionality:
         # Mock upsert_embeddings to succeed
         mock_vector_store.upsert_embeddings.return_value = None
         # Mock create_index to return index_building status
-        mock_vector_store.create_index.return_value = "index_building"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_building",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.get_vector_index_store",
@@ -1328,7 +1404,13 @@ class TestReindexingFunctionality:
         # Mock upsert_embeddings to succeed
         mock_vector_store.upsert_embeddings.return_value = None
         # Mock create_index to return index_building status
-        mock_vector_store.create_index.return_value = "index_building"
+        from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_building",
+            advice=None,
+            fts_enabled=False,
+        )
 
         with (
             patch(

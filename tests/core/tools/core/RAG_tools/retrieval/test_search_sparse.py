@@ -26,20 +26,11 @@ search_sparse_module = importlib.import_module(
 class TestSearchSparse:
     """Test search_sparse main function."""
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_success_no_filters(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_success_no_filters(self) -> None:
         """Test successful sparse search with collection filter only (KB isolation)."""
-        # Mock connection and table
-        mock_conn = Mock()
+        # Mock table
         mock_table = Mock()
         mock_table.name = "embeddings_test_model"  # Set the table name
-        mock_get_conn.return_value = mock_conn
-        mock_conn.open_table.return_value = mock_table  # Ensure open_table succeeds
 
         # Mock FTS index exists
         mock_table.list_indices.return_value = [
@@ -58,6 +49,11 @@ class TestSearchSparse:
         )
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_col'"
+        )
+        # open_embeddings_table now returns tuple (table, table_name)
+        mock_vector_store.open_embeddings_table.return_value = (
+            mock_table,
+            "embeddings_test_model",
         )
 
         with patch(
@@ -107,8 +103,10 @@ class TestSearchSparse:
             assert not response.warnings
 
             # Verify calls: collection filter must be applied for KB isolation
-            mock_get_conn.assert_called_once()
-            mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+            # Note: model_tag is passed as-is to open_embeddings_table (no pre-transformation)
+            mock_vector_store.open_embeddings_table.assert_called_once_with(
+                "test_model"
+            )
             mock_vector_store.build_filter_expression.assert_called_once()
             mock_table.search.assert_called_once_with("content", query_type="fts")
             mock_search.limit.assert_called_once_with(1)
@@ -116,20 +114,14 @@ class TestSearchSparse:
             where_arg = mock_limit.where.call_args[0][0]
             assert "collection" in where_arg.lower() or "test_col" in where_arg
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_with_filters(self, mock_get_conn: Mock) -> None:
+    def test_search_sparse_with_filters(self) -> None:
         """Test sparse search with filters."""
         with patch.object(
             search_sparse_module, "_substring_fallback", return_value=[]
         ) as mock_fallback:
-            # Mock connection and table
-            mock_conn = Mock()
+            # Mock table
             mock_table = Mock()
             mock_table.name = "embeddings_test_model"  # Set the table name
-            mock_get_conn.return_value = mock_conn
-            mock_conn.open_table.return_value = mock_table
 
             # Mock FTS index exists
             mock_table.list_indices.return_value = [
@@ -148,6 +140,11 @@ class TestSearchSparse:
             )
             mock_vector_store.build_filter_expression.return_value = (
                 "doc_id = 'filtered_doc' AND collection = 'test_col'"
+            )
+            # open_embeddings_table now returns tuple (table, table_name)
+            mock_vector_store.open_embeddings_table.return_value = (
+                mock_table,
+                "embeddings_test_model",
             )
 
             with patch(
@@ -183,8 +180,10 @@ class TestSearchSparse:
             assert response.warnings == []
 
             mock_fallback.assert_called_once()
-            mock_get_conn.assert_called_once()
-            mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+            # Note: model_tag is passed as-is to open_embeddings_table (no pre-transformation)
+            mock_vector_store.open_embeddings_table.assert_called_once_with(
+                "test_model"
+            )
             mock_vector_store.build_filter_expression.assert_called()
             mock_table.search.assert_called_once_with(
                 "filtered content", query_type="fts"
@@ -193,19 +192,11 @@ class TestSearchSparse:
             mock_limit.where.assert_called_once()
             mock_where.to_pandas.assert_called_once()
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_applies_collection_filter(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_applies_collection_filter(self) -> None:
         """Test that search_sparse always applies collection filter for KB isolation (Issue #72)."""
         with patch.object(search_sparse_module, "_substring_fallback", return_value=[]):
-            mock_conn = Mock()
+            # Mock table
             mock_table = Mock()
-            mock_get_conn.return_value = mock_conn
-            mock_conn.open_table.return_value = mock_table
 
             # Mock FTS index exists
             mock_table.list_indices.return_value = [
@@ -224,6 +215,11 @@ class TestSearchSparse:
             )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'my_kb'"
+            )
+            # open_embeddings_table now returns tuple (table, table_name)
+            mock_vector_store.open_embeddings_table.return_value = (
+                mock_table,
+                "embeddings_test_model",
             )
 
             with patch(
@@ -251,19 +247,11 @@ class TestSearchSparse:
             mock_vector_store.build_filter_expression.assert_called_once()
             mock_limit.where.assert_called_once()
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_fts_index_missing(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_fts_index_missing(self) -> None:
         """Test sparse search when FTS index is missing."""
         with patch.object(search_sparse_module, "_substring_fallback", return_value=[]):
-            mock_conn = Mock()
+            # Mock table
             mock_table = Mock()
-            mock_get_conn.return_value = mock_conn
-            mock_conn.open_table.return_value = mock_table
 
             # Mock vector store - index status returned but FTS not enabled on table
             mock_vector_store = Mock()
@@ -277,6 +265,11 @@ class TestSearchSparse:
             )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'test_col'"
+            )
+            # open_embeddings_table now returns tuple (table, table_name)
+            mock_vector_store.open_embeddings_table.return_value = (
+                mock_table,
+                "embeddings_test_model",
             )
 
             # Make list_indices return no FTS index
@@ -308,24 +301,18 @@ class TestSearchSparse:
             assert response.fts_enabled is False
             assert any(w.code == "FTS_INDEX_MISSING" for w in response.warnings)
 
-            mock_get_conn.assert_called_once()
-            mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+            # Note: model_tag is passed as-is to open_embeddings_table (no pre-transformation)
+            mock_vector_store.open_embeddings_table.assert_called_once_with(
+                "test_model"
+            )
             mock_table.search.assert_called_once_with("query", query_type="fts")
             mock_search.limit.assert_called_once_with(1)
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_readonly_mode(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_readonly_mode(self) -> None:
         """Test sparse search in readonly mode."""
         with patch.object(search_sparse_module, "_substring_fallback", return_value=[]):
-            mock_conn = Mock()
+            # Mock table
             mock_table = Mock()
-            mock_get_conn.return_value = mock_conn
-            mock_conn.open_table.return_value = mock_table
 
             # Mock vector store
             mock_vector_store = Mock()
@@ -339,6 +326,11 @@ class TestSearchSparse:
             )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'test_col'"
+            )
+            # open_embeddings_table now returns tuple (table, table_name)
+            mock_vector_store.open_embeddings_table.return_value = (
+                mock_table,
+                "embeddings_test_model",
             )
 
             # FTS index exists
@@ -374,26 +366,24 @@ class TestSearchSparse:
             assert response.fts_enabled is True
             assert any(w.code == "READONLY_MODE" for w in response.warnings)
 
-            mock_get_conn.assert_called_once()
-            mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+            # Note: model_tag is passed as-is to open_embeddings_table (no pre-transformation)
+            mock_vector_store.open_embeddings_table.assert_called_once_with(
+                "test_model"
+            )
             mock_table.search.assert_called_once_with("query", query_type="fts")
             mock_search.limit.assert_called_once_with(1)
 
     @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
+        "xagent.core.tools.core.RAG_tools.utils.model_resolver.resolve_embedding_adapter"
     )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.resolve_embedding_adapter"
-    )
-    def test_search_sparse_database_error(
-        self, mock_resolve: Mock, mock_get_conn: Mock
-    ) -> None:
+    def test_search_sparse_database_error(self, mock_resolve: Mock) -> None:
         """Test error handling during database operation."""
-        mock_conn = Mock()
-        mock_get_conn.return_value = mock_conn
-        # Simulate open_table failure
+        # Mock vector store that raises exception when opening table
+        mock_vector_store = Mock()
         db_exception_message = "DB connection failed"
-        mock_conn.open_table.side_effect = Exception(db_exception_message)
+        mock_vector_store.open_embeddings_table.side_effect = Exception(
+            db_exception_message
+        )
 
         mock_cfg = Mock()
         mock_cfg.model_name = "legacy_model"
@@ -402,7 +392,7 @@ class TestSearchSparse:
         with patch(
             "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store"
         ) as mock_get_vector_store:
-            mock_get_vector_store.return_value = Mock()
+            mock_get_vector_store.return_value = mock_vector_store
 
             response = search_sparse_module.search_sparse(
                 collection="test_col",
@@ -422,25 +412,16 @@ class TestSearchSparse:
             in response.warnings[0].message
         )
 
-        # Verify calls
-        mock_get_conn.assert_called_once()
-        assert mock_conn.open_table.call_count == 2
-        mock_conn.open_table.assert_any_call("embeddings_test_model")
-        mock_conn.open_table.assert_any_call("embeddings_legacy_model")
+        # Verify calls - open_embeddings_table is called once (handles fallback internally)
+        assert mock_vector_store.open_embeddings_table.call_count == 1
+        # Note: model_tag is passed as-is to open_embeddings_table (no pre-transformation)
+        mock_vector_store.open_embeddings_table.assert_called_once_with("test_model")
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_empty_results(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_empty_results(self) -> None:
         """Test sparse search returning no results."""
         with patch.object(search_sparse_module, "_substring_fallback", return_value=[]):
-            mock_conn = Mock()
+            # Mock table
             mock_table = Mock()
-            mock_get_conn.return_value = mock_conn
-            mock_conn.open_table.return_value = mock_table
 
             # Mock vector store
             mock_vector_store = Mock()
@@ -454,6 +435,11 @@ class TestSearchSparse:
             )
             mock_vector_store.build_filter_expression.return_value = (
                 "collection == 'test_col'"
+            )
+            # open_embeddings_table now returns tuple (table, table_name)
+            mock_vector_store.open_embeddings_table.return_value = (
+                mock_table,
+                "embeddings_test_model",
             )
 
             # FTS index exists
@@ -488,18 +474,14 @@ class TestSearchSparse:
             assert len(response.results) == 0
             assert response.warnings == []
 
-            mock_get_conn.assert_called_once()
-            mock_conn.open_table.assert_called_once_with("embeddings_test_model")
+            # Note: model_tag is passed as-is to open_embeddings_table (no pre-transformation)
+            mock_vector_store.open_embeddings_table.assert_called_once_with(
+                "test_model"
+            )
             mock_table.search.assert_called_once_with("no matches", query_type="fts")
             mock_search.limit.assert_called_once_with(5)
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_triggers_fallback_with_results(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_triggers_fallback_with_results(self) -> None:
         """Ensure fallback populates results and emits an FTS warning."""
 
         def _fake_fallback(**kwargs: object) -> List[SearchResult]:
@@ -524,11 +506,8 @@ class TestSearchSparse:
                 )
             ]
 
-        mock_conn = Mock()
+        # Mock table
         mock_table = Mock()
-        mock_table.name = "embeddings_test_model"  # Set the table name
-        mock_get_conn.return_value = mock_conn
-        mock_conn.open_table.return_value = mock_table
 
         # Mock vector store
         mock_vector_store = Mock()
@@ -542,6 +521,11 @@ class TestSearchSparse:
         )
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_col'"
+        )
+        # open_embeddings_table now returns tuple (table, table_name)
+        mock_vector_store.open_embeddings_table.return_value = (
+            mock_table,
+            "embeddings_test_model",
         )
 
         # FTS index exists
@@ -579,20 +563,10 @@ class TestSearchSparse:
         assert response.results[0].doc_id == "doc-fallback"
         assert any(w.code == "FTS_FALLBACK" for w in response.warnings)
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_store_raw_connection"
-    )
-    def test_search_sparse_score_clamping(
-        self,
-        mock_get_conn: Mock,
-    ) -> None:
+    def test_search_sparse_score_clamping(self) -> None:
         """Test that sparse search scores are properly clamped to [0, 1] range."""
-        # Mock connection and table
-        mock_conn = Mock()
+        # Mock table
         mock_table = Mock()
-        mock_table.name = "embeddings_test_model"
-        mock_get_conn.return_value = mock_conn
-        mock_conn.open_table.return_value = mock_table
 
         # Mock vector store
         mock_vector_store = Mock()
@@ -606,6 +580,11 @@ class TestSearchSparse:
         )
         mock_vector_store.build_filter_expression.return_value = (
             "collection == 'test_col'"
+        )
+        # open_embeddings_table now returns tuple (table, table_name)
+        mock_vector_store.open_embeddings_table.return_value = (
+            mock_table,
+            "embeddings_test_model",
         )
 
         # FTS index exists

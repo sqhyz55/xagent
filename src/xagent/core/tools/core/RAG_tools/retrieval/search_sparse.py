@@ -14,7 +14,6 @@ from ..core.schemas import (
     SearchWarning,
     SparseSearchResponse,
 )
-from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.contracts import FilterExpression
 from ..storage.factory import (
     get_vector_index_store,
@@ -40,7 +39,6 @@ def search_sparse(
 ) -> SparseSearchResponse:
     """Performs sparse (Full-Text Search) retrieval on the specified collection."""
 
-    model_tag = f"embeddings_{to_model_tag(model_tag)}"
     _fts_enabled = False
     current_warnings: List[SearchWarning] = []
 
@@ -58,10 +56,10 @@ def search_sparse(
         vector_store = get_vector_index_store()
 
         # Open embeddings table with legacy fallback (handled by abstraction layer)
-        table, model_tag = vector_store.open_embeddings_table(model_tag)
+        # open_embeddings_table will handle adding the "embeddings_" prefix
+        table, actual_table_name = vector_store.open_embeddings_table(model_tag)
 
         # Use storage abstraction for index management
-        index_result_obj = vector_store.create_index(model_tag, readonly)
         index_result_obj = vector_store.create_index(model_tag, readonly)
 
         # Use FTS enabled status from index result

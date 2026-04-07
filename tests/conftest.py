@@ -100,14 +100,20 @@ def temp_dir():
 def isolate_lancedb_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Isolate LanceDB and reset KB storage singletons for every test.
 
-    - If ``LANCEDB_DIR`` is unset, points it at a per-test directory under
-      ``tmp_path`` so the default on-disk LanceDB location is not polluted.
-    - Clears the LanceDB connection cache and resets the process-wide KB
-      write coordinator before and after each test (replaces a separate
-      autouse reset fixture to avoid duplicate teardown work).
+    By default, ``LANCEDB_DIR`` is set to a fresh directory under ``tmp_path``
+    for each test. This avoids stale LanceDB schemas from a developer ``.env``
+    or a fixed path, and matches CI-style ephemeral storage. Parallel workers
+    (pytest-xdist) each use their own process-local ``tmp_path``.
+
+    If the environment sets ``XAGENT_PYTEST_RESPECT_LANCEDB_DIR=1``, the
+    existing ``LANCEDB_DIR`` from the environment is left unchanged (for CI or
+    local workflows that intentionally pin a path).
+
+    Clears the LanceDB connection cache and resets the process-wide KB write
+    coordinator before and after each test.
     """
-    original = os.environ.get("LANCEDB_DIR")
-    if original is None:
+    respect_env = os.environ.get("XAGENT_PYTEST_RESPECT_LANCEDB_DIR") == "1"
+    if not respect_env:
         lancedb_dir = tmp_path / "lancedb"
         lancedb_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("LANCEDB_DIR", str(lancedb_dir))

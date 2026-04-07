@@ -607,10 +607,21 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         table_name = f"embeddings_{to_model_tag(model_tag)}"
 
         if readonly:
+            # In readonly mode, check if FTS index exists without creating any indexes
+            fts_enabled = False
+            try:
+                table = conn.open_table(table_name)
+                indexes = table.list_indices()
+                fts_enabled = any(
+                    idx.index_type == "FTS" and "text" in idx.columns for idx in indexes
+                )
+            except Exception as e:
+                logger.debug("Unable to check FTS index status in readonly mode: %s", e)
+
             return IndexResult(
                 status="readonly",
                 advice=f"Readonly mode - no index operations for {table_name}",
-                fts_enabled=False,
+                fts_enabled=fts_enabled,
             )
 
         try:
