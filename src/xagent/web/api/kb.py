@@ -55,7 +55,8 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
-from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
+from ...core.tools.core.RAG_tools.utils.string_utils import generate_deterministic_doc_id
+from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
@@ -1352,19 +1353,24 @@ async def delete_document_api(
     # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
     from ...core.tools.core.RAG_tools.management.collections import delete_document
 
-    # Use storage abstraction layer to fetch document records
-    vector_store = get_vector_index_store()
-    records = vector_store.list_document_records(
-        collection_name=collection_name,
-        user_id=int(_user.id),
-        is_admin=bool(_user.is_admin),
-        max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
-    )
-
-    # Build filename map from file_ids (for UploadedFile lookup and advanced matching)
+    user_id_int = int(_user.id)
+    records: List[Dict[str, Any]] = []
+    try:
+        records = _list_documents_for_user(
+            user_id=user_id_int,
+            is_admin=bool(_user.is_admin),
+            collection_name=collection_name,
+        )
+    except Exception as exc:
+        # Degrade gracefully when LanceDB cannot decode legacy rows.
+        logger.warning(
+            "Failed to read documents for delete resolution (collection=%s): %s",
+            collection_name,
+            exc,
+        )
     filename_map = _build_uploaded_filename_map(
         db,
-        user_id=int(_user.id),
+        user_id=user_id_int,
         file_ids=[
             file_id
             for file_id in (_get_document_record_file_id(record) for record in records)
@@ -1375,7 +1381,7 @@ async def delete_document_api(
     # Find all matching documents (handle duplicates)
     matching_docs = []
     for record in records:
-        current_doc_id = record.doc_id
+        current_doc_id = record.get("doc_id")
         current_file_id = _get_document_record_file_id(record)
         resolved_filename = _resolve_document_filename(record, filename_map)
 
@@ -1395,6 +1401,71 @@ async def delete_document_api(
             }
         )
 
+    if not matching_docs and (doc_id or file_id):
+        # Explicit identifiers should still allow deletion even if documents table
+        # is temporarily unreadable.
+        matching_docs.append(
+            {
+                "doc_id": doc_id,
+                "file_id": file_id,
+                "filename": filename,
+            }
+        )
+
+    if not matching_docs:
+        # Fallback 1: derive doc_id from UploadedFile linkage for uploaded docs.
+        user_segment = f"/user_{user_id_int}/{collection_name}/"
+        uploaded_query = db.query(UploadedFile).filter(
+            UploadedFile.user_id == user_id_int,
+            UploadedFile.filename == filename,
+            UploadedFile.storage_path.like(f"%{user_segment}%"),
+        )
+        if file_id:
+            uploaded_query = uploaded_query.filter(UploadedFile.file_id == file_id)
+        uploaded_candidates = uploaded_query.all()
+        for rec in uploaded_candidates:
+            file_id_str = str(getattr(rec, "file_id", "")).strip()
+            if not file_id_str:
+                continue
+            matching_docs.append(
+                {
+                    "doc_id": generate_deterministic_doc_id(collection_name, file_id_str),
+                    "file_id": file_id_str,
+                    "filename": filename,
+                }
+            )
+
+    if not matching_docs and not file_id and not doc_id:
+        # Fallback 2: allow web-ingested docs to be deleted by doc_id-like filename.
+        try:
+            doc_list = list_documents(
+                collection=collection_name,
+                user_id=user_id_int,
+                is_admin=bool(_user.is_admin),
+            )
+            for summary in doc_list.documents:
+                doc_id_value = getattr(summary, "doc_id", None)
+                source_path = getattr(summary, "source_path", None)
+                source_basename = (
+                    Path(source_path).name
+                    if isinstance(source_path, str) and source_path.strip()
+                    else None
+                )
+                if doc_id_value == filename or source_basename == filename:
+                    matching_docs.append(
+                        {
+                            "doc_id": doc_id_value,
+                            "file_id": None,
+                            "filename": filename,
+                        }
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Fallback doc resolution via list_documents failed (collection=%s): %s",
+                collection_name,
+                exc,
+            )
+
     if not matching_docs:
         raise HTTPException(
             status_code=404,
@@ -1404,19 +1475,29 @@ async def delete_document_api(
     deleted_doc_ids = []
     deletion_errors = []
 
-    # Get remaining documents to check for orphaned UploadedFile records
-    remaining_records = vector_store.list_document_records(
-        collection_name=collection_name,
-        user_id=int(_user.id),
-        is_admin=bool(_user.is_admin),
-    )
-    remaining_file_ids = {
-        current_file_id
-        for current_file_id in (
-            _get_document_record_file_id(record) for record in remaining_records
+    remaining_file_ids: set[str] = set()
+    try:
+        remaining_records = _list_documents_for_user(
+            user_id=user_id_int,
+            is_admin=bool(_user.is_admin),
         )
-        if current_file_id
-    }
+        remaining_file_ids = {
+            current_file_id
+            for current_file_id in (
+                _get_document_record_file_id(record) for record in remaining_records
+            )
+            if current_file_id
+        }
+    except Exception as exc:
+        logger.warning(
+            "Failed to read remaining docs for orphan cleanup; fallback to UploadedFile set: %s",
+            exc,
+        )
+        remaining_file_ids = {
+            str(rec.file_id)
+            for rec in db.query(UploadedFile).filter(UploadedFile.user_id == user_id_int).all()
+            if getattr(rec, "file_id", None)
+        }
 
     for doc_info in matching_docs:
         doc_id = doc_info["doc_id"]
@@ -1436,7 +1517,7 @@ async def delete_document_api(
                 if _delete_uploaded_file_if_orphaned(
                     db,
                     file_id=current_file_id,
-                    user_id=int(_user.id),
+                    user_id=user_id_int,
                     remaining_file_ids=remaining_file_ids,
                 ):
                     pass
