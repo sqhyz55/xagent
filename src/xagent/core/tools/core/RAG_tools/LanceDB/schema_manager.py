@@ -349,7 +349,7 @@ def ensure_collection_metadata_table(conn: DBConnection) -> None:
             pa.field("ingestion_config", pa.string()),
             pa.field("created_at", pa.timestamp("us")),
             pa.field("updated_at", pa.timestamp("us")),
-            pa.field("last_accessed", pa.timestamp("us")),
+            pa.field("last_accessed_at", pa.timestamp("us")),
             pa.field("extra_metadata", pa.string()),
         ]
     )
