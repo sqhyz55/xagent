@@ -1,7 +1,6 @@
 """Tests for collection manager functionality."""
 
-import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -141,40 +140,84 @@ class TestCollectionManager:
 
 
 class TestSyncFunctions:
-    """Test synchronous wrapper functions."""
+    """Test synchronous wrapper functions with real storage.
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collection_manager.collection_manager"
-    )
-    def test_get_collection_sync(self, mock_manager):
-        """Test synchronous collection retrieval."""
-        mock_manager.get_collection = AsyncMock(return_value="mock_result")
+    These tests use real storage instead of mocks to verify the complete
+    data flow through the sync wrapper → async manager → storage layer.
 
-        result = get_collection_sync("test_collection")
+    IMPORTANT: These tests use the global collection_manager singleton to ensure
+    consistency with the sync wrapper functions, which also use the singleton.
+    """
 
-        assert result == "mock_result"
-        mock_manager.get_collection.assert_called_once_with("test_collection")
+    @pytest.fixture
+    def manager(self):
+        """Create a CollectionManager instance with real storage.
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collection_manager._run_in_separate_loop"
-    )
-    def test_update_collection_stats_sync(self, mock_run_loop):
-        """Test synchronous collection stats update."""
-        # Create a mock CollectionInfo to return
-        mock_collection = CollectionInfo(name="test", documents=1)
-        # Execute the passed coroutine to avoid "coroutine was never awaited" warnings.
-        mock_run_loop.side_effect = lambda coro: asyncio.run(coro)
+        Note: We use the global singleton instead of creating a new instance
+        to ensure consistency with sync wrapper functions.
+        """
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            collection_manager,
+        )
 
-        with patch(
-            "xagent.core.tools.core.RAG_tools.management.collection_manager.collection_manager"
-        ) as mock_manager:
-            mock_manager.update_collection_stats = AsyncMock(
-                return_value=mock_collection
-            )
-            result = update_collection_stats_sync("test", documents_delta=1)
+        # Return the global singleton to ensure consistency with sync wrappers
+        return collection_manager
 
-        assert result == mock_collection
-        mock_run_loop.assert_called_once()
+    @pytest.mark.asyncio
+    async def test_get_collection_sync_with_real_storage(self, manager):
+        """Test synchronous collection retrieval with real storage."""
+        # Setup: Create a collection with unique name
+        import uuid
+
+        unique_suffix = str(uuid.uuid4())[:8]
+        collection_name = f"sync_test_collection_{unique_suffix}"
+
+        collection = CollectionInfo(
+            name=collection_name,
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection)
+
+        # Test: Use sync wrapper to retrieve
+        result = get_collection_sync(collection_name)
+
+        # Verify: Real data flow through storage layer
+        assert result.name == collection_name
+        assert result.embedding_model_id == "text-embedding-ada-002"
+        assert result.documents == 5
+
+    @pytest.mark.asyncio
+    async def test_update_collection_stats_sync_with_real_storage(self, manager):
+        """Test synchronous collection stats update with real storage."""
+        # Setup: Create a collection with unique name
+        import uuid
+
+        unique_suffix = str(uuid.uuid4())[:8]
+        collection_name = f"sync_stats_test_{unique_suffix}"
+
+        collection = CollectionInfo(
+            name=collection_name, documents=10, processed_documents=5
+        )
+        await manager.save_collection(collection)
+
+        # Verify collection was saved correctly
+        saved_before = await manager.get_collection(collection_name)
+
+        # Test: Use sync wrapper to update stats
+        result = update_collection_stats_sync(
+            collection_name, documents_delta=2, processed_documents_delta=1
+        )
+
+        # Verify: Real data flow through storage layer
+        assert result.documents == saved_before.documents + 2
+        assert result.processed_documents == saved_before.processed_documents + 1
+
+        # Verify persistence
+        saved = await manager.get_collection(collection_name)
+        assert saved.documents == saved_before.documents + 2
+        assert saved.processed_documents == saved_before.processed_documents + 1
 
 
 class TestHubTagMapping:
@@ -278,6 +321,12 @@ class TestResolveEffectiveEmbeddingModel:
 
 class TestRebuildCollectionMetadata:
     """Test rebuild_collection_metadata function."""
+
+    @pytest.fixture
+    def manager(self):
+        """Create a CollectionManager instance with real storage."""
+        # The isolate_lancedb_dir fixture in conftest.py already handles directory isolation
+        return CollectionManager()
 
     @patch(
         "xagent.core.tools.core.RAG_tools.management.collection_manager.get_vector_index_store"
@@ -437,3 +486,34 @@ class TestRebuildCollectionMetadata:
 
         # Vector store should not be accessed for empty list
         assert not mock_get_vector_store.called
+
+    @pytest.mark.asyncio
+    async def test_rebuild_with_real_storage(self, manager):
+        """Test rebuild_collection_metadata with real storage (integration test).
+
+        This test verifies the complete data flow through the rebuild process,
+        ensuring it correctly updates collection metadata from actual database
+        state rather than mocked responses.
+        """
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            rebuild_collection_metadata,
+        )
+
+        # Setup: Create a collection with metadata
+        collection = CollectionInfo(
+            name="rebuild_test_collection",
+            embedding_model_id=None,  # Initially null
+            embedding_dimension=None,
+            documents=5,
+            processed_documents=3,
+        )
+        await manager.save_collection(collection)
+
+        # Test: Run rebuild with real storage
+        await rebuild_collection_metadata()
+
+        # Verify: Collection metadata is preserved
+        result = await manager.get_collection("rebuild_test_collection")
+        assert result.name == "rebuild_test_collection"
+        assert result.documents == 5
+        assert result.processed_documents == 3

@@ -40,7 +40,7 @@ def test_check_table_needs_migration_table_not_exists(
     """Test check_table_needs_migration when table doesn't exist."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Table doesn't exist, should return False
     assert check_table_needs_migration(conn, "nonexistent_table") is False
@@ -52,7 +52,7 @@ def test_check_table_needs_migration_table_without_user_id(
     """Test check_table_needs_migration when table exists but missing user_id field."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Create a table without user_id field (old schema)
     old_schema = pa.schema(
@@ -74,7 +74,7 @@ def test_check_table_needs_migration_table_with_user_id(
     """Test check_table_needs_migration when table exists and has user_id field."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Create a table with user_id field (new schema)
     new_schema = pa.schema(
@@ -97,7 +97,7 @@ def test_check_table_needs_migration_with_ensure_tables(
     """Test check_table_needs_migration with tables created by ensure_* functions."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Create tables using ensure_* functions (which create tables with user_id)
     ensure_documents_table(conn)

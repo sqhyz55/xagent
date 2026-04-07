@@ -384,7 +384,7 @@ class TestMultiTenancySearch:
         """Unauthenticated dense search should not return orphaned sentinel records."""
         import pandas as pd
 
-        conn = get_connection_from_env()
+        conn = get_vector_store_raw_connection()
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
@@ -602,71 +602,80 @@ class TestCollectionManagementMultiTenancy:
         assert hasattr(result, "collections")
         assert hasattr(result, "total_count")
 
-    @patch("xagent.core.tools.core.RAG_tools.storage.factory.get_metadata_store")
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
-    )
-    def test_delete_collection_permission_check(
-        self,
-        mock_get_store,
-        mock_status_store,
-    ):
-        """Test delete_collection runs with user/admin context.
+    @pytest.mark.asyncio
+    async def test_delete_collection_with_real_storage(self):
+        """Test delete_collection with real storage (integration test).
 
-        Note: Current delete_collection uses list_document_records with user filter
-        and delete_collection_data; it does not compare total vs accessible count.
-        So we only assert admin and user success paths.
+        This test verifies the complete data flow for delete_collection operation,
+        ensuring it correctly handles user/admin permissions with actual database
+        operations rather than mocked responses.
         """
-        mock_vector_store = MagicMock()
-        mock_metadata_store = MagicMock()
-        mock_conn = MagicMock()
-        mock_vector_store.get_raw_connection.return_value = mock_conn
-        mock_metadata_store.get_raw_connection.return_value = mock_conn
-        mock_get_store.return_value = mock_vector_store
-        mock_status_store.return_value = mock_metadata_store
+        from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            CollectionManager,
+        )
 
-        # Mock list_document_records to return empty list (no documents)
-        mock_vector_store.list_document_records.return_value = []
+        # Setup: Create a collection for testing using CollectionManager
+        manager = CollectionManager()
 
-        # Mock delete_collection_data to return empty dict (nothing deleted)
-        mock_vector_store.delete_collection_data.return_value = {}
+        collection = CollectionInfo(
+            name=self.collection,
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection)
 
-        mock_table = MagicMock()
-        mock_conn.open_table.return_value = mock_table
-        mock_table.count_rows.return_value = 0
-
+        # Test: Admin can delete collection
         result = delete_collection(self.collection, user_id=None, is_admin=True)
         assert result.status == "success"
 
-        result = delete_collection(self.collection, user_id=123, is_admin=False)
+        # Setup: Create another collection for user-specific test
+        collection_user = CollectionInfo(
+            name=f"{self.collection}_user",
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection_user)
+
+        # Test: User can delete their own collection
+        result = delete_collection(
+            f"{self.collection}_user", user_id=123, is_admin=False
+        )
         assert result.status == "success"
 
-    @patch(
-        "xagent.core.tools.core.RAG_tools.storage.factory.get_ingestion_status_store"
-    )
-    @patch(
-        "xagent.core.tools.core.RAG_tools.management.collections.get_vector_index_store"
-    )
-    def test_retry_document_permission_check(self, mock_get_store, mock_status_store):
-        """Test retry_document accepts user_id and is_admin and completes.
+    @pytest.mark.asyncio
+    async def test_retry_document_with_real_storage(self):
+        """Test retry_document with real storage (integration test).
 
-        Note: Current retry_document only calls write_ingestion_status and does not
-        check document existence or ownership via count_rows. We assert it returns
-        success when called with user and admin context.
+        This test verifies the complete data flow for retry_document operation,
+        ensuring it correctly handles user/admin permissions with actual database
+        operations rather than mocked responses.
         """
-        mock_vector_store = MagicMock()
-        mock_metadata_store = MagicMock()
-        mock_conn = MagicMock()
-        mock_vector_store.get_raw_connection.return_value = mock_conn
-        mock_metadata_store.get_raw_connection.return_value = mock_conn
-        mock_get_store.return_value = mock_vector_store
-        mock_status_store.return_value = mock_metadata_store
+        from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
+        from xagent.core.tools.core.RAG_tools.management.collection_manager import (
+            CollectionManager,
+        )
 
+        # Setup: Create a collection for testing using CollectionManager
+        manager = CollectionManager()
+
+        collection = CollectionInfo(
+            name=self.collection,
+            embedding_model_id="text-embedding-ada-002",
+            embedding_dimension=1536,
+            documents=5,
+        )
+        await manager.save_collection(collection)
+
+        # Test: User can retry their own document
         result = retry_document(
             self.collection, "test_doc", user_id=123, is_admin=False
         )
         assert result.status == "success"
 
+        # Test: Admin can retry any document
         result = retry_document(
             self.collection, "test_doc", user_id=None, is_admin=True
         )
@@ -788,14 +797,14 @@ class TestAPIMultiTenancy:
         assert result.status == "success"
         assert result.total_count == 0
 
-    @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
+    @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
     async def test_delete_collection_api_with_user(
         self,
         mock_delete_collection,
         mock_delete_collection_physical_dir,
-        _mock_list_documents_for_user,
+        mock_get_vector_store,
     ):
         """Test delete_collection_api passes user context and moves dir to trash."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -809,6 +818,8 @@ class TestAPIMultiTenancy:
         mock_user = MagicMock(spec=User)
         mock_user.id = 123
         mock_user.is_admin = False
+
+        mock_get_vector_store.return_value.list_document_records.return_value = []
 
         mock_path = MagicMock(spec=Path)
         mock_delete_collection_physical_dir.return_value = (
@@ -844,14 +855,14 @@ class TestAPIMultiTenancy:
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
-    @patch("xagent.web.api.kb._list_documents_for_user", return_value=[])
+    @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
     async def test_delete_collection_api_admin_access(
         self,
         mock_delete_collection,
         mock_delete_collection_physical_dir,
-        _mock_list_documents_for_user,
+        mock_get_vector_store,
     ):
         """Test admin can delete collections (move dir to trash)."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -865,6 +876,8 @@ class TestAPIMultiTenancy:
         mock_user = MagicMock(spec=User)
         mock_user.id = 999
         mock_user.is_admin = True
+
+        mock_get_vector_store.return_value.list_document_records.return_value = []
 
         mock_path = MagicMock(spec=Path)
         mock_delete_collection_physical_dir.return_value = (

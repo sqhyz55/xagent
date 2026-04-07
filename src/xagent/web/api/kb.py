@@ -79,9 +79,6 @@ from ..services.kb_file_service import (
     get_document_record_file_id as _get_document_record_file_id,
 )
 from ..services.kb_file_service import (
-    list_documents_for_user as _list_documents_for_user,
-)
-from ..services.kb_file_service import (
     resolve_document_filename as _resolve_document_filename,
 )
 from ..services.kb_file_service import (
@@ -1060,10 +1057,11 @@ async def delete_collection_api(
                 ),
             )
 
-        collection_records = _list_documents_for_user(
+        vector_store = get_vector_index_store()
+        collection_records = vector_store.list_document_records(
+            collection_name=collection_name,
             user_id=int(_user.id),
             is_admin=bool(_user.is_admin),
-            collection_name=collection_name,
         )
         collection_file_ids = {
             file_id
@@ -1075,7 +1073,8 @@ async def delete_collection_api(
 
         result = delete_collection(collection_name, int(_user.id), bool(_user.is_admin))
 
-        remaining_records = _list_documents_for_user(
+        remaining_records = vector_store.list_document_records(
+            collection_name=None,
             user_id=int(_user.id),
             is_admin=bool(_user.is_admin),
         )
@@ -1295,9 +1294,7 @@ async def delete_document_api(
         user_id=int(_user.id),
         file_ids=[
             file_id
-            for file_id in (
-                _get_document_record_file_id(record) for record in records
-            )
+            for file_id in (_get_document_record_file_id(record) for record in records)
             if file_id
         ],
     )
@@ -1336,6 +1333,7 @@ async def delete_document_api(
 
     # Get remaining documents to check for orphaned UploadedFile records
     remaining_records = vector_store.list_document_records(
+        collection_name=collection_name,
         user_id=int(_user.id),
         is_admin=bool(_user.is_admin),
     )
@@ -1431,6 +1429,8 @@ async def rename_collection_api(
     )
     from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 
+    vector_store = get_vector_index_store()
+
     if not new_name or not new_name.strip():
         raise HTTPException(
             status_code=422,
@@ -1457,15 +1457,15 @@ async def rename_collection_api(
     physical_rename_error: Optional[str] = None
     old_collection_dir: Optional[Path] = None
     new_collection_dir: Optional[Path] = None
+    collection_records = vector_store.list_document_records(
+        collection_name=collection_name,
+        user_id=int(_user.id),
+        is_admin=bool(_user.is_admin),
+    )
     collection_file_ids = {
         file_id
         for file_id in (
-            _get_document_record_file_id(record)
-            for record in _list_documents_for_user(
-                user_id=int(_user.id),
-                is_admin=bool(_user.is_admin),
-                collection_name=collection_name,
-            )
+            _get_document_record_file_id(record) for record in collection_records
         )
         if file_id
     }

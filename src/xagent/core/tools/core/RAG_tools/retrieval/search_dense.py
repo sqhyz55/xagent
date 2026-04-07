@@ -11,7 +11,12 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import DocumentValidationError
-from ..core.schemas import DenseSearchResponse, IndexStatus
+from ..core.schemas import (
+    DenseSearchResponse,
+    IndexStatus,
+    SearchFallbackAction,
+    SearchWarning,
+)
 from ..vector_storage.vector_manager import validate_query_vector
 from .search_engine import search_dense_engine
 
@@ -50,7 +55,8 @@ def search_dense(
         is_admin: Whether the user has admin privileges (bypasses user filtering).
 
     Returns:
-        DenseSearchResponse with search results and metadata
+        DenseSearchResponse with search results and metadata. Returns a failed
+        response with error warnings if an exception occurs.
 
     Raises:
         DocumentValidationError: If input validation fails
@@ -70,57 +76,84 @@ def search_dense(
     # Note: Dimension validation is handled by the storage abstraction layer during search
     validate_query_vector(query_vector)
 
-    # Execute search using search engine
-    search_results, index_status, index_advice = search_dense_engine(
-        collection=collection,
-        model_tag=model_tag,
-        query_vector=query_vector,
-        top_k=top_k,
-        filters=filters,
-        readonly=readonly,
-        nprobes=nprobes,
-        refine_factor=refine_factor,
-        user_id=user_id,
-        is_admin=is_admin,
-    )
+    try:
+        # Execute search using search engine
+        search_results, index_status, index_advice = search_dense_engine(
+            collection=collection,
+            model_tag=model_tag,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=filters,
+            readonly=readonly,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
-    # Map index status to enum
-    index_status_enum = IndexStatus.INDEX_READY
-    if index_status == "index_building":
-        index_status_enum = IndexStatus.INDEX_BUILDING
-    elif index_status == "no_index":
-        index_status_enum = IndexStatus.NO_INDEX
-    elif index_status == "index_corrupted":
-        index_status_enum = IndexStatus.INDEX_CORRUPTED
-    elif index_status == "readonly":
-        index_status_enum = IndexStatus.READONLY
-    elif index_status == "below_threshold":
-        index_status_enum = IndexStatus.BELOW_THRESHOLD
+        # Map index status to enum
+        index_status_enum = IndexStatus.INDEX_READY
+        if index_status == "index_building":
+            index_status_enum = IndexStatus.INDEX_BUILDING
+        elif index_status == "no_index":
+            index_status_enum = IndexStatus.NO_INDEX
+        elif index_status == "index_corrupted":
+            index_status_enum = IndexStatus.INDEX_CORRUPTED
+        elif index_status == "readonly":
+            index_status_enum = IndexStatus.READONLY
+        elif index_status == "below_threshold":
+            index_status_enum = IndexStatus.BELOW_THRESHOLD
 
-    # Build response
-    response = DenseSearchResponse(
-        results=search_results,
-        total_count=len(search_results),
-        status="success",
-        warnings=[],
-        index_status=index_status_enum,
-        index_advice=index_advice,
-        # TODO: Generate idempotency_key based on search parameters hash
-        # (collection, model_tag, query_vector, filters, top_k, nprobes, refine_factor)
-        # for request deduplication, caching, and observability tracking.
-        # Implementation planned for PR21 (caching strategy).
-        idempotency_key=None,
-        fallback_info=None,
-        nprobes=nprobes,
-        refine_factor=refine_factor,
-    )
+        # Build response
+        response = DenseSearchResponse(
+            results=search_results,
+            total_count=len(search_results),
+            status="success",
+            warnings=[],
+            index_status=index_status_enum,
+            index_advice=index_advice,
+            # TODO: Generate idempotency_key based on search parameters hash
+            # (collection, model_tag, query_vector, filters, top_k, nprobes, refine_factor)
+            # for request deduplication, caching, and observability tracking.
+            # Implementation planned for PR21 (caching strategy).
+            idempotency_key=None,
+            fallback_info=None,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+        )
 
-    logger.info(
-        f"Dense search completed: collection={collection}, model_tag={model_tag}, "
-        f"top_k={top_k}, returned={len(search_results)}, index_status={index_status}"
-    )
+        logger.info(
+            f"Dense search completed: collection={collection}, model_tag={model_tag}, "
+            f"top_k={top_k}, returned={len(search_results)}, index_status={index_status}"
+        )
 
-    return response
+        return response
+
+    except Exception as e:
+        logger.error(
+            f"Dense search failed for {model_tag} in collection '{collection}': {e}"
+        )
+        # Return structured error response instead of raising exception
+        # This matches the behavior of search_sparse for API consistency
+        return DenseSearchResponse(
+            results=[],
+            total_count=0,
+            status="failed",
+            warnings=[
+                SearchWarning(
+                    code="DENSE_SEARCH_FAILED",
+                    message=f"An unexpected error occurred during dense search: {str(e)}",
+                    fallback_action=SearchFallbackAction.PARTIAL_RESULTS,
+                    affected_models=[model_tag],
+                )
+            ],
+            index_status=IndexStatus.NO_INDEX,
+            index_advice=None,
+            idempotency_key=None,
+            fallback_info=None,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+        )
 
 
 # --- Async variant (Phase 1A Option C) ---
@@ -158,7 +191,8 @@ async def search_dense_async(
         is_admin: Whether the user has admin privileges (bypasses user filtering).
 
     Returns:
-        DenseSearchResponse with search results and metadata
+        DenseSearchResponse with search results and metadata. Returns a failed
+        response with error warnings if an exception occurs.
 
     Raises:
         DocumentValidationError: If input validation fails
@@ -181,50 +215,77 @@ async def search_dense_async(
     # Import async search engine
     from .search_engine import search_dense_engine_async
 
-    # Execute async search
-    search_results, index_status, index_advice = await search_dense_engine_async(
-        collection=collection,
-        model_tag=model_tag,
-        query_vector=query_vector,
-        top_k=top_k,
-        filters=filters,
-        readonly=readonly,
-        nprobes=nprobes,
-        refine_factor=refine_factor,
-        user_id=user_id,
-        is_admin=is_admin,
-    )
+    try:
+        # Execute async search
+        search_results, index_status, index_advice = await search_dense_engine_async(
+            collection=collection,
+            model_tag=model_tag,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=filters,
+            readonly=readonly,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
-    # Map index status to enum
-    index_status_enum = IndexStatus.INDEX_READY
-    if index_status == "index_building":
-        index_status_enum = IndexStatus.INDEX_BUILDING
-    elif index_status == "no_index":
-        index_status_enum = IndexStatus.NO_INDEX
-    elif index_status == "index_corrupted":
-        index_status_enum = IndexStatus.INDEX_CORRUPTED
-    elif index_status == "readonly":
-        index_status_enum = IndexStatus.READONLY
-    elif index_status == "below_threshold":
-        index_status_enum = IndexStatus.BELOW_THRESHOLD
+        # Map index status to enum
+        index_status_enum = IndexStatus.INDEX_READY
+        if index_status == "index_building":
+            index_status_enum = IndexStatus.INDEX_BUILDING
+        elif index_status == "no_index":
+            index_status_enum = IndexStatus.NO_INDEX
+        elif index_status == "index_corrupted":
+            index_status_enum = IndexStatus.INDEX_CORRUPTED
+        elif index_status == "readonly":
+            index_status_enum = IndexStatus.READONLY
+        elif index_status == "below_threshold":
+            index_status_enum = IndexStatus.BELOW_THRESHOLD
 
-    # Build response
-    response = DenseSearchResponse(
-        results=search_results,
-        total_count=len(search_results),
-        status="success",
-        warnings=[],
-        index_status=index_status_enum,
-        index_advice=index_advice,
-        idempotency_key=None,
-        fallback_info=None,
-        nprobes=nprobes,
-        refine_factor=refine_factor,
-    )
+        # Build response
+        response = DenseSearchResponse(
+            results=search_results,
+            total_count=len(search_results),
+            status="success",
+            warnings=[],
+            index_status=index_status_enum,
+            index_advice=index_advice,
+            idempotency_key=None,
+            fallback_info=None,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+        )
 
-    logger.info(
-        f"Async dense search completed: collection={collection}, model_tag={model_tag}, "
-        f"top_k={top_k}, returned={len(search_results)}, index_status={index_status}"
-    )
+        logger.info(
+            f"Async dense search completed: collection={collection}, model_tag={model_tag}, "
+            f"top_k={top_k}, returned={len(search_results)}, index_status={index_status}"
+        )
 
-    return response
+        return response
+
+    except Exception as e:
+        logger.error(
+            f"Async dense search failed for {model_tag} in collection '{collection}': {e}"
+        )
+        # Return structured error response instead of raising exception
+        # This matches the behavior of search_sparse for API consistency
+        return DenseSearchResponse(
+            results=[],
+            total_count=0,
+            status="failed",
+            warnings=[
+                SearchWarning(
+                    code="DENSE_SEARCH_FAILED",
+                    message=f"An unexpected error occurred during dense search: {str(e)}",
+                    fallback_action=SearchFallbackAction.PARTIAL_RESULTS,
+                    affected_models=[model_tag],
+                )
+            ],
+            index_status=IndexStatus.NO_INDEX,
+            index_advice=None,
+            idempotency_key=None,
+            fallback_info=None,
+            nprobes=nprobes,
+            refine_factor=refine_factor,
+        )

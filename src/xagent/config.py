@@ -189,12 +189,7 @@ def get_lancedb_path() -> Path:
 
     Priority:
     1. LANCEDB_PATH environment variable
-    2. Default to ./data/lancedb (relative to cwd)
-
-    .. warning::
-        Default to ``./data/lancedb``, which is **relative** to cwd, **NOT**
-        relative to ``storage_root``. This behavior is kept for backward
-        compatibility but may change in the future (see proposal #246).
+    2. Default to STORAGE_ROOT/data/lancedb
 
     Returns:
         Path object for LanceDB directory
@@ -203,8 +198,8 @@ def get_lancedb_path() -> Path:
     if env_path:
         return Path(env_path)
 
-    # Default: ./data/lancedb
-    return Path("data/lancedb")
+    # Default: storage_root/data/lancedb
+    return get_storage_root() / "data" / "lancedb"
 
 
 def get_default_sqlite_db_path() -> str:

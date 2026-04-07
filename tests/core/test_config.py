@@ -209,10 +209,11 @@ class TestGetLancedbPath:
     """Test get_lancedb_path() function."""
 
     def test_default_lancedb_path(self, monkeypatch):
-        """Test default LanceDB path (relative to cwd)."""
+        """Test default LanceDB path (relative to storage root)."""
         monkeypatch.delenv(LANCEDB_PATH, raising=False)
+        monkeypatch.delenv(STORAGE_ROOT, raising=False)
         result = get_lancedb_path()
-        assert result == Path("data/lancedb")
+        assert result == Path.home() / ".xagent" / "data" / "lancedb"
 
     def test_lancedb_path_with_env_var(self, monkeypatch):
         """Test LanceDB path with environment variable."""

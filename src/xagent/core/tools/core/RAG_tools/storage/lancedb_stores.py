@@ -260,7 +260,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
     def list_document_records(
         self,
-        collection_name: str,
+        collection_name: Optional[str],
         user_id: Optional[int],
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
@@ -276,7 +276,11 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         )
 
         # Build filter expression using common function (includes validation)
-        filter_expr_obj = build_filter_from_dict({"collection": collection_name})
+        filters = {}
+        if collection_name is not None:
+            filters["collection"] = collection_name
+
+        filter_expr_obj = build_filter_from_dict(filters)
         combined_filter = self.build_filter_expression(
             filters=filter_expr_obj,
             user_id=user_id,

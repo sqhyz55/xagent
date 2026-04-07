@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from sqlalchemy.orm import Session
 
 from ...config import get_uploads_dir
 from ...core.tools.core.RAG_tools.LanceDB.schema_manager import ensure_documents_table
+from ...core.tools.core.RAG_tools.storage.contracts import DocumentRecord
 from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     build_lancedb_filter_expression,
@@ -104,7 +105,9 @@ def build_uploaded_filename_map(
     return {str(record.file_id): str(record.filename) for record in records}
 
 
-def get_document_record_file_id(record) -> Optional[str]:
+def get_document_record_file_id(
+    record: Union[Dict[str, Any], DocumentRecord],
+) -> Optional[str]:
     """Extract a normalized ``file_id`` from a KB document record.
 
     Args:
@@ -126,7 +129,9 @@ def get_document_record_file_id(record) -> Optional[str]:
     return file_id or None
 
 
-def resolve_document_filename(record, filename_map: Dict[str, str]) -> Optional[str]:
+def resolve_document_filename(
+    record: Union[Dict[str, Any], DocumentRecord], filename_map: Dict[str, str]
+) -> Optional[str]:
     """Resolve a user-facing filename from ``file_id`` first, then legacy path.
 
     Args:
@@ -148,6 +153,7 @@ def resolve_document_filename(record, filename_map: Dict[str, str]) -> Optional[
 
     if source_path:
         return os.path.basename(str(source_path))
+
     return None
 
 
@@ -158,7 +164,17 @@ def delete_uploaded_file_if_orphaned(
     user_id: int,
     remaining_file_ids: set[str],
 ) -> bool:
-    """Delete uploaded file row and local file when no documents still reference it."""
+    """Delete uploaded file row and local file when no documents still reference it.
+
+    Args:
+        db: Database session.
+        file_id: The ID of the file to check.
+        user_id: User ID for scoping.
+        remaining_file_ids: A set of all file_id values still referenced by other documents.
+
+    Returns:
+        True if the file was deleted, False otherwise.
+    """
     if not file_id or file_id in remaining_file_ids:
         return False
 
@@ -186,6 +202,8 @@ def delete_uploaded_file_if_orphaned(
     else:
         if resolved_path.exists() and resolved_path.is_file():
             resolved_path.unlink()
+            logger.info("Deleted orphaned physical file: %s", resolved_path)
 
     db.delete(file_record)
+    db.flush()
     return True

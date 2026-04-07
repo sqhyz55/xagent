@@ -361,12 +361,19 @@ class VectorIndexStore(ABC):
     @abstractmethod
     def list_document_records(
         self,
-        collection_name: str,
+        collection_name: Optional[str],
         user_id: Optional[int],
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
     ) -> List[DocumentRecord]:
-        """List document records from vector index side."""
+        """List document records from vector index side.
+
+        Args:
+            collection_name: Optional collection name filter. If None, lists records across all collections.
+            user_id: User ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
+            max_results: Maximum records to return.
+        """
 
     @abstractmethod
     def rename_collection_data(
