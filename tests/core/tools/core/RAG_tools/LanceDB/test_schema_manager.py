@@ -156,3 +156,65 @@ def test_ensure_documents_table_backfills_null_file_id(
     refreshed = conn.open_table("documents")
     updated = refreshed.search().where("doc_id = 'd1'").to_list()[0]
     assert updated["file_id"] == ""
+
+
+def test_ensure_documents_table_backfills_user_id_from_source_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ensure_documents_table should recover user_id from legacy source paths."""
+    db_dir = tmp_path / "db"
+    monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+    conn = get_connection_from_env()
+
+    schema = pa.schema(
+        [
+            pa.field("collection", pa.string()),
+            pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
+            pa.field("source_path", pa.string()),
+            pa.field("file_type", pa.string()),
+            pa.field("content_hash", pa.string()),
+            pa.field("uploaded_at", pa.timestamp("us")),
+            pa.field("title", pa.string()),
+            pa.field("language", pa.string()),
+            pa.field("user_id", pa.int64()),
+        ]
+    )
+    conn.create_table("documents", schema=schema)
+    table = conn.open_table("documents")
+    table.add(
+        [
+            {
+                "collection": "xagent",
+                "doc_id": "legacy-doc-1",
+                "file_id": "",
+                "source_path": "/home/xagent/uploads/user_58/xagent/README.md",
+                "file_type": "md",
+                "content_hash": "h1",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
+                "user_id": None,
+            },
+            {
+                "collection": "xagent",
+                "doc_id": "legacy-doc-2",
+                "file_id": "",
+                "source_path": "/legacy/path/no-user-prefix.md",
+                "file_type": "md",
+                "content_hash": "h2",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
+                "user_id": None,
+            },
+        ]
+    )
+
+    ensure_documents_table(conn)
+
+    refreshed = conn.open_table("documents")
+    rows = refreshed.search().to_list()
+    row_map = {row["doc_id"]: row for row in rows}
+    assert row_map["legacy-doc-1"]["user_id"] == 58
+    assert row_map["legacy-doc-2"]["user_id"] is None

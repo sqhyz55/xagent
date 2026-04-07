@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -158,6 +159,70 @@ def _backfill_documents_file_id_non_null(conn: DBConnection) -> None:
         )
 
 
+def _extract_user_id_from_source_path(source_path: str) -> int | None:
+    """Extract user_id from a storage path like ``.../user_58/...``."""
+    match = re.search(r"/user_(\d+)(?:/|$)", source_path)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _backfill_documents_user_id_from_source_path(conn: DBConnection) -> None:
+    """Backfill legacy ``documents.user_id`` from source_path ownership hints.
+
+    Legacy rows may have ``user_id = NULL`` but still include stable upload
+    paths like ``.../user_{id}/{collection}/file``. Recovering user_id keeps
+    multi-tenant filtering consistent and restores document visibility for the
+    owning user without broadening access permissions.
+    """
+    table_name = "documents"
+    if not _table_exists(conn, table_name):
+        return
+
+    try:
+        table = conn.open_table(table_name)
+        if "user_id" not in table.schema.names or "source_path" not in table.schema.names:
+            return
+
+        while True:
+            pending_rows = table.search().where("user_id IS NULL").limit(1000).to_list()
+            if not pending_rows:
+                break
+
+            updated_in_batch = 0
+            for row in pending_rows:
+                source_path = row.get("source_path")
+                if not isinstance(source_path, str) or not source_path:
+                    continue
+                inferred_user_id = _extract_user_id_from_source_path(source_path)
+                if inferred_user_id is None:
+                    continue
+                doc_id = row.get("doc_id")
+                collection = row.get("collection")
+                if not isinstance(doc_id, str) or not isinstance(collection, str):
+                    continue
+
+                escaped_doc_id = doc_id.replace("'", "''")
+                escaped_collection = collection.replace("'", "''")
+                table.update(
+                    f"collection = '{escaped_collection}' and doc_id = '{escaped_doc_id}' and user_id IS NULL",
+                    {"user_id": inferred_user_id},
+                )
+                updated_in_batch += 1
+
+            if updated_in_batch == 0:
+                break
+    except Exception as exc:  # noqa: BLE001 - best effort compatibility repair
+        logger.warning(
+            "Failed to backfill null user_id values in '%s': %s",
+            table_name,
+            exc,
+        )
+
+
 def ensure_documents_table(conn: DBConnection) -> None:
     schema = pa.schema(
         [
@@ -177,6 +242,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
     _add_user_id_column(conn, "documents")
     _create_table(conn, "documents", schema=schema)
     _backfill_documents_file_id_non_null(conn)
+    _backfill_documents_user_id_from_source_path(conn)
 
 
 def ensure_parses_table(conn: DBConnection) -> None:
