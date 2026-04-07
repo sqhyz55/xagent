@@ -10,6 +10,9 @@ This module provides pure vector data management functions:
 This module handles only data management and does not perform any text-to-vector
 conversion. The actual embedding is handled by AgentOS embedding nodes in workflows.
 
+Index management is now handled by the storage abstraction layer in
+`storage.contracts.VectorIndexStore` and implemented in `storage.lancedb_stores`.
+
 ```
 AgentOS Workflow:
 1. read_chunks_for_embedding() → Get chunks needing vectors
@@ -27,11 +30,10 @@ AgentOS Workflow:
 
 - Automatic dimension consistency checking
 - Stale data cleanup when chunk_hash changes
-- HNSW index creation when row threshold is met
+- Index creation handled by storage abstraction layer
 - Multi-model support with separate tables per model
 """
 
-from .index_manager import get_index_manager
 from .vector_manager import (
     read_chunks_for_embedding,
     validate_query_vector,
@@ -39,7 +41,6 @@ from .vector_manager import (
 )
 
 __all__ = [
-    "get_index_manager",
     "read_chunks_for_embedding",
     "write_vectors_to_db",
     "validate_query_vector",

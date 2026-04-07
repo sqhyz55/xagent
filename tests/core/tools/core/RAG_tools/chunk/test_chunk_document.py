@@ -1265,11 +1265,11 @@ class TestChunkDocument:
         assert chunk_result["created"] is True
 
         # Step 3: Verify metadata in database (should be serialized as JSON string)
-        from xagent.core.tools.core.RAG_tools.utils.metadata_utils import (
-            deserialize_metadata,
-        )
         from xagent.core.tools.core.RAG_tools.storage.factory import (
             get_vector_store_raw_connection,
+        )
+        from xagent.core.tools.core.RAG_tools.utils.metadata_utils import (
+            deserialize_metadata,
         )
 
         conn = get_vector_store_raw_connection()

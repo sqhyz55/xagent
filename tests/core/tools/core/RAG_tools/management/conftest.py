@@ -3,7 +3,6 @@
 import os
 import tempfile
 from typing import Any, Generator
-from unittest.mock import AsyncMock, patch
 
 import pytest
 

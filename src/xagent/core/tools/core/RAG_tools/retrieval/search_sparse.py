@@ -9,7 +9,6 @@ import pyarrow as pa  # type: ignore
 from pyarrow import Table as PyArrowTable
 
 from ..core.schemas import (
-    IndexResult,
     SearchFallbackAction,
     SearchResult,
     SearchWarning,
@@ -19,11 +18,9 @@ from ..LanceDB.model_tag_utils import to_model_tag
 from ..storage.contracts import FilterExpression
 from ..storage.factory import (
     get_vector_index_store,
-    get_vector_store_raw_connection,
 )
 from ..utils.filter_utils import parse_legacy_filters, validate_filter_depth
 from ..utils.metadata_utils import deserialize_metadata
-from ..utils.model_resolver import resolve_embedding_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +40,7 @@ def search_sparse(
 ) -> SparseSearchResponse:
     """Performs sparse (Full-Text Search) retrieval on the specified collection."""
 
-    table_name = f"embeddings_{to_model_tag(model_tag)}"
+    model_tag = f"embeddings_{to_model_tag(model_tag)}"
     _fts_enabled = False
     current_warnings: List[SearchWarning] = []
 
@@ -51,35 +48,20 @@ def search_sparse(
         current_warnings.append(
             SearchWarning(
                 code="READONLY_MODE",
-                message=f"Readonly mode enabled for sparse search on {table_name}. No FTS index operations will be performed.",
+                message=f"Readonly mode enabled for sparse search on {model_tag}. No FTS index operations will be performed.",
                 fallback_action=SearchFallbackAction.REBUILD_INDEX,
                 affected_models=[model_tag],
             )
         )
 
     try:
-        conn = get_vector_store_raw_connection()
-        try:
-            table = conn.open_table(table_name)
-        except Exception as primary_exc:  # noqa: BLE001
-            try:
-                cfg, _ = resolve_embedding_adapter(model_tag)
-                legacy_table_name = f"embeddings_{to_model_tag(cfg.model_name)}"
-                table = conn.open_table(legacy_table_name)
-                logger.warning(
-                    "Primary embeddings table '%s' not found (%s); falling back to legacy table '%s'",
-                    table_name,
-                    primary_exc,
-                    legacy_table_name,
-                )
-                table_name = legacy_table_name
-            except Exception:
-                # Keep the original open_table error for deterministic failure semantics
-                # (tests and callers rely on this message/class when storage is unavailable).
-                raise primary_exc
+        vector_store = get_vector_index_store()
+
+        # Open embeddings table with legacy fallback (handled by abstraction layer)
+        table, model_tag = vector_store.open_embeddings_table(model_tag)
 
         # Use storage abstraction for index management
-        vector_store = get_vector_index_store()
+        index_result_obj = vector_store.create_index(model_tag, readonly)
         index_result_obj = vector_store.create_index(model_tag, readonly)
 
         # Use FTS enabled status from index result
@@ -89,7 +71,7 @@ def search_sparse(
             current_warnings.append(
                 SearchWarning(
                     code="FTS_INDEX_MISSING",
-                    message=f"FTS index not found on 'text' column for {table_name}. Sparse search performance may be degraded.",
+                    message=f"FTS index not found on 'text' column for {model_tag}. Sparse search performance may be degraded.",
                     fallback_action=SearchFallbackAction.REBUILD_INDEX,
                     affected_models=[model_tag],
                 )
@@ -213,7 +195,7 @@ def search_sparse(
 
     except Exception as e:
         logger.error(
-            f"Sparse search failed for {table_name} with query '{query_text}': {e}"
+            f"Sparse search failed for {model_tag} with query '{query_text}': {e}"
         )
         error_warnings = current_warnings + [
             SearchWarning(
@@ -381,7 +363,8 @@ async def search_sparse_async(
 
     Note: FTS index creation uses VectorIndexStore.create_index() for full decoupling.
     """
-    table_name = f"embeddings_{to_model_tag(model_tag)}"
+    vector_store = get_vector_index_store()
+
     _fts_enabled = False
     current_warnings: List[SearchWarning] = []
 
@@ -389,16 +372,14 @@ async def search_sparse_async(
         current_warnings.append(
             SearchWarning(
                 code="READONLY_MODE",
-                message=f"Readonly mode enabled for sparse search on {table_name}. No FTS index operations will be performed.",
+                message=f"Readonly mode enabled for sparse search on {model_tag}. No FTS index operations will be performed.",
                 fallback_action=SearchFallbackAction.REBUILD_INDEX,
                 affected_models=[model_tag],
             )
         )
 
     try:
-        vector_store = get_vector_index_store()
-
-        # Check and create FTS index if needed (reuse sync index_manager)
+        # Check and create FTS index if needed (using storage abstraction layer)
         if not readonly:
             index_result_obj = vector_store.create_index(model_tag, readonly=False)
             _fts_enabled = index_result_obj.fts_enabled
@@ -407,7 +388,7 @@ async def search_sparse_async(
             current_warnings.append(
                 SearchWarning(
                     code="FTS_INDEX_MISSING",
-                    message=f"FTS index may not be enabled on 'text' column for {table_name}. Sparse search performance may be degraded.",
+                    message=f"FTS index may not be enabled on 'text' column for {model_tag}. Sparse search performance may be degraded.",
                     fallback_action=SearchFallbackAction.REBUILD_INDEX,
                     affected_models=[model_tag],
                 )
@@ -451,9 +432,9 @@ async def search_sparse_async(
         if filter_expr is not None:
             validate_filter_depth(filter_expr)
 
-        # Execute async FTS search using abstraction layer
-        raw_results = await vector_store.search_fts_async(
-            table_name=table_name,
+        # Execute async FTS search using abstraction layer (by model_tag)
+        raw_results = await vector_store.search_fts_by_model_async(
+            model_tag=model_tag,
             query_text=query_text,
             top_k=top_k,
             filters=filter_expr,
@@ -467,10 +448,9 @@ async def search_sparse_async(
             )
             # Use async iter_batches for fallback
             fallback_results = await _substring_fallback_async(
-                table_name=table_name,
+                model_tag=model_tag,
                 collection=collection,
                 query_text=query_text,
-                model_tag=model_tag,
                 top_k=top_k,
                 filters=filters,
                 current_warnings=current_warnings,
@@ -519,7 +499,7 @@ async def search_sparse_async(
 
     except Exception as e:
         logger.error(
-            f"Async sparse search failed for {table_name} with query '{query_text}': {e}"
+            f"Async sparse search failed for {model_tag} with query '{query_text}': {e}"
         )
         error_warnings = current_warnings + [
             SearchWarning(
@@ -540,10 +520,9 @@ async def search_sparse_async(
 
 async def _substring_fallback_async(
     *,
-    table_name: str,
+    model_tag: str,
     collection: str,
     query_text: str,
-    model_tag: str,
     top_k: int,
     filters: Optional[Dict[str, Any]],
     current_warnings: List[SearchWarning],
@@ -562,6 +541,9 @@ async def _substring_fallback_async(
         query_filters.update(filters)
 
     try:
+        # Open embeddings table with legacy fallback
+        _table, table_name = vector_store.open_embeddings_table(model_tag)
+
         # Use async batch iteration for memory-efficient scanning
         # Specify only required columns to minimize memory usage
         async for batch in cast(

@@ -25,13 +25,13 @@ from xagent.core.tools.core.RAG_tools.retrieval.format_context import (
     format_search_results_for_llm,
 )
 from xagent.core.tools.core.RAG_tools.retrieval.search_dense import search_dense
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 from xagent.core.tools.core.RAG_tools.utils.metadata_utils import deserialize_metadata
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
-)
-from xagent.core.tools.core.RAG_tools.storage.factory import (
-    get_vector_store_raw_connection,
 )
 
 

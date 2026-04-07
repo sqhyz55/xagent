@@ -28,7 +28,9 @@ class TestListCandidates:
             "xagent.core.tools.core.RAG_tools.version_management.list_candidates"
         )
         return patch.object(
-            list_candidates_module, "get_vector_store_raw_connection", return_value=mock_conn
+            list_candidates_module,
+            "get_vector_store_raw_connection",
+            return_value=mock_conn,
         )
 
     def setup_method(self):

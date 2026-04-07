@@ -10,14 +10,11 @@ Phase 1A Option C: Provides both sync and async search functions.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.schemas import IndexResult, SearchResult
-from ..LanceDB.model_tag_utils import to_model_tag
+from ..core.schemas import SearchResult
 from ..storage.contracts import FilterExpression
-from ..storage.factory import get_vector_index_store, get_vector_store_raw_connection
+from ..storage.factory import get_vector_index_store
 from ..utils.filter_utils import parse_legacy_filters, validate_filter_depth
-from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata
-from ..utils.model_resolver import resolve_embedding_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -54,43 +51,12 @@ def search_dense_engine(
         Tuple of (search_results, index_status, index_advice)
     """
     try:
-        # Get database connection
-        conn = get_vector_store_raw_connection()
-
-        # Build primary table name (Hub model ID is the single source of truth)
-        table_name = f"embeddings_{to_model_tag(model_tag)}"
-
-        # Open table with legacy fallback (older deployments used provider model_name for naming)
-        try:
-            table = conn.open_table(table_name)
-        except Exception as primary_exc:  # noqa: BLE001
-            try:
-                cfg, _ = resolve_embedding_adapter(model_tag)
-                legacy_table_name = f"embeddings_{to_model_tag(cfg.model_name)}"
-                table = conn.open_table(legacy_table_name)
-                logger.warning(
-                    "Primary embeddings table '%s' not found (%s); falling back to legacy table '%s'",
-                    table_name,
-                    primary_exc,
-                    legacy_table_name,
-                )
-                table_name = legacy_table_name
-            except Exception:
-                # Keep the original open_table error for deterministic failure semantics
-                # (tests and callers rely on this message/class when storage is unavailable).
-                raise primary_exc
+        vector_store = get_vector_index_store()
 
         # Check and create index if needed (using storage abstraction)
-        vector_store = get_vector_index_store()
         index_result_obj = vector_store.create_index(model_tag, readonly)
         index_status = index_result_obj.status
         index_advice = index_result_obj.advice
-
-        # Build LanceDB search query using query builder pattern
-        search_query = table.search(
-            query_vector,
-            vector_column_name="vector",
-        )
 
         # Convert API-facing dict filters into abstract FilterExpression
         filter_expr: Optional[FilterExpression] = None
@@ -130,20 +96,16 @@ def search_dense_engine(
         if filter_expr is not None:
             validate_filter_depth(filter_expr)
 
-        if filter_expr is not None:
-            backend_filter = vector_store.build_filter_expression(
-                filters=filter_expr,
-                user_id=user_id,
-                is_admin=is_admin,
-            )
-            if backend_filter:
-                search_query = search_query.where(backend_filter)
-
-        # Limit results
-        search_query = search_query.limit(top_k)
-
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        raw_results = query_to_list(search_query)
+        # Execute vector search using abstraction layer (by model_tag)
+        raw_results = vector_store.search_vectors_by_model(
+            model_tag=model_tag,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=filter_expr,
+            vector_column_name="vector",
+            user_id=user_id,
+            is_admin=is_admin,
+        )
 
         # OPTIMIZATION: Use list comprehension instead of iterrows()
         # Convert raw results to SearchResult objects
@@ -220,23 +182,10 @@ async def search_dense_engine_async(
     try:
         vector_store = get_vector_index_store()
 
-        # Build primary table name
-        from ..LanceDB.model_tag_utils import to_model_tag
-
-        table_name = f"embeddings_{to_model_tag(model_tag)}"
-
         # Check and create index if needed (using storage abstraction)
-        index_status = "ok"
-        index_advice = None
-        if not readonly:
-            index_result = vector_store.create_index(model_tag, readonly=False)
-            # Parse status and advice from combined result
-            if "advice:" in index_result:
-                index_status, index_advice = index_result.split("advice:", 1)
-                index_status = index_status.strip()
-                index_advice = index_advice.strip()
-            else:
-                index_status = index_result
+        index_result_obj = vector_store.create_index(model_tag, readonly)
+        index_status = index_result_obj.status
+        index_advice = index_result_obj.advice
 
         # Convert API-facing dict filters into abstract FilterExpression
         filter_expr: Optional[FilterExpression] = None
@@ -273,13 +222,15 @@ async def search_dense_engine_async(
         if filter_expr is not None:
             validate_filter_depth(filter_expr)
 
-        # Execute async vector search
-        raw_results = await vector_store.search_vectors_async(
-            table_name=table_name,
+        # Execute async vector search using abstraction layer (by model_tag)
+        raw_results = await vector_store.search_vectors_by_model_async(
+            model_tag=model_tag,
             query_vector=query_vector,
             top_k=top_k,
             filters=filter_expr,
             vector_column_name="vector",
+            user_id=user_id,
+            is_admin=is_admin,
         )
 
         # Convert raw results to SearchResult objects

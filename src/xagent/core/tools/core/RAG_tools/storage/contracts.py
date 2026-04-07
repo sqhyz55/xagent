@@ -17,6 +17,7 @@ from typing import (
     Optional,
     Protocol,
     Sequence,
+    Tuple,
     Union,
     runtime_checkable,
 )
@@ -453,6 +454,26 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
+    def open_embeddings_table(self, model_tag: str) -> Tuple[Any, str]:
+        """Open embeddings table with legacy fallback support.
+
+        Tries the primary Hub ID-based table name first, then falls back
+        to legacy provider-based naming if the primary doesn't exist.
+
+        This method encapsulates the legacy fallback logic for embeddings tables,
+        providing a single source of truth for table name resolution.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+
+        Returns:
+            Tuple of (table_object, actual_table_name_used).
+
+        Raises:
+            DatabaseOperationError: If neither primary nor legacy table exists.
+        """
+
+    @abstractmethod
     def iter_batches(
         self,
         table_name: str,
@@ -615,6 +636,82 @@ class VectorIndexStore(ABC):
             IndexResult containing status, advice, and FTS enabled state.
         """
 
+    @abstractmethod
+    def search_vectors(
+        self,
+        table_name: str,
+        query_vector: List[float],
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        vector_column_name: str = "vector",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Execute vector search (sync).
+
+        Args:
+            table_name: Name of embeddings table to search.
+            query_vector: Query vector for similarity search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            vector_column_name: Name of vector column (default "vector").
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _distance: Distance score (lower is better)
+            - metadata: Additional metadata
+        """
+
+    def search_vectors_by_model(
+        self,
+        model_tag: str,
+        query_vector: List[float],
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        vector_column_name: str = "vector",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Convenience method: search vectors by model_tag with automatic table resolution.
+
+        This method combines open_embeddings_table() + search_vectors() for
+        simpler API when searching by model_tag.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            query_vector: Query vector for similarity search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            vector_column_name: Name of vector column (default "vector").
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _distance: Distance score (lower is better)
+            - metadata: Additional metadata
+        """
+        _table, table_name = self.open_embeddings_table(model_tag)
+        return self.search_vectors(
+            table_name=table_name,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=filters,
+            vector_column_name=vector_column_name,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
     # --- Async variants (Phase 1A Option C: Hybrid approach) ---
 
     @abstractmethod
@@ -644,6 +741,48 @@ class VectorIndexStore(ABC):
             - _distance: Distance score (lower is better)
             - metadata: Additional metadata
         """
+
+    async def search_vectors_by_model_async(
+        self,
+        model_tag: str,
+        query_vector: List[float],
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        vector_column_name: str = "vector",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Convenience method: search vectors by model_tag with automatic table resolution (async).
+
+        This method combines open_embeddings_table() + search_vectors_async() for
+        simpler API when searching by model_tag.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            query_vector: Query vector for similarity search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            vector_column_name: Name of vector column (default "vector").
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _distance: Distance score (lower is better)
+            - metadata: Additional metadata
+        """
+        _table, table_name = self.open_embeddings_table(model_tag)
+        return await self.search_vectors_async(
+            table_name=table_name,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=filters,
+            vector_column_name=vector_column_name,
+        )
 
     @abstractmethod
     async def search_fts_async(
@@ -675,6 +814,47 @@ class VectorIndexStore(ABC):
         Raises:
             DatabaseOperationError: If FTS index is not configured or search fails.
         """
+
+    async def search_fts_by_model_async(
+        self,
+        model_tag: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        text_column_name: str = "text",
+    ) -> List[Dict[str, Any]]:
+        """Convenience method: search FTS by model_tag with automatic table resolution.
+
+        This method combines open_embeddings_table() + search_fts_async() for
+        simpler API when searching by model_tag.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            query_text: Query text for full-text search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            text_column_name: Name of text column with FTS index (default "text").
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _score: TF-IDF score (higher is better)
+            - metadata: Additional metadata
+
+        Raises:
+            DatabaseOperationError: If FTS index is not configured or search fails.
+        """
+        _table, table_name = self.open_embeddings_table(model_tag)
+        return await self.search_fts_async(
+            table_name=table_name,
+            query_text=query_text,
+            top_k=top_k,
+            filters=filters,
+            text_column_name=text_column_name,
+        )
 
     @abstractmethod
     async def iter_batches_async(

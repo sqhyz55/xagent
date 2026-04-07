@@ -10,9 +10,8 @@ Phase 1A Option C: Provides both sync and async search functions.
 import logging
 from typing import Any, Dict, List, Optional
 
-from ..core.exceptions import DocumentValidationError, VectorValidationError
+from ..core.exceptions import DocumentValidationError
 from ..core.schemas import DenseSearchResponse, IndexStatus
-from ..storage.factory import get_vector_store_raw_connection
 from ..vector_storage.vector_manager import validate_query_vector
 from .search_engine import search_dense_engine
 
@@ -67,17 +66,9 @@ def search_dense(
     if top_k <= 0 or top_k > 1000:
         raise DocumentValidationError("top_k must be between 1 and 1000")
 
-    # Validate query vector (with model and dimension check)
-    try:
-        # Get database connection for validation
-        conn = get_vector_store_raw_connection()
-        validate_query_vector(query_vector, model_tag, conn=conn)
-    except Exception as e:
-        if isinstance(e, VectorValidationError):
-            raise
-        # If connection fails, fall back to basic validation
-        logger.warning(f"Could not validate with database connection: {str(e)}")
-        validate_query_vector(query_vector)
+    # Validate query vector (basic validation without DB connection)
+    # Note: Dimension validation is handled by the storage abstraction layer during search
+    validate_query_vector(query_vector)
 
     # Execute search using search engine
     search_results, index_status, index_advice = search_dense_engine(
@@ -183,16 +174,9 @@ async def search_dense_async(
     if top_k <= 0 or top_k > 1000:
         raise DocumentValidationError("top_k must be between 1 and 1000")
 
-    # Validate query vector
-    try:
-        # Get database connection for validation
-        conn = get_vector_store_raw_connection()
-        validate_query_vector(query_vector, model_tag, conn=conn)
-    except Exception as e:
-        if isinstance(e, VectorValidationError):
-            raise
-        logger.warning(f"Could not validate with database connection: {str(e)}")
-        validate_query_vector(query_vector)
+    # Validate query vector (basic validation without DB connection)
+    # Note: Dimension validation is handled by the storage abstraction layer during search
+    validate_query_vector(query_vector)
 
     # Import async search engine
     from .search_engine import search_dense_engine_async

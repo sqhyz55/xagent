@@ -521,7 +521,9 @@ class TestSearchDense:
             with (
                 patch.object(search_dense_module, "search_dense_engine") as mock_engine,
                 patch.object(search_dense_module, "validate_query_vector"),
-                patch("xagent.core.tools.core.RAG_tools.storage.factory.get_vector_store_raw_connection"),
+                patch(
+                    "xagent.core.tools.core.RAG_tools.storage.factory.get_vector_store_raw_connection"
+                ),
             ):
                 mock_engine.return_value = ([], engine_status, "test advice")
 
@@ -557,11 +559,11 @@ class TestSearchDenseIntegration:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            write_vectors_to_db,
-        )
         from xagent.core.tools.core.RAG_tools.storage.factory import (
             get_vector_store_raw_connection,
+        )
+        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
+            write_vectors_to_db,
         )
 
         conn = get_vector_store_raw_connection()
@@ -644,11 +646,11 @@ class TestSearchDenseIntegration:
         from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
             ensure_embeddings_table,
         )
-        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
-            write_vectors_to_db,
-        )
         from xagent.core.tools.core.RAG_tools.storage.factory import (
             get_vector_store_raw_connection,
+        )
+        from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
+            write_vectors_to_db,
         )
 
         conn = get_vector_store_raw_connection()

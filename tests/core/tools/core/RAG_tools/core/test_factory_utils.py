@@ -45,8 +45,7 @@ def test_get_default_index_policy() -> None:
 
     Note: This function returns static defaults only. The actual dynamic index type
     selection based on data scale (HNSW for 50k-10M rows, IVFPQ for >=10M rows) is
-    implemented in IndexManager.check_and_create_index() and comprehensively tested
-    in tests/vector_storage/test_index_manager.py.
+    implemented in storage.lancedb_stores.LanceDBVectorIndexStore.create_index().
     """
     threshold, index_type = get_default_index_policy()
 

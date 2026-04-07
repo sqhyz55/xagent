@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Optional, Sequence, cast
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, cast
 
 import lancedb
 import pyarrow as pa  # type: ignore
@@ -15,7 +15,7 @@ from lancedb.db import DBConnection
 from xagent.providers.vector_store.lancedb import get_connection_from_env
 
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
-from ..core.schemas import CollectionInfo
+from ..core.schemas import CollectionInfo, IndexResult
 from ..LanceDB.schema_manager import ensure_documents_table
 from ..utils.lancedb_query_utils import query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
@@ -362,6 +362,66 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             logger.debug("Failed to get vector dimension for %s: %s", table_name, exc)
         return None
 
+    def open_embeddings_table(self, model_tag: str) -> Tuple[Any, str]:
+        """Open embeddings table with legacy fallback support.
+
+        Tries the primary Hub ID-based table name first, then falls back
+        to legacy provider-based naming if the primary doesn't exist.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+
+        Returns:
+            Tuple of (table_object, actual_table_name_used).
+
+        Raises:
+            DatabaseOperationError: If neither primary nor legacy table exists.
+        """
+        from ..core.exceptions import DatabaseOperationError
+        from ..LanceDB.model_tag_utils import to_model_tag
+        from ..utils.model_resolver import resolve_embedding_adapter
+
+        conn = self._get_connection()
+        primary_table_name = f"embeddings_{to_model_tag(model_tag)}"
+
+        # Try primary table first
+        try:
+            table = conn.open_table(primary_table_name)
+            return table, primary_table_name
+        except Exception as primary_exc:
+            last_error = primary_exc
+
+        # Try legacy fallback
+        legacy_table_name: Optional[str] = None
+        try:
+            cfg, _ = resolve_embedding_adapter(model_tag)
+            legacy_table_name = f"embeddings_{to_model_tag(cfg.model_name)}"
+        except Exception:
+            legacy_table_name = None
+
+        if legacy_table_name and legacy_table_name != primary_table_name:
+            try:
+                table = conn.open_table(legacy_table_name)
+                logger.info(
+                    "Using legacy embeddings table '%s' for model_tag='%s'. "
+                    "Consider migrating to '%s' for consistency.",
+                    legacy_table_name,
+                    model_tag,
+                    primary_table_name,
+                )
+                return table, legacy_table_name
+            except Exception as legacy_exc:
+                last_error = legacy_exc
+
+        # Neither table exists
+        error_msg = f"Embeddings table not found for model_tag='{model_tag}'"
+        if primary_table_name:
+            error_msg += f" (tried: '{primary_table_name}'"
+            if legacy_table_name:
+                error_msg += f", '{legacy_table_name}'"
+            error_msg += ")"
+        raise DatabaseOperationError(error_msg) from last_error
+
     def delete_collection_data(
         self,
         collection_name: str,
@@ -522,9 +582,8 @@ class LanceDBVectorIndexStore(VectorIndexStore):
     def create_index(self, model_tag: str, readonly: bool = False) -> IndexResult:
         """Create or check vector index for embeddings table.
 
-        This method implements the full index management logic previously in
-        IndexManager, including automatic index type selection based on row count
-        and FTS index management.
+        This method implements full index management logic including automatic
+        index type selection based on row count and FTS index management.
 
         Args:
             model_tag: Model tag for the embeddings table.
@@ -1119,6 +1178,73 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 )
                 raise
 
+    # --- Sync search methods (Phase 1A Option C) ---
+
+    def search_vectors(
+        self,
+        table_name: str,
+        query_vector: List[float],
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        vector_column_name: str = "vector",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Execute vector search using sync LanceDB API.
+
+        Returns native Arrow format converted to list of dicts.
+        """
+        # Log search parameters for performance tracking
+        log_performance(
+            "search_vectors_start",
+            top_k=top_k,
+            vector_dim=len(query_vector),
+            table_name=table_name,
+            has_filters=filters is not None,
+        )
+
+        conn = self._get_connection()
+
+        # Open table (no legacy fallback at abstraction layer - handled by caller)
+        try:
+            table = conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s': %s", table_name, exc)
+            return []
+
+        # Build filter expression
+        backend_filter = self.build_filter_expression(
+            filters, user_id=user_id, is_admin=is_admin
+        )
+
+        # Build search query
+        search_query = table.search(
+            query_vector,
+            vector_column_name=vector_column_name,
+        )
+
+        if backend_filter:
+            search_query = search_query.where(backend_filter)
+
+        search_query = search_query.limit(top_k)
+
+        try:
+            # Use query_to_list for three-tier fallback (to_arrow, to_list, to_pandas)
+            raw_results = query_to_list(search_query)
+
+            # Log performance metric
+            log_performance(
+                "search_vectors_complete",
+                result_count=len(raw_results),
+                table_name=table_name,
+            )
+            return raw_results
+
+        except Exception as exc:
+            logger.error("Sync vector search failed: %s", exc)
+            return []
+
     # --- Async method implementations (Phase 1A Option C) ---
 
     async def search_vectors_async(
@@ -1511,7 +1637,7 @@ class LanceDBIngestionStatusStore(IngestionStatusStore):
             async with self._async_lock:
                 if self._async_conn is None:
                     self._async_conn = await lancedb.connect_async(  # type: ignore[attr-defined]
-                        get_connection_from_env().uri
+                        get_connection_from_env().uri  # type: ignore[attr-defined]
                     )
         return self._async_conn
 

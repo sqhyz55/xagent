@@ -35,13 +35,13 @@ from xagent.core.tools.core.RAG_tools.management.collections import (
 )
 from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
 from xagent.core.tools.core.RAG_tools.retrieval.search_engine import search_dense_engine
+from xagent.core.tools.core.RAG_tools.storage.factory import (
+    get_vector_store_raw_connection,
+)
 from xagent.core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
-)
-from xagent.core.tools.core.RAG_tools.storage.factory import (
-    get_vector_store_raw_connection,
 )
 from xagent.web.api.kb import delete_collection_api, list_collections_api
 

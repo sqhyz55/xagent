@@ -50,6 +50,7 @@ class TestSearchSparse:
         mock_vector_store = Mock()
         # Return IndexResult object instead of string
         from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
         mock_vector_store.create_index.return_value = IndexResult(
             status="index_ready",
             advice=None,
@@ -139,6 +140,7 @@ class TestSearchSparse:
             mock_vector_store = Mock()
             # Return IndexResult object instead of string
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
             mock_vector_store.create_index.return_value = IndexResult(
                 status="index_ready",
                 advice=None,
@@ -214,6 +216,7 @@ class TestSearchSparse:
             mock_vector_store = Mock()
             # Return IndexResult object instead of string
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
             mock_vector_store.create_index.return_value = IndexResult(
                 status="index_ready",
                 advice=None,
@@ -266,6 +269,7 @@ class TestSearchSparse:
             mock_vector_store = Mock()
             # Return IndexResult object instead of string
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
             mock_vector_store.create_index.return_value = IndexResult(
                 status="index_ready",
                 advice=None,
@@ -327,6 +331,7 @@ class TestSearchSparse:
             mock_vector_store = Mock()
             # Return IndexResult object instead of string
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
             mock_vector_store.create_index.return_value = IndexResult(
                 status="index_ready",
                 advice=None,
@@ -441,6 +446,7 @@ class TestSearchSparse:
             mock_vector_store = Mock()
             # Return IndexResult object instead of string
             from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
             mock_vector_store.create_index.return_value = IndexResult(
                 status="index_ready",
                 advice=None,
@@ -528,6 +534,7 @@ class TestSearchSparse:
         mock_vector_store = Mock()
         # Return IndexResult object instead of string
         from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
         mock_vector_store.create_index.return_value = IndexResult(
             status="index_ready",
             advice=None,
@@ -591,6 +598,7 @@ class TestSearchSparse:
         mock_vector_store = Mock()
         # Return IndexResult object instead of string
         from xagent.core.tools.core.RAG_tools.core.schemas import IndexResult
+
         mock_vector_store.create_index.return_value = IndexResult(
             status="index_ready",
             advice=None,

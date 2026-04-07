@@ -40,9 +40,7 @@ from ..core.schemas import (
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..LanceDB.schema_manager import ensure_embeddings_table
 from ..storage.factory import get_vector_index_store
-from ..utils.lancedb_query_utils import query_to_list
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
-from ..utils.user_permissions import UserPermissions
 
 logger = logging.getLogger(__name__)
 
@@ -113,65 +111,6 @@ def _is_non_recoverable_merge_error(error: Exception) -> bool:
     return is_non_recoverable
 
 
-def _open_embeddings_table(conn: Any, model_id: str) -> tuple[Any, str]:
-    """Open an embeddings table for model_id with legacy fallback.
-
-    This function attempts to open the Hub ID-based table first. If it doesn't
-    exist, it falls back to the legacy table name. No automatic migration is
-    performed - migration should be done explicitly via migrate_embeddings_table().
-
-    Returns:
-        (table, table_name_used)
-
-    Raises:
-        VectorValidationError: If model_id is empty or no table exists.
-    """
-    cleaned = (model_id or "").strip()
-    if not cleaned:
-        raise VectorValidationError("model_id must be a non-empty string")
-
-    primary_table_name = f"embeddings_{to_model_tag(cleaned)}"
-
-    # 1) Fast path: primary exists
-    try:
-        return conn.open_table(primary_table_name), primary_table_name
-    except Exception as primary_exc:  # noqa: BLE001
-        last_error: Exception | None = primary_exc
-
-    # 2) Legacy fallback (no migration)
-    legacy_table_name: str | None = None
-    try:
-        from ..utils.model_resolver import resolve_embedding_adapter
-
-        cfg, _ = resolve_embedding_adapter(cleaned)
-        legacy_table_name = f"embeddings_{to_model_tag(cfg.model_name)}"
-    except Exception:
-        legacy_table_name = None
-
-    if legacy_table_name:
-        try:
-            legacy_table = conn.open_table(legacy_table_name)
-            logger.info(
-                "Using legacy embeddings table '%s' for hub_id=%s. "
-                "To migrate to the new table name, run migrate_embeddings_table('%s')",
-                legacy_table_name,
-                cleaned,
-                cleaned,
-            )
-            return legacy_table, legacy_table_name
-        except Exception as legacy_exc:  # noqa: BLE001
-            last_error = legacy_exc
-
-    # 3) Neither table exists
-    error_msg = f"Embeddings table not found for model_id='{cleaned}'"
-    if primary_table_name:
-        error_msg += f" (tried: '{primary_table_name}'"
-        if legacy_table_name:
-            error_msg += f", '{legacy_table_name}'"
-        error_msg += ")"
-    raise VectorValidationError(error_msg) from last_error
-
-
 def validate_query_vector(
     query_vector: List[float],
     model_tag: Optional[str] = None,
@@ -181,12 +120,19 @@ def validate_query_vector(
 ) -> None:
     """Validate query vector format and content.
 
+    This function performs basic validation of the query vector without
+    requiring database access. Dimension validation is handled by the
+    storage abstraction layer during search operations.
+
     Args:
         query_vector: Query vector to validate
-        model_tag: Optional model tag for dimension validation
-        conn: Optional LanceDB connection for validation
-        user_id: Optional user ID for filtering (for multi-tenancy)
-        is_admin: Whether user has admin privileges
+        model_tag: Optional model tag (for logging purposes only)
+        conn: Deprecated - no longer used
+        user_id: Deprecated - no longer used
+        is_admin: Deprecated - no longer used
+
+    Raises:
+        VectorValidationError: If vector validation fails
     """
     if not isinstance(query_vector, list):
         raise VectorValidationError("query_vector must be a list")
@@ -209,123 +155,17 @@ def validate_query_vector(
                 "query_vector contains invalid values (NaN or infinity)"
             )
 
-    if model_tag and conn:
-        # First validate model_tag format and table existence
-        normalized_model_tag = to_model_tag(model_tag)
-        validate_embed_model(conn, normalized_model_tag)
-
-        table_name = f"embeddings_{normalized_model_tag}"
-        try:
-            table = conn.open_table(table_name)
-            expected_dim = None
-
-            # Method 1: Try to get dimension from schema (for fixed-size vector columns)
-            try:
-                vector_field = table.schema.field("vector")
-                # Safely check if list_size attribute exists (fixed-size list)
-                list_size = getattr(vector_field.type, "list_size", None)
-                if list_size is not None:
-                    expected_dim = list_size
-            except (AttributeError, KeyError) as e:
-                logger.debug(
-                    "Could not get vector dimension from schema for %s: %s. Will try to infer from data.",
-                    table_name,
-                    e,
-                )
-
-            # Method 2: If schema doesn't have fixed dimension, infer from actual data
-            if expected_dim is None:
-                expected_dim = get_stored_vector_dimension(
-                    conn, model_tag, user_id, is_admin
-                )
-
-            # Perform dimension validation if we got a dimension
-            if expected_dim is not None:
-                if len(query_vector) != expected_dim:
-                    raise VectorValidationError(
-                        f"Query vector dimension {len(query_vector)} does not match stored dimension {expected_dim} for model '{model_tag}'"
-                    )
-            else:
-                logger.warning(
-                    "Could not determine expected vector dimension for %s "
-                    "(table may be empty or schema is variable-length). "
-                    "Skipping dimension consistency check.",
-                    table_name,
-                )
-        except VectorValidationError:
-            # Re-raise validation errors (don't catch them)
-            raise
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Failed to perform dimension validation for %s: %s. Skipping dimension consistency check.",
-                table_name,
-                e,
-            )
-
-
-def validate_embed_model(conn: Any, model_tag: str) -> None:
-    """Validate embed model exists and is accessible."""
-    import re
-
-    # Validate model_tag format (cannot contain characters that affect table name)
-    if not re.match(r"^[a-zA-Z0-9_-]+$", model_tag):
-        raise VectorValidationError(
-            f"Invalid model_tag format: {model_tag}. Only alphanumeric, underscore, and hyphen allowed."
-        )
-
-    # Validate that at least one candidate table exists (primary hub-id naming, legacy fallback).
-    try:
-        _, used_name = _open_embeddings_table(conn, model_tag)
-        logger.debug("validate_embed_model resolved table: %s", used_name)
-    except VectorValidationError:
-        raise
-
-
-def get_stored_vector_dimension(
-    conn: Any,
-    model_tag: str,
-    user_id: Optional[int] = None,
-    is_admin: bool = False,
-) -> Optional[int]:
-    """Get the vector dimension for a model from database.
-
-    Args:
-        conn: LanceDB connection
-        model_tag: Model tag to look up
-        user_id: Optional user ID for filtering (for multi-tenancy)
-        is_admin: Whether user has admin privileges
-
-    Returns:
-        Vector dimension if found, None otherwise
-    """
-    try:
-        table, _ = _open_embeddings_table(conn, model_tag)
-
-        # Apply user filter for multi-tenancy
-        user_filter_expr = UserPermissions.get_user_filter(user_id, is_admin)
-
-        # Query one record to get dimension, with optional user filtering
-        # OPTIMIZATION: Use unified query_to_list() with three-tier fallback
-        if user_filter_expr:
-            sample_list = query_to_list(table.search().where(user_filter_expr).limit(1))
-        else:
-            sample_list = query_to_list(table.head(1))
-
-        if sample_list:
-            vector_dim = sample_list[0].get("vector_dimension")
-            if vector_dim is not None:
-                return int(vector_dim)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(
-            "Could not get stored vector dimension for %s: %s. This is expected if the table is new or empty.",
-            model_tag,
-            e,
-        )
-        pass
-    return None
-
 
 def _safe_int_conversion(value: Any, default: int = 0) -> int:
+    """Safely convert value to int, handling None and NaN.
+
+    Args:
+        value: Value to convert (can be None, NaN, int, float, etc.)
+        default: Default value if conversion fails
+
+    Returns:
+        Integer value, or default if value is None/NaN/not convertible
+    """
     """Safely convert value to int, handling None and NaN.
 
     Args:
@@ -894,7 +734,12 @@ def _process_model_embeddings(
     index_status: str = IndexOperation.SKIPPED.value
     if create_index:
         try:
-            index_status = vector_store.create_index(model_tag, readonly=False)
+            from ..core.schemas import IndexResult
+
+            index_result_obj: IndexResult = vector_store.create_index(
+                model_tag, readonly=False
+            )
+            index_status = index_result_obj.status
         except Exception as index_error:  # noqa: BLE001
             logger.warning("Failed to create index for %s: %s", table_name, index_error)
             index_status = IndexOperation.FAILED.value
@@ -935,7 +780,7 @@ def write_vectors_to_db(
             total_upserted += upserted
             index_statuses.append(idx_status)
 
-        # Determine overall index status (map index_manager strings to IndexOperation)
+        # Determine overall index status (map create_index result strings to IndexOperation)
         if "index_building" in index_statuses:
             overall_index_status = IndexOperation.CREATED
         elif "index_ready" in index_statuses:
