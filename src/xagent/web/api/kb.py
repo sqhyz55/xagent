@@ -63,6 +63,7 @@ from ..config import (
     sanitize_path_component,
 )
 from ..models.database import get_db
+from ..models.uploaded_file import UploadedFile
 from ..models.user import User
 from ..services.kb_collection_service import (
     delete_collection_physical_dir,
@@ -593,6 +594,7 @@ async def ingest_cloud(
 @handle_kb_exceptions
 async def list_collections_api(
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> ListCollectionsResult:
     """List all collections with their statistics."""
     kb_collections_timeout_seconds = 15
@@ -602,6 +604,46 @@ async def list_collections_api(
             list_collections(user_id=int(_user.id), is_admin=bool(_user.is_admin)),
             timeout=kb_collections_timeout_seconds,
         )
+
+        # Fallback: when LanceDB documents table has legacy decode issues, collection
+        # stats can still be built from chunks/parses but document_names may be empty.
+        # In that case, fill names from UploadedFile rows under user_{id}/{collection}/.
+        if hasattr(db, "query") and result.collections:
+            collection_name_set = {c.name for c in result.collections}
+            uploaded_records = (
+                db.query(UploadedFile)
+                .filter(UploadedFile.user_id == int(_user.id))
+                .all()
+            )
+            fallback_names: Dict[str, set[str]] = {}
+            user_segment = f"user_{int(_user.id)}"
+            for rec in uploaded_records:
+                storage_path = Path(str(getattr(rec, "storage_path", "")))
+                parts = storage_path.parts
+                if user_segment not in parts:
+                    continue
+                user_idx = parts.index(user_segment)
+                if user_idx + 2 >= len(parts):
+                    continue
+                collection_name = parts[user_idx + 1]
+                if collection_name not in collection_name_set:
+                    continue
+                fallback_names.setdefault(collection_name, set()).add(
+                    str(getattr(rec, "filename", "")).strip()
+                )
+
+            for collection in result.collections:
+                if collection.document_names:
+                    continue
+                fallback = sorted(
+                    name for name in fallback_names.get(collection.name, set()) if name
+                )
+                if fallback:
+                    collection.document_names = fallback
+                    # Keep UI card counters aligned with visible files when docs table is unreadable.
+                    if collection.documents == 0:
+                        collection.documents = len(fallback)
+
         return result
     except asyncio.TimeoutError:
         logger.error(
