@@ -43,6 +43,7 @@ from ...core.tools.core.RAG_tools.core.schemas import (
 from ...core.tools.core.RAG_tools.management.collections import (
     delete_collection,
     list_collections,
+    list_documents,
 )
 from ...core.tools.core.RAG_tools.parse.parse_display import (
     paginate_parse_results,
@@ -643,6 +644,36 @@ async def list_collections_api(
                     # Keep UI card counters aligned with visible files when docs table is unreadable.
                     if collection.documents == 0:
                         collection.documents = len(fallback)
+                    continue
+
+                # Secondary fallback for web-ingested docs (no UploadedFile rows):
+                # derive names from list_documents; prefer source basename, then doc_id.
+                try:
+                    doc_list = list_documents(
+                        collection=collection.name,
+                        user_id=int(_user.id),
+                        is_admin=bool(_user.is_admin),
+                    )
+                    derived_names: set[str] = set()
+                    for summary in doc_list.documents:
+                        source_path = getattr(summary, "source_path", None)
+                        if isinstance(source_path, str) and source_path.strip():
+                            derived_names.add(Path(source_path).name)
+                            continue
+                        raw_doc_id = getattr(summary, "doc_id", None)
+                        if isinstance(raw_doc_id, str) and raw_doc_id.strip():
+                            derived_names.add(raw_doc_id)
+
+                    if derived_names:
+                        collection.document_names = sorted(derived_names)
+                        if collection.documents == 0:
+                            collection.documents = len(derived_names)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Secondary document name fallback failed for '%s': %s",
+                        collection.name,
+                        exc,
+                    )
 
         return result
     except asyncio.TimeoutError:
