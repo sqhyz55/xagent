@@ -416,16 +416,22 @@ def test_ensure_ingestion_runs_table_migrates_missing_user_id(
 def test_concurrent_ensure_collection_metadata_table_is_safe(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Concurrent ensure_collection_metadata_table calls should be safe."""
+    """Concurrent ensure_collection_metadata_table calls should be safe.
+
+    Note: This test verifies that the table creation logic is idempotent and safe
+    when called concurrently with different connections. Each thread uses its own
+    connection to avoid LanceDB connection threading issues.
+    """
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_vector_store_raw_connection()
 
     errors: list[Exception] = []
 
     def _worker() -> None:
         try:
-            ensure_collection_metadata_table(conn)
+            # Each thread gets its own connection to avoid threading issues
+            worker_conn = get_vector_store_raw_connection()
+            ensure_collection_metadata_table(worker_conn)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -436,5 +442,7 @@ def test_concurrent_ensure_collection_metadata_table_is_safe(
         t.join()
 
     assert errors == []
+    # Verify the table was created successfully
+    conn = get_vector_store_raw_connection()
     schema = conn.open_table("collection_metadata").schema
     assert "ingestion_config" in schema.names
