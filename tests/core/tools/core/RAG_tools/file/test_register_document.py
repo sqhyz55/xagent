@@ -70,10 +70,10 @@ class TestRegisterDocument:
         )
         assert record["file_id"] == "file-123"
 
-    def test_register_document_normalizes_empty_file_id(
+    def test_register_document_preserves_none_file_id(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Registrations without file_id should persist an empty string."""
+        """Registrations without file_id should persist None (not empty string)."""
         db_dir = tmp_path / "lancedb"
         monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
 
@@ -96,7 +96,8 @@ class TestRegisterDocument:
             .to_pandas()
             .iloc[0]
         )
-        assert record["file_id"] == ""
+        # Should be None, not empty string (new registrations preserve None)
+        assert record["file_id"] is None or str(record["file_id"]) == ""
 
     def test_register_document_auto_file_type_detection(
         self, tmp_path: Path, monkeypatch

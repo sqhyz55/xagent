@@ -65,6 +65,18 @@ DEFAULT_VECTOR_STORE_SCAN_LIMIT: Final[int] = 10_000
 DEFAULT_VECTOR_STORE_EXTENDED_SCAN_LIMIT: Final[int] = 1_000_000
 """Higher limit for operations like listing all documents in a collection or deleting a collection."""
 
+DEFAULT_BACKFILL_BATCH_SIZE: Final[int] = 1000
+"""Default batch size for backfill operations (rows per iteration).
+
+Used when backfilling legacy data (e.g., NULL user_id recovery from source_path).
+"""
+
+DEFAULT_BACKFILL_MAX_ITERATIONS: Final[int] = 100
+"""Maximum iterations for backfill loops to prevent infinite loops.
+
+Safety limit for backfill operations that process data in batches.
+"""
+
 # Reserved int64 lower bound for internal system sentinel values.
 MIN_INT64: Final[int] = -(2**63)
 """Minimum 64-bit integer, used as internal sentinel value."""

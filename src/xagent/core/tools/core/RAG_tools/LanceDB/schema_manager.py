@@ -8,6 +8,8 @@ from typing import Protocol
 import pyarrow as pa  # type: ignore
 from lancedb.db import DBConnection
 
+from ..core.config import DEFAULT_BACKFILL_BATCH_SIZE, DEFAULT_BACKFILL_MAX_ITERATIONS
+
 
 class DataTypeLike(Protocol):
     """Structural type placeholder for pyarrow DataType-like values."""
@@ -134,13 +136,14 @@ def _add_user_id_column(conn: DBConnection, table_name: str) -> None:
         logger.warning("Failed to check/migrate '%s' table schema: %s", table_name, e)
 
 
-def _backfill_documents_file_id_non_null(conn: DBConnection) -> None:
-    """Best-effort repair for legacy ``documents.file_id`` null values.
+def _backfill_documents_file_id_to_null(conn: DBConnection) -> None:
+    """Convert legacy empty string file_id values to None for consistency.
 
-    Some historical datasets may contain null ``file_id`` values while newer
-    Lance decoding paths treat this field as non-nullable during batch decode.
-    Backfilling nulls to empty strings keeps read paths resilient and aligns
-    with API semantics where blank file_id is treated as missing.
+    Previous versions normalized NULL file_id to empty strings. This function
+    reverses that to maintain consistency with main branch, where None is the
+    standard representation for "no file_id".
+
+    This function is idempotent and safe to run concurrently.
     """
     table_name = "documents"
     if not _table_exists(conn, table_name):
@@ -150,10 +153,24 @@ def _backfill_documents_file_id_non_null(conn: DBConnection) -> None:
         table = conn.open_table(table_name)
         if "file_id" not in table.schema.names:
             return
-        table.update("file_id IS NULL", {"file_id": ""})
+
+        # Check if there are any empty string file_id values to backfill
+        empty_string_rows = table.search().where("file_id = ''").limit(1).to_list()
+        if not empty_string_rows:
+            # No backfill needed
+            return
+
+        # Convert empty strings to NULL
+        table.update("file_id = ''", {"file_id": None})
+
+        # Log success for observability
+        logger.info(
+            "Backfilled empty string file_id values to NULL in '%s'",
+            table_name,
+        )
     except Exception as exc:  # noqa: BLE001 - best effort compatibility repair
         logger.warning(
-            "Failed to backfill null file_id values in '%s': %s",
+            "Failed to backfill empty string file_id values to NULL in '%s': %s",
             table_name,
             exc,
         )
@@ -177,6 +194,8 @@ def _backfill_documents_user_id_from_source_path(conn: DBConnection) -> None:
     paths like ``.../user_{id}/{collection}/file``. Recovering user_id keeps
     multi-tenant filtering consistent and restores document visibility for the
     owning user without broadening access permissions.
+
+    This function is idempotent and safe to run concurrently.
     """
     table_name = "documents"
     if not _table_exists(conn, table_name):
@@ -184,15 +203,31 @@ def _backfill_documents_user_id_from_source_path(conn: DBConnection) -> None:
 
     try:
         table = conn.open_table(table_name)
-        if "user_id" not in table.schema.names or "source_path" not in table.schema.names:
+        if (
+            "user_id" not in table.schema.names
+            or "source_path" not in table.schema.names
+        ):
             return
 
-        while True:
-            pending_rows = table.search().where("user_id IS NULL").limit(1000).to_list()
+        from ..utils.string_utils import escape_lancedb_string
+
+        total_updated = 0
+        iteration = 0
+
+        while iteration < DEFAULT_BACKFILL_MAX_ITERATIONS:
+            iteration += 1
+            pending_rows = (
+                table.search()
+                .where("user_id IS NULL")
+                .limit(DEFAULT_BACKFILL_BATCH_SIZE)
+                .to_list()
+            )
             if not pending_rows:
+                # No more rows to process
                 break
 
-            updated_in_batch = 0
+            # Batch collect updates to avoid N+1 problem
+            updates = []
             for row in pending_rows:
                 source_path = row.get("source_path")
                 if not isinstance(source_path, str) or not source_path:
@@ -205,16 +240,48 @@ def _backfill_documents_user_id_from_source_path(conn: DBConnection) -> None:
                 if not isinstance(doc_id, str) or not isinstance(collection, str):
                     continue
 
-                escaped_doc_id = doc_id.replace("'", "''")
-                escaped_collection = collection.replace("'", "''")
-                table.update(
-                    f"collection = '{escaped_collection}' and doc_id = '{escaped_doc_id}' and user_id IS NULL",
-                    {"user_id": inferred_user_id},
+                escaped_doc_id = escape_lancedb_string(doc_id)
+                escaped_collection = escape_lancedb_string(collection)
+                updates.append(
+                    {
+                        "filter": f"collection = '{escaped_collection}' and doc_id = '{escaped_doc_id}' and user_id IS NULL",
+                        "values": {"user_id": inferred_user_id},
+                    }
                 )
-                updated_in_batch += 1
 
-            if updated_in_batch == 0:
+            if not updates:
+                # No valid updates in this batch, avoid infinite loop
                 break
+
+            # Apply batch updates
+            updated_in_batch = 0
+            for update in updates:
+                try:
+                    table.update(update["filter"], update["values"])
+                    updated_in_batch += 1
+                except Exception as exc:
+                    # Log but continue with other updates
+                    logger.debug(
+                        "Failed to update single row during backfill: %s",
+                        exc,
+                    )
+
+            total_updated += updated_in_batch
+
+            # Idempotency check: if no rows were updated, we're done
+            if updated_in_batch == 0:
+                # Verify no more NULL user_id rows exist
+                remaining = table.search().where("user_id IS NULL").limit(1).to_list()
+                if not remaining:
+                    break
+
+        if total_updated > 0:
+            logger.info(
+                "Backfilled %d user_id values from source_path in '%s'",
+                total_updated,
+                table_name,
+            )
+
     except Exception as exc:  # noqa: BLE001 - best effort compatibility repair
         logger.warning(
             "Failed to backfill null user_id values in '%s': %s",
@@ -241,7 +308,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
 
     _add_user_id_column(conn, "documents")
     _create_table(conn, "documents", schema=schema)
-    _backfill_documents_file_id_non_null(conn)
+    _backfill_documents_file_id_to_null(conn)
     _backfill_documents_user_id_from_source_path(conn)
 
 

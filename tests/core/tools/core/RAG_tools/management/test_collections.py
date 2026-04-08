@@ -394,21 +394,21 @@ def test_delete_collection_invokes_cleanup_all_documents(
     assert "documents" in result.deleted_counts
 
 
-def test_e2e_register_and_list_documents_with_legacy_null_file_id(
+def test_e2e_register_and_list_documents_with_legacy_empty_string_file_id(
     tmp_path: Path, temp_lancedb_dir: str
 ) -> None:
-    """E2E: ingestion remains visible when legacy rows contain null file_id."""
+    """E2E: ingestion remains visible when legacy rows contain empty string file_id."""
     conn = get_connection_from_env()
     ensure_documents_table(conn)
     table = conn.open_table("documents")
 
-    # Simulate legacy row created before file_id normalization.
+    # Simulate legacy row created by previous PR's backfill (NULL -> "")
     table.add(
         [
             {
                 "collection": "xagent",
                 "doc_id": "legacy-doc",
-                "file_id": None,
+                "file_id": "",  # Empty string from previous backfill
                 "source_path": "/legacy/README.md",
                 "file_type": "md",
                 "content_hash": "legacy-hash",

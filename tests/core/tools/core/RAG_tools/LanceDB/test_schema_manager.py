@@ -110,10 +110,10 @@ def test_check_table_needs_migration_with_ensure_tables(
     assert check_table_needs_migration(conn, "parses") is False
 
 
-def test_ensure_documents_table_backfills_null_file_id(
+def test_ensure_documents_table_backfills_empty_string_file_id_to_null(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """ensure_documents_table should backfill NULL file_id values."""
+    """ensure_documents_table should backfill empty string file_id values to None."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
     conn = get_connection_from_env()
@@ -134,12 +134,13 @@ def test_ensure_documents_table_backfills_null_file_id(
     )
     conn.create_table("documents", schema=schema)
     table = conn.open_table("documents")
+    # Simulate legacy data with empty string file_id (from previous PR)
     table.add(
         [
             {
                 "collection": "c1",
                 "doc_id": "d1",
-                "file_id": None,
+                "file_id": "",  # Empty string from previous backfill
                 "source_path": "/tmp/a.md",
                 "file_type": "md",
                 "content_hash": "h1",
@@ -155,7 +156,7 @@ def test_ensure_documents_table_backfills_null_file_id(
 
     refreshed = conn.open_table("documents")
     updated = refreshed.search().where("doc_id = 'd1'").to_list()[0]
-    assert updated["file_id"] == ""
+    assert updated["file_id"] is None
 
 
 def test_ensure_documents_table_backfills_user_id_from_source_path(
@@ -218,3 +219,116 @@ def test_ensure_documents_table_backfills_user_id_from_source_path(
     row_map = {row["doc_id"]: row for row in rows}
     assert row_map["legacy-doc-1"]["user_id"] == 58
     assert row_map["legacy-doc-2"]["user_id"] is None
+
+
+def test_backfill_file_id_to_null_is_idempotent(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """Backfill file_id to NULL should be idempotent and log progress."""
+    import logging
+
+    db_dir = tmp_path / "db"
+    monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+    conn = get_connection_from_env()
+
+    schema = pa.schema(
+        [
+            pa.field("collection", pa.string()),
+            pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
+        ]
+    )
+    conn.create_table("documents", schema=schema)
+    table = conn.open_table("documents")
+
+    # Add rows with empty string file_id
+    table.add(
+        [
+            {"collection": "c1", "doc_id": "d1", "file_id": ""},
+            {"collection": "c1", "doc_id": "d2", "file_id": ""},
+        ]
+    )
+
+    # First backfill
+    with caplog.at_level(logging.INFO):
+        ensure_documents_table(conn)
+
+    # Verify backfill happened and was logged
+    assert any(
+        "Backfilled empty string file_id values to NULL" in record.message
+        for record in caplog.records
+    )
+
+    refreshed = conn.open_table("documents")
+    rows = refreshed.search().to_list()
+    for row in rows:
+        assert row["file_id"] is None
+
+    # Second backfill should be idempotent (no changes)
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        ensure_documents_table(conn)
+
+    # Should not log again since no backfill needed
+    assert not any(
+        "Backfilled empty string file_id values to NULL" in record.message
+        for record in caplog.records
+    )
+
+
+def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> None:
+    """User ID backfill should log total rows updated."""
+    import logging
+
+    db_dir = tmp_path / "db"
+    monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+    conn = get_connection_from_env()
+
+    schema = pa.schema(
+        [
+            pa.field("collection", pa.string()),
+            pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
+            pa.field("source_path", pa.string()),
+            pa.field("user_id", pa.int64()),
+        ]
+    )
+    conn.create_table("documents", schema=schema)
+    table = conn.open_table("documents")
+
+    # Add rows with NULL user_id but recoverable from source_path
+    table.add(
+        [
+            {
+                "collection": "xagent",
+                "doc_id": "d1",
+                "file_id": "",
+                "source_path": "/uploads/user_42/xagent/file.pdf",
+                "user_id": None,
+            },
+            {
+                "collection": "xagent",
+                "doc_id": "d2",
+                "file_id": "",
+                "source_path": "/uploads/user_99/xagent/doc.pdf",
+                "user_id": None,
+            },
+        ]
+    )
+
+    # Run backfill with logging
+    with caplog.at_level(logging.INFO):
+        ensure_documents_table(conn)
+
+    # Verify progress was logged
+    assert any(
+        "Backfilled 2 user_id values from source_path" in record.message
+        for record in caplog.records
+    )
+
+    # Verify backfill worked
+    refreshed = conn.open_table("documents")
+    rows = refreshed.search().to_list()
+    row_map = {row["doc_id"]: row for row in rows}
+    assert row_map["d1"]["user_id"] == 42
+    assert row_map["d2"]["user_id"] == 99

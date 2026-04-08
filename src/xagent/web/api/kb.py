@@ -55,7 +55,9 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
-from ...core.tools.core.RAG_tools.utils.string_utils import generate_deterministic_doc_id
+from ...core.tools.core.RAG_tools.utils.string_utils import (
+    generate_deterministic_doc_id,
+)
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import (
@@ -1402,15 +1404,54 @@ async def delete_document_api(
         )
 
     if not matching_docs and (doc_id or file_id):
-        # Explicit identifiers should still allow deletion even if documents table
-        # is temporarily unreadable.
-        matching_docs.append(
-            {
-                "doc_id": doc_id,
-                "file_id": file_id,
-                "filename": filename,
-            }
-        )
+        # Explicit identifiers: validate through other data sources before allowing deletion
+        # to prevent accidental deletion of non-existent or wrong documents.
+        try:
+            doc_list = list_documents(
+                collection=collection_name,
+                user_id=user_id_int,
+                is_admin=bool(_user.is_admin),
+            )
+            target_exists = False
+            for summary in doc_list.documents:
+                if doc_id and summary.doc_id == doc_id:
+                    target_exists = True
+                    break
+                if file_id:
+                    # Check source_path basename for uploaded docs
+                    source_path = getattr(summary, "source_path", None)
+                    if source_path:
+                        source_basename = Path(source_path).name
+                        if source_basename == filename:
+                            target_exists = True
+                            break
+
+            if not target_exists:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document not found in collection '{collection_name}'",
+                )
+
+            matching_docs.append(
+                {
+                    "doc_id": doc_id,
+                    "file_id": file_id,
+                    "filename": filename,
+                }
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # If validation fails, err on the side of caution and refuse deletion
+            logger.warning(
+                "Failed to validate document existence for deletion (collection=%s): %s",
+                collection_name,
+                exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to verify document existence. Deletion refused to prevent data loss.",
+            )
 
     if not matching_docs:
         # Fallback 1: derive doc_id from UploadedFile linkage for uploaded docs.
@@ -1429,7 +1470,9 @@ async def delete_document_api(
                 continue
             matching_docs.append(
                 {
-                    "doc_id": generate_deterministic_doc_id(collection_name, file_id_str),
+                    "doc_id": generate_deterministic_doc_id(
+                        collection_name, file_id_str
+                    ),
                     "file_id": file_id_str,
                     "filename": filename,
                 }
@@ -1446,12 +1489,10 @@ async def delete_document_api(
             for summary in doc_list.documents:
                 doc_id_value = getattr(summary, "doc_id", None)
                 source_path = getattr(summary, "source_path", None)
-                source_basename = (
-                    Path(source_path).name
-                    if isinstance(source_path, str) and source_path.strip()
-                    else None
-                )
-                if doc_id_value == filename or source_basename == filename:
+                fallback_basename: str | None = None
+                if isinstance(source_path, str) and source_path.strip():
+                    fallback_basename = Path(source_path).name
+                if doc_id_value == filename or fallback_basename == filename:
                     matching_docs.append(
                         {
                             "doc_id": doc_id_value,
@@ -1495,7 +1536,9 @@ async def delete_document_api(
         )
         remaining_file_ids = {
             str(rec.file_id)
-            for rec in db.query(UploadedFile).filter(UploadedFile.user_id == user_id_int).all()
+            for rec in db.query(UploadedFile)
+            .filter(UploadedFile.user_id == user_id_int)
+            .all()
             if getattr(rec, "file_id", None)
         }
 
