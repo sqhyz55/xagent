@@ -87,9 +87,9 @@ schema evolution migration compatibility
         file_path = sample_documents["text"]
         with open(file_path, "rb") as f:
             response = client.post(
-                "/api/kb/upload/",
+                "/api/kb/ingest",
                 files={"file": (file_path.name, f, "text/plain")},
-                data={"collection_name": "schema_test_collection"},
+                data={"collection": "schema_test_collection"},
                 headers=auth_headers,
             )
 
@@ -97,7 +97,7 @@ schema evolution migration compatibility
         result = response.json()
 
         # Verify response contains both legacy and new fields
-        assert "collection_id" in result
+        assert "collection" in result or "collection_id" in result
         assert "file_id" in result or "doc_id" in result or "filename" in result
 
         # New schema fields (if present)
@@ -123,14 +123,14 @@ schema evolution migration compatibility
         This simulates a scenario where some documents use the old schema
         and some use the new schema.
         """
-        collection_name = "mixed_schema_collection"
+        collection = "mixed_schema_collection"
 
         # Upload multiple documents (potentially creating mixed schemas)
         file_ids = []
         for doc_key, file_path in sample_documents.items():
             with open(file_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={
                         "file": (
                             file_path.name,
@@ -142,26 +142,26 @@ schema evolution migration compatibility
                             else "text/markdown",
                         )
                     },
-                    data={"collection_name": collection_name},
+                    data={"collection": collection},
                     headers=auth_headers,
                 )
                 assert response.status_code == 200
                 file_ids.append(response.json().get("file_id"))
 
-        # List documents - should handle mixed schemas
-        response = client.get("/api/kb/collections/", headers=auth_headers)
+        # List collections - should handle mixed schemas
+        response = client.get("/api/kb/collections", headers=auth_headers)
         assert response.status_code == 200
 
         collections = response.json()["collections"]
         test_collection = next(
-            (c for c in collections if c["name"] == collection_name), None
+            (c for c in collections if c["name"] == collection), None
         )
         assert test_collection is not None
 
         # Get collection details - should work with mixed schemas
         collection_id = test_collection["id"]
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
+            f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -184,7 +184,7 @@ schema evolution migration compatibility
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("test.txt", f, "text/plain")},
                     data={"collection_name": "field_test_collection"},
                     headers=auth_headers,
@@ -221,7 +221,7 @@ schema evolution migration compatibility
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("legacy.txt", f, "text/plain")},
                     data={"collection_name": "legacy_search_collection"},
                     headers=auth_headers,
@@ -231,7 +231,7 @@ schema evolution migration compatibility
 
             # Search should work even with legacy schema
             response = client.post(
-                f"/api/kb/collections/{collection_id}/search/",
+                f"/api/kb/collections{collection_id}/search/",
                 json={"query": "legacy schema"},
                 headers=auth_headers,
             )
@@ -252,7 +252,7 @@ schema evolution migration compatibility
         This verifies Create, Read, Update, Delete operations work
         correctly when dealing with mixed old/new schema data.
         """
-        collection_name = "mixed_crud_collection"
+        collection = "mixed_crud_collection"
 
         # CREATE: Upload document
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -262,7 +262,7 @@ schema evolution migration compatibility
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("crud_test.txt", f, "text/plain")},
                     data={"collection_name": collection_name},
                     headers=auth_headers,
@@ -273,14 +273,14 @@ schema evolution migration compatibility
                 file_id = result.get("file_id")
 
             # READ: Get collections list
-            response = client.get("/api/kb/collections/", headers=auth_headers)
+            response = client.get("/api/kb/collections", headers=auth_headers)
             assert response.status_code == 200
             collections = response.json()["collections"]
             assert any(c["name"] == collection_name for c in collections)
 
             # READ: Get documents in collection
             response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
+                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
             )
             assert response.status_code == 200
             documents = response.json().get("documents", [])
@@ -289,7 +289,7 @@ schema evolution migration compatibility
             # UPDATE: Try to reingest (update operation)
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("crud_test.txt", f, "text/plain")},
                     data={"collection_name": collection_name},
                     headers=auth_headers,
@@ -345,7 +345,7 @@ class TestBehaviorConsistency:
             ),
         ]
 
-        collection_name = "search_consistency_collection"
+        collection = "search_consistency_collection"
 
         for filename, content in test_docs:
             with tempfile.NamedTemporaryFile(
@@ -357,7 +357,7 @@ class TestBehaviorConsistency:
             try:
                 with open(temp_path, "rb") as f:
                     response = client.post(
-                        "/api/kb/upload/",
+                        "/api/kb/ingest",
                         files={"file": (filename, f, "text/plain")},
                         data={"collection_name": collection_name},
                         headers=auth_headers,
@@ -369,7 +369,7 @@ class TestBehaviorConsistency:
 
         # Perform search and verify behavior
         response = client.post(
-            f"/api/kb/collections/{collection_id}/search/",
+            f"/api/kb/collections{collection_id}/search/",
             json={"query": "Python programming"},
             headers=auth_headers,
         )
@@ -409,7 +409,7 @@ class TestBehaviorConsistency:
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("ingestion_test.txt", f, "text/plain")},
                     data={"collection_name": "ingestion_consistency_collection"},
                     headers=auth_headers,
@@ -439,7 +439,7 @@ class TestBehaviorConsistency:
         This verifies that all CRUD operations work the same way
         before and after schema changes.
         """
-        collection_name = "crud_consistency_collection"
+        collection = "crud_consistency_collection"
 
         # CREATE: Create collection with document
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -449,7 +449,7 @@ class TestBehaviorConsistency:
         try:
             with open(temp_path, "rb") as f:
                 create_response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("crud_consistency.txt", f, "text/plain")},
                     data={"collection_name": collection_name},
                     headers=auth_headers,
@@ -461,7 +461,7 @@ class TestBehaviorConsistency:
                 assert "collection_id" in create_result
 
             # READ: List collections
-            list_response = client.get("/api/kb/collections/", headers=auth_headers)
+            list_response = client.get("/api/kb/collections", headers=auth_headers)
             assert list_response.status_code == 200
             collections = list_response.json()["collections"]
 
@@ -475,7 +475,7 @@ class TestBehaviorConsistency:
             # READ: Get documents
             collection_id = test_collection["id"]
             docs_response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
+                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
             )
             assert docs_response.status_code == 200
             documents = docs_response.json().get("documents", [])
@@ -485,7 +485,7 @@ class TestBehaviorConsistency:
             # This might be a PUT/PATCH request
             # For now, verify the endpoint exists and responds consistently
             update_response = client.put(
-                f"/api/kb/collections/{collection_id}/",
+                f"/api/kb/collections{collection_id}/",
                 json={"description": "Updated description"},
                 headers=auth_headers,
             )
@@ -520,7 +520,7 @@ class TestBehaviorConsistency:
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("display_test.txt", f, "text/plain")},
                     data={"collection_name": "display_consistency_collection"},
                     headers=auth_headers,
@@ -529,7 +529,7 @@ class TestBehaviorConsistency:
                 collection_id = response.json()["collection_id"]
 
             # Get collections list (frontend display endpoint)
-            response = client.get("/api/kb/collections/", headers=auth_headers)
+            response = client.get("/api/kb/collections", headers=auth_headers)
             assert response.status_code == 200
 
             collections = response.json()["collections"]
@@ -546,7 +546,7 @@ class TestBehaviorConsistency:
 
             # Get documents (frontend display endpoint)
             response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
+                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
             )
             assert response.status_code == 200
 
@@ -588,7 +588,7 @@ class TestLegacyDataAccessAfterMigration:
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("legacy.txt", f, "text/plain")},
                     data={"collection_name": "legacy_collection"},
                     headers=auth_headers,
@@ -598,14 +598,14 @@ class TestLegacyDataAccessAfterMigration:
 
             # Access legacy collection
             response = client.get(
-                f"/api/kb/collections/{collection_id}/", headers=auth_headers
+                f"/api/kb/collections{collection_id}/", headers=auth_headers
             )
             # Should work regardless of schema version
             assert response.status_code in [200, 404]  # 404 if endpoint not implemented
 
             # List documents in legacy collection
             response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
+                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
             )
             assert response.status_code == 200
 
@@ -632,7 +632,7 @@ class TestLegacyDataAccessAfterMigration:
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("legacy_search.txt", f, "text/plain")},
                     data={"collection_name": "legacy_search_collection"},
                     headers=auth_headers,
@@ -642,7 +642,7 @@ class TestLegacyDataAccessAfterMigration:
 
             # Search in legacy collection
             response = client.post(
-                f"/api/kb/collections/{collection_id}/search/",
+                f"/api/kb/collections{collection_id}/search/",
                 json={"query": "legacy search"},
                 headers=auth_headers,
             )
@@ -672,7 +672,7 @@ class TestLegacyDataAccessAfterMigration:
         try:
             with open(temp_path, "rb") as f:
                 response = client.post(
-                    "/api/kb/upload/",
+                    "/api/kb/ingest",
                     files={"file": ("legacy_delete.txt", f, "text/plain")},
                     data={"collection_name": "legacy_delete_collection"},
                     headers=auth_headers,
@@ -699,7 +699,7 @@ class TestLegacyDataAccessAfterMigration:
         This simulates a gradual migration scenario where some data
         has been migrated and some hasn't.
         """
-        collection_name = "mixed_schema_coexistence"
+        collection = "mixed_schema_coexistence"
 
         # Upload multiple documents (simulating mixed migration state)
         for i in range(3):
@@ -712,7 +712,7 @@ class TestLegacyDataAccessAfterMigration:
             try:
                 with open(temp_path, "rb") as f:
                     response = client.post(
-                        "/api/kb/upload/",
+                        "/api/kb/ingest",
                         files={"file": (f"doc{i + 1}.txt", f, "text/plain")},
                         data={"collection_name": collection_name},
                         headers=auth_headers,
@@ -722,7 +722,7 @@ class TestLegacyDataAccessAfterMigration:
                 temp_path.unlink(missing_ok=True)
 
         # List collections - should handle mixed state
-        response = client.get("/api/kb/collections/", headers=auth_headers)
+        response = client.get("/api/kb/collections", headers=auth_headers)
         assert response.status_code == 200
 
         collections = response.json()["collections"]
@@ -734,7 +734,7 @@ class TestLegacyDataAccessAfterMigration:
         # Get documents - should return all regardless of schema version
         collection_id = test_collection["id"]
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
+            f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -743,7 +743,7 @@ class TestLegacyDataAccessAfterMigration:
 
         # Search - should work across mixed schemas
         response = client.post(
-            f"/api/kb/collections/{collection_id}/search/",
+            f"/api/kb/collections{collection_id}/search/",
             json={"query": "Document"},
             headers=auth_headers,
         )
