@@ -821,11 +821,12 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         session.close()
 
     document_state = [
-        DocumentRecord(
-            doc_id="doc-1",
-            file_id=target_file_id,
-            source_path=str(file_path),
-        )
+        {
+            "collection": "demo",
+            "doc_id": "doc-1",
+            "file_id": target_file_id,
+            "source_path": str(file_path),
+        }
     ]
 
     def _fake_list_documents_for_user(*args, **kwargs):
@@ -835,14 +836,15 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         document_state.clear()
 
     with (
-        patch("xagent.web.api.kb.get_vector_index_store") as mock_get_store,
+        patch(
+            "xagent.web.api.kb._list_documents_for_user",
+            side_effect=_fake_list_documents_for_user,
+        ),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
         ),
     ):
-        mock_store = mock_get_store.return_value
-        mock_store.list_document_records.side_effect = _fake_list_documents_for_user
         response = client.delete(
             f"/api/kb/collections/demo/documents/ignored.txt?file_id={target_file_id}",
             headers=headers,

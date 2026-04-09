@@ -116,7 +116,7 @@ def test_ensure_documents_table_backfills_empty_string_file_id_to_null(
     """Migration script should backfill empty string file_id values to None."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
@@ -171,7 +171,7 @@ def test_ensure_documents_table_backfills_user_id_from_source_path(
     """Migration script should recover user_id from legacy source paths."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
@@ -241,7 +241,7 @@ def test_backfill_file_id_to_null_is_idempotent(
 
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
@@ -326,7 +326,7 @@ def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> 
 
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
@@ -406,7 +406,7 @@ def test_backfill_user_id_uses_batched_updates(tmp_path: Path, monkeypatch) -> N
     """User ID backfill should use batched table.update calls (not per-row)."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
-    conn = get_connection_from_env()
+    conn = get_vector_store_raw_connection()
 
     schema = pa.schema(
         [

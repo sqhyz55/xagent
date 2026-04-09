@@ -55,10 +55,10 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
 from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
+from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     generate_deterministic_doc_id,
 )
-from ...providers.vector_store.lancedb import get_connection_from_env
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
@@ -82,6 +82,9 @@ from ..services.kb_file_service import (
 )
 from ..services.kb_file_service import (
     get_document_record_file_id as _get_document_record_file_id,
+)
+from ..services.kb_file_service import (
+    list_documents_for_user as _list_documents_for_user,
 )
 from ..services.kb_file_service import (
     resolve_document_filename as _resolve_document_filename,
