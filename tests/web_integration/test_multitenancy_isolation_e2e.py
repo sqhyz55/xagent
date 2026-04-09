@@ -61,7 +61,7 @@ class TestMultiTenantDataIsolation:
             "It contains sensitive information specific to tenant 1. "
             "Keywords: tenant1, private, secret"
         )
-        files["tenant1"] = tenant1_file
+        files["tenant1_user"] = tenant1_file
 
         # Tenant 2 files
         tenant2_file = tmp_path / "tenant2_document.txt"
@@ -70,7 +70,7 @@ class TestMultiTenantDataIsolation:
             "It contains sensitive information specific to tenant 2. "
             "Keywords: tenant2, confidential, internal"
         )
-        files["tenant2"] = tenant2_file
+        files["tenant2_user"] = tenant2_file
 
         # Admin files
         admin_file = tmp_path / "admin_document.txt"
@@ -79,7 +79,7 @@ class TestMultiTenantDataIsolation:
             "It contains administrative information. "
             "Keywords: admin, system, configuration"
         )
-        files["admin"] = admin_file
+        files["admin_user"] = admin_file
 
         return files
 
