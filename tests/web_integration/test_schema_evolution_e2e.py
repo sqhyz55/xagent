@@ -781,7 +781,7 @@ def test_env():
     - Test database session
     - Temporary upload directory
     """
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
+    from tests.web.api.test_kb_dir import test_env as kb_test_env
 
     # Reuse existing test environment from kb_dir tests
     yield from kb_test_env()
