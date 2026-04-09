@@ -12,7 +12,6 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,15 +19,8 @@ from fastapi.testclient import TestClient
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
-    ChunkStrategy,
     CollectionInfo,
-    IngestionConfig,
-    IngestionResult,
-    ParseMethod,
-    ParsedParagraph,
-    ParseResultResponse,
 )
-
 
 # ==========================================
 # TEST FIXTURES
@@ -355,9 +347,7 @@ class TestKBFileIngestionE2E:
 
         if upload_response.status_code == 200:
             # List collections and verify our collection appears
-            list_response = client.get(
-                "/api/kb/collections", headers=auth_headers
-            )
+            list_response = client.get("/api/kb/collections", headers=auth_headers)
             assert list_response.status_code == 200
 
     @pytest.mark.e2e

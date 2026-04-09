@@ -7,7 +7,6 @@ through web crawling to RAG processing and final searchability.
 
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -19,11 +18,8 @@ from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
-    IngestionConfig,
     IngestionResult,
 )
-from xagent.core.tools.core.RAG_tools.core.schemas import WebCrawlConfig
-
 
 # ==========================================
 # TEST FIXTURES

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import tempfile
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,15 +20,8 @@ from fastapi.testclient import TestClient
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
-    ChunkStrategy,
     CollectionInfo,
-    IngestionConfig,
-    IngestionResult,
-    ParseMethod,
-    SearchConfig,
-    SearchType,
 )
-
 
 # ==========================================
 # TEST FIXTURES
@@ -75,7 +67,9 @@ def stub_embedding_adapter():
 
 
 @pytest.fixture
-def mock_lifecycle_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
+def mock_lifecycle_rag_pipeline(
+    monkeypatch, stub_embedding_config, stub_embedding_adapter
+):
     """Mock the RAG pipeline components for lifecycle E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
@@ -488,8 +482,7 @@ class TestKBLifecycleE2E:
                 executor.submit(ingest_file, "document3.json"),
             ]
             results = [
-                future.result()
-                for future in concurrent.futures.as_completed(futures)
+                future.result() for future in concurrent.futures.as_completed(futures)
             ]
 
         # At least some requests should succeed
