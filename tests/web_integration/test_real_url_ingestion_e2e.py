@@ -38,8 +38,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_github_readme_ingestion(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test ingestion of GitHub repository README.
 
         This test verifies that:
@@ -117,8 +116,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_github_raw_content_ingestion(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test ingestion of raw GitHub content.
 
         This test verifies that raw GitHub content (like README.md)
@@ -158,8 +156,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_real_url_search_verification(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that ingested real URLs produce searchable content.
 
         This is a comprehensive test that verifies:
@@ -227,8 +224,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_multiple_github_urls_ingestion(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test ingestion of multiple GitHub URLs into same collection.
 
         This verifies that multiple URLs can be ingested and
@@ -286,8 +282,7 @@ class TestRealURLParsing:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_github_markdown_parsing(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that GitHub markdown is parsed correctly.
 
         GitHub repositories contain markdown files. This test verifies
@@ -326,8 +321,7 @@ class TestRealURLParsing:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_url_metadata_extraction(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that metadata is correctly extracted from URLs.
 
         This verifies that:
@@ -385,8 +379,7 @@ class TestRealURLErrors:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_invalid_url_handling(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that invalid URLs are handled gracefully.
 
         This uses a real but invalid URL to verify error handling.
@@ -409,8 +402,7 @@ class TestRealURLErrors:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_private_url_handling(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that private/restricted URLs are handled properly.
 
         This test uses a URL that requires authentication to verify
@@ -434,8 +426,7 @@ class TestRealURLErrors:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_malformed_url_handling(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that malformed URLs are rejected.
 
         This verifies URL validation works correctly.
@@ -470,8 +461,7 @@ class TestRealURLDisplay:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_ingested_url_document_display(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that ingested URL documents display correctly.
 
         This verifies that:
@@ -524,8 +514,7 @@ class TestRealURLDisplay:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_collection_list_with_url_documents(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test that collections with URL documents display correctly.
 
         This verifies the collection list shows correct information
@@ -572,8 +561,7 @@ class TestRealURLReingestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_url_reingestion(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+        self, client, auth_headers: Dict[str, str]    ):
         """Test re-ingesting the same URL.
 
         This verifies that:
@@ -629,3 +617,40 @@ class TestRealURLReingestion:
             assert len(docs_after) >= len(docs_before), (
                 "Re-ingestion should not decrease document count"
             )
+
+
+# ==========================================
+# TEST FIXTURES
+# ==========================================
+
+
+@pytest.fixture
+def client(test_env):
+    """Provide test client for E2E tests."""
+    app, headers, user, TestingSessionLocal = test_env
+    from fastapi.testclient import TestClient
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def auth_headers(test_env):
+    """Provide authentication headers for E2E tests."""
+    app, headers, user, TestingSessionLocal = test_env
+    return headers
+
+
+@pytest.fixture
+def test_env():
+    """Provide complete test environment for E2E tests.
+
+    This fixture sets up:
+    - FastAPI app with all routes
+    - Authentication headers
+    - Test database session
+    - Temporary upload directory
+    """
+    from xagent.web.api.test_kb_dir import test_env as kb_test_env
+
+    # Reuse existing test environment from kb_dir tests
+    yield from kb_test_env()

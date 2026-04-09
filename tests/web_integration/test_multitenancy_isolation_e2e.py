@@ -88,7 +88,6 @@ class TestMultiTenantDataIsolation:
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that users can only see their own collections.
 
@@ -167,7 +166,6 @@ class TestMultiTenantDataIsolation:
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that users can only see their own documents.
 
@@ -244,7 +242,6 @@ class TestMultiTenantDataIsolation:
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that cross-tenant access attempts are properly denied.
 
@@ -330,7 +327,6 @@ class TestMultiTenantDataIsolation:
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that admin users can see all collections.
 
@@ -397,7 +393,6 @@ class TestMultiTenantDataIsolation:
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that admin users can see all documents.
 
@@ -954,3 +949,40 @@ class TestMultiTenantDeleteIsolation:
             assert response.status_code in [403, 404], (
                 "User should not be able to delete other tenant's document"
             )
+
+
+# ==========================================
+# TEST FIXTURES
+# ==========================================
+
+
+@pytest.fixture
+def client(test_env):
+    """Provide test client for E2E tests."""
+    app, headers, user, TestingSessionLocal = test_env
+    from fastapi.testclient import TestClient
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def auth_headers(test_env):
+    """Provide authentication headers for E2E tests."""
+    app, headers, user, TestingSessionLocal = test_env
+    return headers
+
+
+@pytest.fixture
+def test_env():
+    """Provide complete test environment for E2E tests.
+
+    This fixture sets up:
+    - FastAPI app with all routes
+    - Authentication headers
+    - Test database session
+    - Temporary upload directory
+    """
+    from xagent.web.api.test_kb_dir import test_env as kb_test_env
+
+    # Reuse existing test environment from kb_dir tests
+    yield from kb_test_env()

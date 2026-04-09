@@ -77,7 +77,6 @@ schema evolution migration compatibility
         client,
         auth_headers: Dict[str, str],
         sample_documents: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that ingestion works with new schema fields.
 
@@ -118,7 +117,6 @@ schema evolution migration compatibility
         client,
         auth_headers: Dict[str, str],
         sample_documents: Dict[str, Path],
-        clean_storage: None,
     ):
         """Test that read operations work with mixed schema versions.
 
@@ -750,3 +748,40 @@ class TestLegacyDataAccessAfterMigration:
             headers=auth_headers,
         )
         assert response.status_code == 200
+
+
+# ==========================================
+# TEST FIXTURES
+# ==========================================
+
+
+@pytest.fixture
+def client(test_env):
+    """Provide test client for E2E tests."""
+    app, headers, user, TestingSessionLocal = test_env
+    from fastapi.testclient import TestClient
+
+    return TestClient(app)
+
+
+@pytest.fixture
+def auth_headers(test_env):
+    """Provide authentication headers for E2E tests."""
+    app, headers, user, TestingSessionLocal = test_env
+    return headers
+
+
+@pytest.fixture
+def test_env():
+    """Provide complete test environment for E2E tests.
+
+    This fixture sets up:
+    - FastAPI app with all routes
+    - Authentication headers
+    - Test database session
+    - Temporary upload directory
+    """
+    from xagent.web.api.test_kb_dir import test_env as kb_test_env
+
+    # Reuse existing test environment from kb_dir tests
+    yield from kb_test_env()
