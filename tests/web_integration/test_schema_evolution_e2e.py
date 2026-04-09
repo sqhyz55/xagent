@@ -223,16 +223,19 @@ schema evolution migration compatibility
                 response = client.post(
                     "/api/kb/ingest",
                     files={"file": ("legacy.txt", f, "text/plain")},
-                    data={"collection_name": "legacy_search_collection"},
+                    data={"collection": "legacy_search_collection"},
                     headers=auth_headers,
                 )
                 assert response.status_code == 200
-                collection_id = response.json()["collection_id"]
+                collection_id = response.json().get("collection")
 
             # Search should work even with legacy schema
             response = client.post(
-                f"/api/kb/collections{collection_id}/search/",
-                json={"query": "legacy schema"},
+                "/api/kb/search",
+                data={
+                    "collection": "legacy_search_collection",
+                    "query_text": "legacy schema",
+                },
                 headers=auth_headers,
             )
             assert response.status_code == 200
