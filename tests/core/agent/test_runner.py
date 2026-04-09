@@ -417,13 +417,13 @@ class TestAgentRunner:
     @pytest.mark.asyncio
     async def test_context_start_time_set(self, runner):
         """Test that start_time is properly set in context."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         await runner.run("test task")
 
         assert runner.context.start_time is not None
         # The start_time should be set during the run, just check it's not in the future
-        assert runner.context.start_time <= datetime.now()
+        assert runner.context.start_time <= datetime.now(timezone.utc)
 
     @pytest.mark.asyncio
     async def test_context_history_tracking(self, runner):

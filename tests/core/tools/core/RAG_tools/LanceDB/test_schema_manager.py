@@ -113,11 +113,12 @@ def test_check_table_needs_migration_with_ensure_tables(
 def test_ensure_documents_table_backfills_empty_string_file_id_to_null(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """ensure_documents_table should backfill empty string file_id values to None."""
+    """Migration script should backfill empty string file_id values to None."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
     conn = get_connection_from_env()
 
+    # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -152,7 +153,12 @@ def test_ensure_documents_table_backfills_empty_string_file_id_to_null(
         ]
     )
 
-    ensure_documents_table(conn)
+    # Use the migration script instead of ensure_documents_table
+    from xagent.migrations.lancedb.backfill_documents_file_id import (
+        backfill_file_id_to_none,
+    )
+
+    backfill_file_id_to_none(dry_run=False, conn=conn)
 
     refreshed = conn.open_table("documents")
     updated = refreshed.search().where("doc_id = 'd1'").to_list()[0]
@@ -162,11 +168,12 @@ def test_ensure_documents_table_backfills_empty_string_file_id_to_null(
 def test_ensure_documents_table_backfills_user_id_from_source_path(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """ensure_documents_table should recover user_id from legacy source paths."""
+    """Migration script should recover user_id from legacy source paths."""
     db_dir = tmp_path / "db"
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
     conn = get_connection_from_env()
 
+    # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
@@ -212,7 +219,12 @@ def test_ensure_documents_table_backfills_user_id_from_source_path(
         ]
     )
 
-    ensure_documents_table(conn)
+    # Use the migration script instead of ensure_documents_table
+    from xagent.migrations.lancedb.backfill_documents_file_id import (
+        backfill_user_id_from_source_path,
+    )
+
+    backfill_user_id_from_source_path(dry_run=False, conn=conn)
 
     refreshed = conn.open_table("documents")
     rows = refreshed.search().to_list()
@@ -231,11 +243,19 @@ def test_backfill_file_id_to_null_is_idempotent(
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
     conn = get_connection_from_env()
 
+    # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
             pa.field("doc_id", pa.string()),
             pa.field("file_id", pa.string()),
+            pa.field("source_path", pa.string()),
+            pa.field("file_type", pa.string()),
+            pa.field("content_hash", pa.string()),
+            pa.field("uploaded_at", pa.timestamp("us")),
+            pa.field("title", pa.string()),
+            pa.field("language", pa.string()),
+            pa.field("user_id", pa.int64()),
         ]
     )
     conn.create_table("documents", schema=schema)
@@ -244,18 +264,45 @@ def test_backfill_file_id_to_null_is_idempotent(
     # Add rows with empty string file_id
     table.add(
         [
-            {"collection": "c1", "doc_id": "d1", "file_id": ""},
-            {"collection": "c1", "doc_id": "d2", "file_id": ""},
+            {
+                "collection": "c1",
+                "doc_id": "d1",
+                "file_id": "",
+                "source_path": "/tmp/a.md",
+                "file_type": "md",
+                "content_hash": "h1",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
+                "user_id": None,
+            },
+            {
+                "collection": "c1",
+                "doc_id": "d2",
+                "file_id": "",
+                "source_path": "/tmp/b.md",
+                "file_type": "md",
+                "content_hash": "h2",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
+                "user_id": None,
+            },
         ]
+    )
+
+    # Use the migration script instead of ensure_documents_table
+    from xagent.migrations.lancedb.backfill_documents_file_id import (
+        backfill_file_id_to_none,
     )
 
     # First backfill
     with caplog.at_level(logging.INFO):
-        ensure_documents_table(conn)
+        backfill_file_id_to_none(dry_run=False, conn=conn)
 
     # Verify backfill happened and was logged
     assert any(
-        "Backfilled empty string file_id values to NULL" in record.message
+        "Backfilled" in record.message and "file_id" in record.message
         for record in caplog.records
     )
 
@@ -267,13 +314,10 @@ def test_backfill_file_id_to_null_is_idempotent(
     # Second backfill should be idempotent (no changes)
     caplog.clear()
     with caplog.at_level(logging.INFO):
-        ensure_documents_table(conn)
+        result = backfill_file_id_to_none(dry_run=False, conn=conn)
 
-    # Should not log again since no backfill needed
-    assert not any(
-        "Backfilled empty string file_id values to NULL" in record.message
-        for record in caplog.records
-    )
+    # Should report 0 updates since no backfill needed
+    assert result.get("updated", 0) == 0
 
 
 def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> None:
@@ -284,12 +328,18 @@ def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> 
     monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
     conn = get_connection_from_env()
 
+    # Use the full schema to avoid implicit migration during test
     schema = pa.schema(
         [
             pa.field("collection", pa.string()),
             pa.field("doc_id", pa.string()),
             pa.field("file_id", pa.string()),
             pa.field("source_path", pa.string()),
+            pa.field("file_type", pa.string()),
+            pa.field("content_hash", pa.string()),
+            pa.field("uploaded_at", pa.timestamp("us")),
+            pa.field("title", pa.string()),
+            pa.field("language", pa.string()),
             pa.field("user_id", pa.int64()),
         ]
     )
@@ -304,6 +354,11 @@ def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> 
                 "doc_id": "d1",
                 "file_id": "",
                 "source_path": "/uploads/user_42/xagent/file.pdf",
+                "file_type": "pdf",
+                "content_hash": "h1",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
                 "user_id": None,
             },
             {
@@ -311,20 +366,33 @@ def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> 
                 "doc_id": "d2",
                 "file_id": "",
                 "source_path": "/uploads/user_99/xagent/doc.pdf",
+                "file_type": "pdf",
+                "content_hash": "h2",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
                 "user_id": None,
             },
         ]
     )
 
+    # Use the migration script instead of ensure_documents_table
+    from xagent.migrations.lancedb.backfill_documents_file_id import (
+        backfill_user_id_from_source_path,
+    )
+
     # Run backfill with logging
     with caplog.at_level(logging.INFO):
-        ensure_documents_table(conn)
+        result = backfill_user_id_from_source_path(dry_run=False, conn=conn)
 
     # Verify progress was logged
     assert any(
-        "Backfilled 2 user_id values from source_path" in record.message
+        "Backfilled" in record.message and "user_id" in record.message
         for record in caplog.records
     )
+
+    # Verify result contains correct count
+    assert result.get("updated", 0) == 2
 
     # Verify backfill worked
     refreshed = conn.open_table("documents")
@@ -332,3 +400,73 @@ def test_backfill_user_id_logs_progress(tmp_path: Path, monkeypatch, caplog) -> 
     row_map = {row["doc_id"]: row for row in rows}
     assert row_map["d1"]["user_id"] == 42
     assert row_map["d2"]["user_id"] == 99
+
+
+def test_backfill_user_id_uses_batched_updates(tmp_path: Path, monkeypatch) -> None:
+    """User ID backfill should use batched table.update calls (not per-row)."""
+    db_dir = tmp_path / "db"
+    monkeypatch.setenv("LANCEDB_DIR", str(db_dir))
+    conn = get_connection_from_env()
+
+    schema = pa.schema(
+        [
+            pa.field("collection", pa.string()),
+            pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
+            pa.field("source_path", pa.string()),
+            pa.field("file_type", pa.string()),
+            pa.field("content_hash", pa.string()),
+            pa.field("uploaded_at", pa.timestamp("us")),
+            pa.field("title", pa.string()),
+            pa.field("language", pa.string()),
+            pa.field("user_id", pa.int64()),
+        ]
+    )
+    conn.create_table("documents", schema=schema)
+    table = conn.open_table("documents")
+
+    rows = []
+    for i in range(120):
+        rows.append(
+            {
+                "collection": "xagent",
+                "doc_id": f"doc-{i}",
+                "file_id": "",
+                "source_path": f"/uploads/user_42/xagent/file_{i}.pdf",
+                "file_type": "pdf",
+                "content_hash": f"h{i}",
+                "uploaded_at": None,
+                "title": None,
+                "language": None,
+                "user_id": None,
+            }
+        )
+    table.add(rows)
+
+    update_calls: dict[str, int] = {"count": 0}
+    original_open_table = conn.open_table
+
+    def _open_table_spy(name: str):  # type: ignore[no-untyped-def]
+        opened = original_open_table(name)
+        if name != "documents":
+            return opened
+        original_update = opened.update
+
+        def _update_spy(where, values):  # type: ignore[no-untyped-def]
+            update_calls["count"] += 1
+            return original_update(where, values)
+
+        opened.update = _update_spy  # type: ignore[method-assign]
+        return opened
+
+    monkeypatch.setattr(conn, "open_table", _open_table_spy)
+
+    from xagent.migrations.lancedb.backfill_documents_file_id import (
+        backfill_user_id_from_source_path,
+    )
+
+    result = backfill_user_id_from_source_path(dry_run=False, conn=conn)
+    assert result.get("updated") == 120
+
+    # 120 rows, chunk size 50 => 3 batched updates expected for a single group.
+    assert update_calls["count"] == 3

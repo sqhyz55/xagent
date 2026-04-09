@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set
 
 import httpx
@@ -222,7 +222,7 @@ class WebCrawler:
                     content_markdown=cleaned["content_markdown"],
                     status="success",
                     depth=depth,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     content_length=cleaned["content_length"],
                     links_found=len(valid_links),
                 )

@@ -863,6 +863,46 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         session.close()
 
 
+def test_delete_document_by_filename_refuses_ambiguous_match(test_env, temp_uploads):
+    """Deleting by basename should refuse to delete multiple matching documents."""
+    app, headers, user, _ = test_env
+    client = TestClient(app)
+
+    file_a = temp_uploads / f"user_{user.id}" / "demo" / "dup.txt"
+    file_b = temp_uploads / f"user_{user.id}" / "demo" / "dup.txt"
+    file_a.parent.mkdir(parents=True, exist_ok=True)
+    file_a.write_text("content-a")
+    file_b.write_text("content-b")
+
+    # Two documents share the same resolved filename. Without file_id/doc_id,
+    # the API must refuse the deletion to avoid mass deletion by basename.
+    document_state = [
+        {
+            "collection": "demo",
+            "doc_id": "doc-a",
+            "file_id": "file-a",
+            "source_path": str(file_a),
+        },
+        {
+            "collection": "demo",
+            "doc_id": "doc-b",
+            "file_id": "file-b",
+            "source_path": str(file_b),
+        },
+    ]
+
+    with patch(
+        "xagent.web.api.kb._list_documents_for_user", return_value=document_state
+    ):
+        response = client.delete(
+            "/api/kb/collections/demo/documents/dup.txt",
+            headers=headers,
+        )
+
+    assert response.status_code == 409
+    assert "ambiguous" in response.json()["detail"].lower()
+
+
 def test_kb_delete_collection_cleans_file_id_managed_root_file(test_env, temp_uploads):
     """Collection delete should clean orphan UploadedFile rows even outside collection dir."""
     app, headers, user, TestingSessionLocal = test_env
@@ -937,3 +977,46 @@ def test_kb_delete_collection_cleans_file_id_managed_root_file(test_env, temp_up
         assert deleted_record is None
     finally:
         session.close()
+
+
+def test_list_collections_secondary_fallback_avoids_n_plus_one(test_env, temp_uploads):
+    """Secondary fallback should not call list_documents once per collection."""
+    app, headers, user, _ = test_env
+    client = TestClient(app)
+
+    from xagent.core.tools.core.RAG_tools.core.schemas import (
+        CollectionInfo,
+        ListCollectionsResult,
+    )
+
+    fake_result = ListCollectionsResult(
+        status="success",
+        collections=[
+            CollectionInfo(name="c1", documents=0, document_names=[]),
+            CollectionInfo(name="c2", documents=0, document_names=[]),
+        ],
+        total_count=2,
+        message="ok",
+        warnings=[],
+    )
+
+    call_counts = {"list_documents": 0}
+
+    def _fake_list_documents(*args, **kwargs):
+        call_counts["list_documents"] += 1
+        raise AssertionError("list_documents() should not be called")
+
+    doc_records = [
+        {"collection": "c1", "doc_id": "d1", "source_path": "/tmp/a.md"},
+        {"collection": "c2", "doc_id": "d2", "source_path": "/tmp/b.md"},
+    ]
+
+    with (
+        patch("xagent.web.api.kb.list_collections", return_value=fake_result),
+        patch("xagent.web.api.kb._list_documents_for_user", return_value=doc_records),
+        patch("xagent.web.api.kb.list_documents", side_effect=_fake_list_documents),
+    ):
+        response = client.get("/api/kb/collections", headers=headers)
+
+    assert response.status_code == 200
+    assert call_counts["list_documents"] == 0

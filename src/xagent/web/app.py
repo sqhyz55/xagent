@@ -328,6 +328,108 @@ async def startup_event() -> None:
             e,
         )
 
+    # Auto-backfill documents table if needed (for file_id and user_id consistency)
+    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: false)
+    if auto_migrate:
+        try:
+            from ..providers.vector_store.lancedb import get_connection_from_env
+
+            conn = get_connection_from_env()
+
+            # Check if documents table exists and needs backfill
+            try:
+                from ..core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+                    query_to_list,
+                )
+
+                documents_table = conn.open_table("documents")
+
+                # Check for empty string file_id values
+                empty_file_id_count = len(
+                    query_to_list(
+                        documents_table.search().where("file_id = ''").limit(1)
+                    )
+                )
+
+                # Check for NULL user_id values
+                null_user_id_count = len(
+                    query_to_list(
+                        documents_table.search().where("user_id IS NULL").limit(1)
+                    )
+                )
+
+                if empty_file_id_count > 0 or null_user_id_count > 0:
+                    logger.info("=" * 60)
+                    logger.info("STARTING BACKGROUND DOCUMENTS TABLE BACKFILL")
+                    logger.info("=" * 60)
+                    if empty_file_id_count > 0:
+                        logger.info("Found empty string file_id values to backfill")
+                    if null_user_id_count > 0:
+                        logger.info("Found NULL user_id values to backfill")
+
+                    async def run_documents_backfill_background() -> None:
+                        from ..migrations.lancedb.backfill_documents_file_id import (
+                            backfill_all,
+                        )
+
+                        try:
+                            result = await asyncio.to_thread(
+                                backfill_all, dry_run=False, conn=conn
+                            )
+                            logger.info("=" * 60)
+                            logger.info("DOCUMENTS TABLE BACKFILL COMPLETED")
+                            logger.info("=" * 60)
+
+                            file_id_result = result.get("file_id", {})
+                            user_id_result = result.get("user_id", {})
+
+                            if file_id_result.get("updated", 0) > 0:
+                                logger.info(
+                                    "file_id backfill: %d rows updated",
+                                    file_id_result.get("updated", 0),
+                                )
+                            if user_id_result.get("updated", 0) > 0:
+                                logger.info(
+                                    "user_id backfill: %d rows updated",
+                                    user_id_result.get("updated", 0),
+                                )
+
+                            if file_id_result.get("error"):
+                                logger.warning(
+                                    "file_id backfill error: %s",
+                                    file_id_result.get("error"),
+                                )
+                            if user_id_result.get("error"):
+                                logger.warning(
+                                    "user_id backfill error: %s",
+                                    user_id_result.get("error"),
+                                )
+                        except Exception as e:
+                            logger.error("=" * 60)
+                            logger.error("DOCUMENTS TABLE BACKFILL FAILED")
+                            logger.error("=" * 60)
+                            logger.error("Error: %s", e, exc_info=True)
+                            logger.warning(
+                                "Some features may not work correctly. "
+                                "Please run backfill manually: python -m xagent.migrations.lancedb.backfill_documents_file_id"
+                            )
+
+                    # Start background task
+                    _migration_task = asyncio.create_task(
+                        run_documents_backfill_background()
+                    )
+                else:
+                    logger.info("Documents table backfill not needed")
+            except Exception as e:
+                # Documents table might not exist yet
+                logger.debug("Could not check documents table: %s", e)
+        except Exception as e:
+            logger.warning(
+                "Could not check documents table backfill status: %s. "
+                "Application will continue.",
+                e,
+            )
+
     # Warmup sandbox manager
     from .sandbox_manager import get_sandbox_manager
 

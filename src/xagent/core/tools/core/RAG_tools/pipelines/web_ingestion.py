@@ -6,7 +6,7 @@ Crawls a website and imports all discovered pages into the knowledge base.
 import asyncio
 import logging
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -58,7 +58,7 @@ async def run_web_ingestion(
         ValueError: If configuration is invalid
         RuntimeError: If ingestion fails critically
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     warnings: list[str] = []
     failed_urls: dict[str, str] = {}
 
@@ -78,7 +78,9 @@ async def run_web_ingestion(
         crawl_results: list[CrawlResult] = await crawler.crawl()
     except Exception as e:
         logger.exception("Website crawling failed")
-        elapsed_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+        elapsed_ms = int(
+            (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
+        )
         return WebIngestionResult(
             status="error",
             collection=collection,
@@ -190,7 +192,7 @@ async def run_web_ingestion(
                 warnings.append(f"Failed to ingest {crawl_result.url}: {str(e)}")
 
     # Step 3: Compile results
-    elapsed_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+    elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
 
     # Recalculate pages_failed to include ingestion failures
     # (pages_failed includes both crawl failures and ingestion failures)
