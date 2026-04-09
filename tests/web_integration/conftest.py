@@ -37,6 +37,9 @@ def test_env():
 
     app = FastAPI()
     app.include_router(kb_router)
+    # Include auth router for register/login endpoints
+    from xagent.web.api.auth import auth_router
+    app.include_router(auth_router)
     app.dependency_overrides[get_db] = override_get_db
 
     Base.metadata.create_all(bind=test_engine)
