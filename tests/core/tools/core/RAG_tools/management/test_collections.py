@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -142,7 +142,7 @@ async def test_list_collections_with_data(temp_lancedb_dir: str) -> None:
 
     collection = "demo_collection"
     doc_id = "doc-1"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -230,7 +230,7 @@ async def test_list_collections_admin_includes_config_from_other_user(
 
     collection = "cfg_tenant_collection"
     doc_id = "doc-cfg"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -280,7 +280,7 @@ def test_get_document_stats_with_embeddings(temp_lancedb_dir: str) -> None:
 
     collection = "demo_collection"
     doc_id = "doc-embed"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -329,7 +329,7 @@ def test_cancel_collection_updates_all_documents(temp_lancedb_dir: str) -> None:
     """Collection-level cancel should update status for all discoverable documents."""
 
     collection = "demo"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -360,7 +360,7 @@ def test_delete_collection_invokes_cleanup_all_documents(
     """Collection delete should cascade cleanup for each document variant."""
 
     collection = "demo"
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     _insert_documents(
         [
@@ -412,7 +412,7 @@ def test_e2e_register_and_list_documents_with_legacy_empty_string_file_id(
                 "source_path": "/legacy/README.md",
                 "file_type": "md",
                 "content_hash": "legacy-hash",
-                "uploaded_at": datetime.utcnow(),
+                "uploaded_at": datetime.now(timezone.utc),
                 "title": "legacy",
                 "language": "en",
                 "user_id": None,
