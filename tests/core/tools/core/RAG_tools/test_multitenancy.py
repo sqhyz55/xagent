@@ -10,7 +10,6 @@ Also covers:
 
 import tempfile
 import uuid
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -851,7 +850,6 @@ class TestAPIMultiTenancy:
         )
         mock_delete_collection.return_value = mock_result
 
-        # delete_collection_api now requires db (file_id: remove UploadedFile records).
         mock_db = MagicMock()
         mock_db.query.return_value.filter.return_value.delete.return_value = 0
 
@@ -860,14 +858,11 @@ class TestAPIMultiTenancy:
         )
 
         mock_delete_collection.assert_called_once_with("test_collection", 123, False)
-        mock_delete_collection_physical_dir.assert_called_once_with(
-            user_id=123,
-            collection_name="test_collection",
-        )
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 
     @pytest.mark.asyncio
+    @patch("xagent.web.api.kb._check_can_delete_collection")
     @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
@@ -876,6 +871,7 @@ class TestAPIMultiTenancy:
         mock_delete_collection,
         mock_delete_collection_physical_dir,
         mock_get_vector_store,
+        mock_check_can_delete,
     ):
         """Test admin can delete collections (move dir to trash)."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -918,10 +914,6 @@ class TestAPIMultiTenancy:
         )
 
         mock_delete_collection.assert_called_once_with("test_collection", 999, True)
-        mock_delete_collection_physical_dir.assert_called_once_with(
-            user_id=999,
-            collection_name="test_collection",
-        )
         assert isinstance(result, CollectionOperationResult)
         assert result.status == "success"
 

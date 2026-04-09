@@ -679,9 +679,7 @@ def test_kb_delete_physical_cleanup_failure_aborts_operation(test_env, temp_uplo
             "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
         ) as mock_ensure_docs,
         patch("xagent.web.api.kb.delete_collection") as mock_delete,
-        patch(
-            "xagent.web.services.kb_collection_service.move_collection_dir_to_trash"
-        ) as mock_move_to_trash,
+        patch("xagent.web.api.kb.move_collection_dir_to_trash") as mock_move_to_trash,
     ):
         mock_ensure_docs.return_value = None
         mock_conn = MagicMock()
@@ -1318,20 +1316,45 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         }
     ]
 
-    def _fake_list_documents_for_user(*args, **kwargs):
-        return list(document_state)
-
     def _fake_delete_document(collection_name, doc_id, user_id, is_admin):
         document_state.clear()
 
+    # Mock the LanceDB query and delete_document function
+    # Don't mock delete_uploaded_file_if_orphaned - let it actually run and delete the file
+    mock_conn = MagicMock()
+
+    # Create independent copies for the mock returns
+    first_query_result = list(document_state)
+    second_query_result = []  # Empty after deletion
+
+    query_call_count = [0]
+
+    def _fake_query_to_list(*args, **kwargs):
+        query_call_count[0] += 1
+        if query_call_count[0] == 1:
+            return first_query_result
+        return second_query_result
+
     with (
+        patch("xagent.web.api.kb.get_connection_from_env", return_value=mock_conn),
         patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=_fake_list_documents_for_user,
+            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
+        ),
+        patch(
+            "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.query_to_list",
+            side_effect=_fake_query_to_list,
+        ),
+        patch(
+            "xagent.web.services.kb_file_service.build_uploaded_filename_map",
+            return_value={target_file_id: "orphan.txt"},
         ),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
+        ),
+        patch(
+            "xagent.web.services.kb_file_service.get_uploads_dir",
+            return_value=temp_uploads.resolve(),
         ),
     ):
         response = client.delete(
@@ -1340,7 +1363,7 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         )
 
     assert response.status_code == 200
-    assert not file_path.exists()
+    assert not file_path.exists(), f"File still exists at {file_path}"
 
     session = TestingSessionLocal()
     try:

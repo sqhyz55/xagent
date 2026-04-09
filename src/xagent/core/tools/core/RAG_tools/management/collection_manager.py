@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
+import pyarrow as pa  # type: ignore
+
 from ..core.parser_registry import get_supported_parsers, validate_parser_compatibility
 from ..core.schemas import CollectionInfo
 from ..storage.factory import get_metadata_store, get_vector_index_store
@@ -265,6 +267,7 @@ class CollectionManager:
                 logger.debug(
                     "Could not migrate collection_metadata schema (add owners): %s", e
                 )
+
     async def initialize_collection_embedding(
         self, collection_name: str, embedding_model_id: str
     ) -> "CollectionInfo":

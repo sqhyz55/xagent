@@ -83,7 +83,11 @@ class TestFormatGenerationPrompt:
                 prompt_template=sample_prompt_template_plain,
                 formatted_contexts="",
             )
-            assert "Formatted contexts are empty" in caplog.text
+            # Check for warning log - using more flexible matching
+            assert any(
+                "Formatted contexts are empty" in record.message
+                for record in caplog.records
+            )
 
         expected_prompt_for_empty_context = (
             f"{sample_prompt_template_plain}\n\nContext:\n\n\nAnswer:"

@@ -33,10 +33,6 @@ from xagent.core.tools.core.RAG_tools.core.config import MIN_INT64
 
 # Import after path modification (required for standalone migration scripts)
 # ruff: noqa: E402
-from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
-    ensure_chunks_table,
-    ensure_documents_table,
-)
 from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
     list_embeddings_table_names,
     query_to_list,
@@ -65,6 +61,59 @@ ORPHANED_PERMANENT = (
 
 # Global lock to prevent concurrent migrations
 _migration_lock = threading.Lock()
+
+
+def _ensure_table_exists(conn: DBConnection, table_name: str) -> None:
+    """Ensure a table exists, creating it with default schema if it doesn't.
+
+    Unlike ensure_*_table functions, this doesn't validate schema, allowing
+    migration code to work with old schema tables.
+    """
+    try:
+        conn.open_table(table_name)
+    except Exception:
+        # Table doesn't exist, create it with default schema
+        if table_name == "chunks":
+            import pyarrow as pa  # type: ignore
+
+            schema = pa.schema(
+                [
+                    pa.field("collection", pa.string()),
+                    pa.field("doc_id", pa.string()),
+                    pa.field("parse_hash", pa.string()),
+                    pa.field("chunk_id", pa.string()),
+                    pa.field("index", pa.int32()),
+                    pa.field("text", pa.large_string()),
+                    pa.field("page_number", pa.int32()),
+                    pa.field("section", pa.string()),
+                    pa.field("anchor", pa.string()),
+                    pa.field("json_path", pa.string()),
+                    pa.field("chunk_hash", pa.string()),
+                    pa.field("config_hash", pa.string()),
+                    pa.field("created_at", pa.timestamp("us")),
+                    pa.field("metadata", pa.string()),
+                    pa.field("user_id", pa.int64()),
+                ]
+            )
+            conn.create_table(table_name, schema=schema)
+        elif table_name == "documents":
+            import pyarrow as pa
+
+            schema = pa.schema(
+                [
+                    pa.field("collection", pa.string()),
+                    pa.field("doc_id", pa.string()),
+                    pa.field("file_id", pa.string()),
+                    pa.field("source_path", pa.string()),
+                    pa.field("file_type", pa.string()),
+                    pa.field("content_hash", pa.string()),
+                    pa.field("uploaded_at", pa.timestamp("us")),
+                    pa.field("title", pa.string()),
+                    pa.field("language", pa.string()),
+                    pa.field("user_id", pa.int64()),
+                ]
+            )
+            conn.create_table(table_name, schema=schema)
 
 
 def _get_migration_lock_file_path() -> str:
@@ -313,8 +362,10 @@ def backfill_chunks_table(
     if conn is None:
         conn = get_connection_from_env()
 
-    ensure_chunks_table(conn)
-    ensure_documents_table(conn)
+    # For migration, we need to work with existing tables even if they have old schema
+    # Don't use ensure_chunks_table as it validates schema which fails for old tables
+    _ensure_table_exists(conn, "chunks")
+    _ensure_table_exists(conn, "documents")
 
     chunks_table = conn.open_table("chunks")
     docs_table = conn.open_table("documents")
@@ -340,8 +391,9 @@ def backfill_orphaned_chunks(
     if conn is None:
         conn = get_connection_from_env()
 
-    ensure_chunks_table(conn)
-    ensure_documents_table(conn)
+    # For migration, we need to work with existing tables even if they have old schema
+    _ensure_table_exists(conn, "chunks")
+    _ensure_table_exists(conn, "documents")
 
     chunks_table = conn.open_table("chunks")
     docs_table = conn.open_table("documents")
@@ -376,7 +428,7 @@ def backfill_embeddings_table(
     if conn is None:
         conn = get_connection_from_env()
 
-    ensure_documents_table(conn)
+    _ensure_table_exists(conn, "documents")
     embeddings_tables = _get_embeddings_tables(conn)
 
     if not embeddings_tables:
@@ -423,7 +475,7 @@ def backfill_orphaned_embeddings(
     if conn is None:
         conn = get_connection_from_env()
 
-    ensure_documents_table(conn)
+    _ensure_table_exists(conn, "documents")
 
     embeddings_tables = _get_embeddings_tables(conn)
     if not embeddings_tables:

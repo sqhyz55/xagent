@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from typing import Any
 
 import pyarrow as pa  # type: ignore
@@ -19,6 +18,8 @@ __all__ = [
     "ensure_prompt_templates_table",
     "ensure_ingestion_runs_table",
     "ensure_collection_config_table",
+    "ensure_collection_metadata_table",
+    "check_table_needs_migration",
 ]
 
 
@@ -192,6 +193,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
         [
             pa.field("collection", pa.string()),
             pa.field("doc_id", pa.string()),
+            pa.field("file_id", pa.string()),
             pa.field("source_path", pa.string()),
             pa.field("file_type", pa.string()),
             pa.field("content_hash", pa.string()),
@@ -202,7 +204,7 @@ def ensure_documents_table(conn: DBConnection) -> None:
         ]
     )
 
-    # Automatic migration for existing tables missing 'user_id'
+    # Automatic migration for existing tables missing 'user_id' or 'file_id'
     if _table_exists(conn, "documents"):
         try:
             table = conn.open_table("documents")
@@ -212,6 +214,13 @@ def ensure_documents_table(conn: DBConnection) -> None:
                 )
                 # Add user_id column with null default, cast to bigint (int64)
                 table.add_columns({"user_id": "cast(null as bigint)"})
+
+            if "file_id" not in table.schema.names:
+                logger.info(
+                    "Migrating 'documents' table: adding missing 'file_id' column"
+                )
+                table.add_columns({"file_id": "cast(null as string)"})
+
             _migrate_table_user_id_to_int64(conn, "documents")
             _validate_user_id_int64(conn.open_table("documents"), "documents")
         except ValueError:
@@ -501,3 +510,73 @@ def ensure_collection_config_table(conn: DBConnection) -> None:
     )
 
     _create_table(conn, table_name, schema=schema)
+
+
+def check_table_needs_migration(conn: DBConnection, table_name: str) -> bool:
+    """Check if a table exists and needs migration (missing user_id field).
+
+    This function checks if a table exists and is missing the 'user_id' field,
+    which indicates it needs migration for multi-tenancy support.
+
+    Args:
+        conn: LanceDB connection
+        table_name: Name of the table to check
+
+    Returns:
+        True if the table exists and is missing 'user_id' field, False otherwise
+    """
+    if not _table_exists(conn, table_name):
+        return False
+
+    try:
+        table = conn.open_table(table_name)
+        existing_schema = table.schema
+        existing_field_names = {field.name for field in existing_schema}
+
+        # Check if user_id field is missing
+        return "user_id" not in existing_field_names
+    except Exception as e:
+        # If we can't check the schema, assume no migration needed
+        logger.warning(
+            "Could not check schema for table '%s': %s. Assuming no migration needed.",
+            table_name,
+            e,
+        )
+        return False
+
+
+def ensure_collection_metadata_table(conn: DBConnection) -> None:
+    """Ensure the collection_metadata table exists with proper schema.
+
+    This table stores collection metadata including embedding configuration,
+    statistics, and configuration settings.
+
+    Args:
+        conn: LanceDB connection
+    """
+    schema = pa.schema(
+        [
+            pa.field("name", pa.string()),
+            pa.field("schema_version", pa.string()),
+            pa.field("embedding_model_id", pa.string()),
+            pa.field("embedding_dimension", pa.int32()),
+            pa.field("documents", pa.int32()),
+            pa.field("processed_documents", pa.int32()),
+            pa.field("parses", pa.int32()),
+            pa.field("chunks", pa.int32()),
+            pa.field("embeddings", pa.int32()),
+            pa.field("document_names", pa.string()),
+            pa.field(
+                "owners", pa.string()
+            ),  # Schema-only; not maintained (derived at list time)
+            pa.field("collection_locked", pa.bool_()),
+            pa.field("allow_mixed_parse_methods", pa.bool_()),
+            pa.field("skip_config_validation", pa.bool_()),
+            pa.field("ingestion_config", pa.string()),
+            pa.field("created_at", pa.timestamp("us")),
+            pa.field("updated_at", pa.timestamp("us")),
+            pa.field("last_accessed_at", pa.timestamp("us")),
+            pa.field("extra_metadata", pa.string()),
+        ]
+    )
+    _create_table(conn, "collection_metadata", schema=schema)
