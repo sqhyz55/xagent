@@ -211,7 +211,13 @@ async def extract_text_with_unstructured(file_path: str, **kwargs: Any) -> Parse
         return ParseResult(text_segments=segments)
 
     except ImportError as e:
-        raise RuntimeError(f"Unstructured dependencies not available: {e}") from e
+        error_msg = str(e)
+        raise RuntimeError(
+            f"Unstructured dependencies not available: {error_msg}\n\n"
+            f"To fix this, try one of the following:\n"
+            f"  1. Install document-processing dependencies: pip install -e '.[document-processing]'\n"
+            f"  2. Or use the 'deepdoc' parser instead"
+        ) from e
 
     except Exception as e:
         raise RuntimeError(f"Unstructured text extraction failed: {e}") from e
