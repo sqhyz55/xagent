@@ -10,7 +10,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,15 +17,8 @@ from fastapi.testclient import TestClient
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
-    ChunkEmbeddingData,
     CollectionInfo,
-    IngestionResult,
-    SearchConfig,
-    SearchPipelineResult,
-    SearchResult,
-    SearchType,
 )
-
 
 # ==========================================
 # TEST FIXTURES
@@ -72,7 +64,9 @@ def stub_embedding_adapter():
 
 
 @pytest.fixture
-def mock_search_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
+def mock_search_rag_pipeline(
+    monkeypatch, stub_embedding_config, stub_embedding_adapter
+):
     """Mock the RAG pipeline components for search E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
@@ -647,7 +641,7 @@ class TestRealTimeSearch:
         collection_name = "e2e_search_realtime"
 
         # Initial search should be empty
-        initial_search = client.post(
+        client.post(
             "/api/kb/search",
             json={
                 "collection": collection_name,
@@ -728,8 +722,7 @@ class TestRealTimeSearch:
                 executor.submit(ingest_and_search, "machine_learning.md"),
             ]
             results = [
-                future.result()
-                for future in concurrent.futures.as_completed(futures)
+                future.result() for future in concurrent.futures.as_completed(futures)
             ]
 
         # At least some operations should succeed

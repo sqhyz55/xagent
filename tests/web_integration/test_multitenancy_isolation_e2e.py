@@ -9,12 +9,10 @@ These tests are critical for ensuring that schema changes and database migration
 do not break tenant isolation, which is a fundamental security requirement.
 """
 
-import os
-import pytest
 from pathlib import Path
-from typing import Dict, List, Any
-import tempfile
-import shutil
+from typing import Any, Dict
+
+import pytest
 
 
 class TestMultiTenantDataIsolation:
@@ -35,20 +33,20 @@ class TestMultiTenantDataIsolation:
                 "username": "tenant1_user",
                 "password": "password123",
                 "email": "tenant1@example.com",
-                "role": "user"
+                "role": "user",
             },
             "tenant2_user": {
                 "username": "tenant2_user",
                 "password": "password123",
                 "email": "tenant2@example.com",
-                "role": "user"
+                "role": "user",
             },
             "admin_user": {
                 "username": "admin_user",
                 "password": "admin123",
                 "email": "admin@example.com",
-                "role": "admin"
-            }
+                "role": "admin",
+            },
         }
 
     @pytest.fixture
@@ -90,7 +88,7 @@ class TestMultiTenantDataIsolation:
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None
+        clean_storage: None,
     ):
         """Test that users can only see their own collections.
 
@@ -106,8 +104,8 @@ class TestMultiTenantDataIsolation:
                 json={
                     "username": user_data["username"],
                     "password": user_data["password"],
-                    "email": user_data["email"]
-                }
+                    "email": user_data["email"],
+                },
             )
             if register_response.status_code not in [200, 400]:  # 400 if already exists
                 register_response.raise_for_status()
@@ -117,8 +115,8 @@ class TestMultiTenantDataIsolation:
                 "/api/auth/login",
                 json={
                     "username": user_data["username"],
-                    "password": user_data["password"]
-                }
+                    "password": user_data["password"],
+                },
             )
             assert login_response.status_code == 200
             user_tokens[user_key] = login_response.json()["access_token"]
@@ -133,10 +131,8 @@ class TestMultiTenantDataIsolation:
                 response = client.post(
                     "/api/kb/upload/",
                     files={"file": (file_path.name, f, "text/plain")},
-                    data={
-                        "collection_name": f"{user_key}_collection"
-                    },
-                    headers=headers
+                    data={"collection_name": f"{user_key}_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
                 collection_ids[user_key] = response.json()["collection_id"]
@@ -154,22 +150,24 @@ class TestMultiTenantDataIsolation:
 
             # Should see own collection
             expected_collection = f"{user_key}_collection"
-            assert expected_collection in collection_names, \
+            assert expected_collection in collection_names, (
                 f"{user_key} should see their own collection"
+            )
 
             # Should NOT see other tenants' collections
             other_tenants = [k for k in user_tokens.keys() if k != user_key]
             for other_tenant in other_tenants:
                 other_collection = f"{other_tenant}_collection"
-                assert other_collection not in collection_names, \
+                assert other_collection not in collection_names, (
                     f"{user_key} should NOT see {other_tenant}'s collection"
+                )
 
     def test_users_see_only_own_documents(
         self,
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None
+        clean_storage: None,
     ):
         """Test that users can only see their own documents.
 
@@ -185,15 +183,15 @@ class TestMultiTenantDataIsolation:
                 json={
                     "username": user_data["username"],
                     "password": user_data["password"],
-                    "email": user_data["email"]
-                }
+                    "email": user_data["email"],
+                },
             )
             login_response = client.post(
                 "/api/auth/login",
                 json={
                     "username": user_data["username"],
-                    "password": user_data["password"]
-                }
+                    "password": user_data["password"],
+                },
             )
             assert login_response.status_code == 200
             user_tokens[user_key] = login_response.json()["access_token"]
@@ -208,10 +206,8 @@ class TestMultiTenantDataIsolation:
                 response = client.post(
                     "/api/kb/upload/",
                     files={"file": (file_path.name, f, "text/plain")},
-                    data={
-                        "collection_name": f"{user_key}_collection"
-                    },
-                    headers=headers
+                    data={"collection_name": f"{user_key}_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
                 collection_ids[user_key] = response.json()["collection_id"]
@@ -223,29 +219,32 @@ class TestMultiTenantDataIsolation:
 
             # List documents in own collection
             response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/",
-                headers=headers
+                f"/api/kb/collections/{collection_id}/documents/", headers=headers
             )
             assert response.status_code == 200
 
             documents = response.json().get("documents", [])
-            document_names = {doc.get("name", doc.get("filename", "")) for doc in documents}
+            document_names = {
+                doc.get("name", doc.get("filename", "")) for doc in documents
+            }
 
             # Should see own document
             expected_file = sample_files_for_tenants[user_key].name
-            assert any(expected_file in name for name in document_names), \
+            assert any(expected_file in name for name in document_names), (
                 f"{user_key} should see their own document"
+            )
 
             # Verify document count matches (only own documents)
-            assert len(documents) >= 1, \
+            assert len(documents) >= 1, (
                 f"{user_key} should have at least their own document"
+            )
 
     def test_cross_tenant_access_denied(
         self,
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None
+        clean_storage: None,
     ):
         """Test that cross-tenant access attempts are properly denied.
 
@@ -263,15 +262,15 @@ class TestMultiTenantDataIsolation:
                 json={
                     "username": user_data["username"],
                     "password": user_data["password"],
-                    "email": user_data["email"]
-                }
+                    "email": user_data["email"],
+                },
             )
             login_response = client.post(
                 "/api/auth/login",
                 json={
                     "username": user_data["username"],
-                    "password": user_data["password"]
-                }
+                    "password": user_data["password"],
+                },
             )
             assert login_response.status_code == 200
             user_tokens[user_key] = login_response.json()["access_token"]
@@ -284,10 +283,8 @@ class TestMultiTenantDataIsolation:
                 response = client.post(
                     "/api/kb/upload/",
                     files={"file": (file_path.name, f, "text/plain")},
-                    data={
-                        "collection_name": f"{user_key}_collection"
-                    },
-                    headers=headers
+                    data={"collection_name": f"{user_key}_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
                 collection_ids[user_key] = response.json()["collection_id"]
@@ -299,38 +296,41 @@ class TestMultiTenantDataIsolation:
         # Attempt to list documents in tenant2's collection using tenant1's token
         response = client.get(
             f"/api/kb/collections/{tenant2_collection_id}/documents/",
-            headers={"Authorization": f"Bearer {tenant1_token}"}
+            headers={"Authorization": f"Bearer {tenant1_token}"},
         )
 
         # Should be denied (403 or 404 depending on implementation)
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "Cross-tenant access should be denied"
+        )
 
         # Try to search in other tenant's collection
         response = client.post(
             f"/api/kb/collections/{tenant2_collection_id}/search/",
             json={"query": "test"},
-            headers={"Authorization": f"Bearer {tenant1_token}"}
+            headers={"Authorization": f"Bearer {tenant1_token}"},
         )
 
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "Cross-tenant search should be denied"
+        )
 
         # Try to delete other tenant's document
         response = client.delete(
             f"/api/kb/collections/{tenant2_collection_id}/documents/",
-            headers={"Authorization": f"Bearer {tenant1_token}"}
+            headers={"Authorization": f"Bearer {tenant1_token}"},
         )
 
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "Cross-tenant delete should be denied"
+        )
 
     def test_admin_sees_all_collections(
         self,
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None
+        clean_storage: None,
     ):
         """Test that admin users can see all collections.
 
@@ -347,15 +347,15 @@ class TestMultiTenantDataIsolation:
                 json={
                     "username": user_data["username"],
                     "password": user_data["password"],
-                    "email": user_data["email"]
-                }
+                    "email": user_data["email"],
+                },
             )
             login_response = client.post(
                 "/api/auth/login",
                 json={
                     "username": user_data["username"],
-                    "password": user_data["password"]
-                }
+                    "password": user_data["password"],
+                },
             )
             assert login_response.status_code == 200
             user_tokens[user_key] = login_response.json()["access_token"]
@@ -369,10 +369,8 @@ class TestMultiTenantDataIsolation:
                 response = client.post(
                     "/api/kb/upload/",
                     files={"file": (file_path.name, f, "text/plain")},
-                    data={
-                        "collection_name": f"{user_key}_collection"
-                    },
-                    headers=headers
+                    data={"collection_name": f"{user_key}_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
 
@@ -387,17 +385,19 @@ class TestMultiTenantDataIsolation:
         collection_names = {col["name"] for col in collections}
 
         # Admin should see all collections
-        assert "tenant1_user_collection" in collection_names, \
+        assert "tenant1_user_collection" in collection_names, (
             "Admin should see tenant1's collection"
-        assert "tenant2_user_collection" in collection_names, \
+        )
+        assert "tenant2_user_collection" in collection_names, (
             "Admin should see tenant2's collection"
+        )
 
     def test_admin_sees_all_documents(
         self,
         client,
         tenant_users: Dict[str, Dict[str, str]],
         sample_files_for_tenants: Dict[str, Path],
-        clean_storage: None
+        clean_storage: None,
     ):
         """Test that admin users can see all documents.
 
@@ -415,15 +415,15 @@ class TestMultiTenantDataIsolation:
                 json={
                     "username": user_data["username"],
                     "password": user_data["password"],
-                    "email": user_data["email"]
-                }
+                    "email": user_data["email"],
+                },
             )
             login_response = client.post(
                 "/api/auth/login",
                 json={
                     "username": user_data["username"],
-                    "password": user_data["password"]
-                }
+                    "password": user_data["password"],
+                },
             )
             assert login_response.status_code == 200
             user_tokens[user_key] = login_response.json()["access_token"]
@@ -436,10 +436,8 @@ class TestMultiTenantDataIsolation:
                 response = client.post(
                     "/api/kb/upload/",
                     files={"file": (file_path.name, f, "text/plain")},
-                    data={
-                        "collection_name": f"{user_key}_collection"
-                    },
-                    headers=headers
+                    data={"collection_name": f"{user_key}_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
                 collection_ids[user_key] = response.json()["collection_id"]
@@ -451,14 +449,14 @@ class TestMultiTenantDataIsolation:
         # Access tenant1's documents
         response = client.get(
             f"/api/kb/collections/{collection_ids['tenant1_user']}/documents/",
-            headers=admin_headers
+            headers=admin_headers,
         )
         assert response.status_code == 200
 
         # Access tenant2's documents
         response = client.get(
             f"/api/kb/collections/{collection_ids['tenant2_user']}/documents/",
-            headers=admin_headers
+            headers=admin_headers,
         )
         assert response.status_code == 200
 
@@ -494,7 +492,7 @@ class TestMultiTenantSearchIsolation:
         data["tenant1"] = {
             "file": tenant1_file,
             "query": "Python backend",
-            "expected_keywords": ["Python", "backend", "Tenant 1"]
+            "expected_keywords": ["Python", "backend", "Tenant 1"],
         }
 
         # Tenant 2: Marketing materials
@@ -516,16 +514,13 @@ class TestMultiTenantSearchIsolation:
         data["tenant2"] = {
             "file": tenant2_file,
             "query": "marketing strategy",
-            "expected_keywords": ["marketing", "strategy", "Tenant 2"]
+            "expected_keywords": ["marketing", "strategy", "Tenant 2"],
         }
 
         return data
 
     def test_search_only_returns_own_documents(
-        self,
-        client,
-        tenant_search_data: Dict[str, Dict[str, Any]],
-        clean_storage: None
+        self, client, tenant_search_data: Dict[str, Dict[str, Any]], clean_storage: None
     ):
         """Test that search results only contain documents from the requesting tenant.
 
@@ -535,7 +530,7 @@ class TestMultiTenantSearchIsolation:
         # Create users for each tenant
         users = {
             "tenant1": {"username": "search_user1", "password": "pass123"},
-            "tenant2": {"username": "search_user2", "password": "pass123"}
+            "tenant2": {"username": "search_user2", "password": "pass123"},
         }
 
         user_tokens = {}
@@ -549,15 +544,12 @@ class TestMultiTenantSearchIsolation:
                 json={
                     "username": user_info["username"],
                     "password": user_info["password"],
-                    "email": f"{tenant_key}@example.com"
-                }
+                    "email": f"{tenant_key}@example.com",
+                },
             )
 
             # Login
-            login_response = client.post(
-                "/api/auth/login",
-                json=user_info
-            )
+            login_response = client.post("/api/auth/login", json=user_info)
             assert login_response.status_code == 200
             token = login_response.json()["access_token"]
             user_tokens[tenant_key] = token
@@ -569,13 +561,9 @@ class TestMultiTenantSearchIsolation:
             with open(file_data["file"], "rb") as f:
                 response = client.post(
                     "/api/kb/upload/",
-                    files={
-                        "file": (file_data["file"].name, f, "text/plain")
-                    },
-                    data={
-                        "collection_name": f"{tenant_key}_search_collection"
-                    },
-                    headers=headers
+                    files={"file": (file_data["file"].name, f, "text/plain")},
+                    data={"collection_name": f"{tenant_key}_search_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
                 collection_ids[tenant_key] = response.json()["collection_id"]
@@ -590,7 +578,7 @@ class TestMultiTenantSearchIsolation:
             response = client.post(
                 f"/api/kb/collections/{collection_id}/search/",
                 json={"query": search_data["query"]},
-                headers=headers
+                headers=headers,
             )
             assert response.status_code == 200
 
@@ -600,8 +588,9 @@ class TestMultiTenantSearchIsolation:
             # Verify results contain expected keywords
             result_text = " ".join([r.get("content", "") for r in results])
             for keyword in search_data["expected_keywords"]:
-                assert keyword in result_text, \
+                assert keyword in result_text, (
                     f"Search results should contain expected keyword: {keyword}"
+                )
 
             # Verify results don't contain other tenant's content
             other_tenant = "tenant2" if tenant_key == "tenant1" else "tenant1"
@@ -610,14 +599,12 @@ class TestMultiTenantSearchIsolation:
                 # The other tenant's keywords should not appear in results
                 # (unless they happen to overlap, but in our test data they don't)
                 if keyword.startswith(other_tenant.capitalize()):  # e.g., "Tenant 1"
-                    assert keyword not in result_text, \
+                    assert keyword not in result_text, (
                         f"Search results should NOT contain {other_tenant}'s content"
+                    )
 
     def test_cross_tenant_search_fails(
-        self,
-        client,
-        tenant_search_data: Dict[str, Dict[str, Any]],
-        clean_storage: None
+        self, client, tenant_search_data: Dict[str, Dict[str, Any]], clean_storage: None
     ):
         """Test that searching in other tenant's collection fails.
 
@@ -627,7 +614,7 @@ class TestMultiTenantSearchIsolation:
         # Setup users and collections
         users = {
             "tenant1": {"username": "cross_search_user1", "password": "pass123"},
-            "tenant2": {"username": "cross_search_user2", "password": "pass123"}
+            "tenant2": {"username": "cross_search_user2", "password": "pass123"},
         }
 
         user_tokens = {}
@@ -640,8 +627,8 @@ class TestMultiTenantSearchIsolation:
                 json={
                     "username": user_info["username"],
                     "password": user_info["password"],
-                    "email": f"{tenant_key}@example.com"
-                }
+                    "email": f"{tenant_key}@example.com",
+                },
             )
             login_response = client.post("/api/auth/login", json=user_info)
             assert login_response.status_code == 200
@@ -654,13 +641,9 @@ class TestMultiTenantSearchIsolation:
             with open(file_data["file"], "rb") as f:
                 response = client.post(
                     "/api/kb/upload/",
-                    files={
-                        "file": (file_data["file"].name, f, "text/plain")
-                    },
-                    data={
-                        "collection_name": f"{tenant_key}_collection"
-                    },
-                    headers=headers
+                    files={"file": (file_data["file"].name, f, "text/plain")},
+                    data={"collection_name": f"{tenant_key}_collection"},
+                    headers=headers,
                 )
                 assert response.status_code == 200
                 collection_ids[tenant_key] = response.json()["collection_id"]
@@ -672,12 +655,13 @@ class TestMultiTenantSearchIsolation:
         response = client.post(
             f"/api/kb/collections/{tenant2_collection_id}/search/",
             json={"query": "test query"},
-            headers={"Authorization": f"Bearer {tenant1_token}"}
+            headers={"Authorization": f"Bearer {tenant1_token}"},
         )
 
         # Should be denied
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "Cross-tenant search should be denied"
+        )
 
 
 class TestMultiTenantAfterMigration:
@@ -687,11 +671,7 @@ class TestMultiTenantAfterMigration:
     database migrations do not break tenant isolation.
     """
 
-    def test_isolation_after_user_id_field_change(
-        self,
-        client,
-        clean_storage: None
-    ):
+    def test_isolation_after_user_id_field_change(self, client, clean_storage: None):
         """Test that isolation remains after user_id field changes.
 
         This simulates a scenario where the user_id field type or
@@ -699,8 +679,16 @@ class TestMultiTenantAfterMigration:
         """
         # Create two users
         users = [
-            {"username": "migration_user1", "password": "pass123", "email": "user1@example.com"},
-            {"username": "migration_user2", "password": "pass123", "email": "user2@example.com"}
+            {
+                "username": "migration_user1",
+                "password": "pass123",
+                "email": "user1@example.com",
+            },
+            {
+                "username": "migration_user2",
+                "password": "pass123",
+                "email": "user2@example.com",
+            },
         ]
 
         user_tokens = []
@@ -708,7 +696,7 @@ class TestMultiTenantAfterMigration:
             client.post("/api/auth/register", json=user)
             login_response = client.post(
                 "/api/auth/login",
-                json={"username": user["username"], "password": user["password"]}
+                json={"username": user["username"], "password": user["password"]},
             )
             assert login_response.status_code == 200
             user_tokens.append(login_response.json()["access_token"])
@@ -717,11 +705,9 @@ class TestMultiTenantAfterMigration:
         headers1 = {"Authorization": f"Bearer {user_tokens[0]}"}
         response = client.post(
             "/api/kb/upload/",
-            files={
-                "file": ("user1_doc.txt", "User 1 private data", "text/plain")
-            },
+            files={"file": ("user1_doc.txt", "User 1 private data", "text/plain")},
             data={"collection_name": "user1_collection"},
-            headers=headers1
+            headers=headers1,
         )
         assert response.status_code == 200
         collection_id = response.json()["collection_id"]
@@ -729,19 +715,15 @@ class TestMultiTenantAfterMigration:
         # User 2 tries to access User 1's collection
         headers2 = {"Authorization": f"Bearer {user_tokens[1]}"}
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=headers2
+            f"/api/kb/collections/{collection_id}/documents/", headers=headers2
         )
 
         # Should be denied
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "User 2 should not access User 1's collection after migration"
+        )
 
-    def test_legacy_orphan_data_isolation(
-        self,
-        client,
-        clean_storage: None
-    ):
+    def test_legacy_orphan_data_isolation(self, client, clean_storage: None):
         """Test that legacy data without proper user_id is properly isolated.
 
         This test simulates legacy data that might not have user_id set
@@ -753,12 +735,12 @@ class TestMultiTenantAfterMigration:
             json={
                 "username": "legacy_test_user",
                 "password": "pass123",
-                "email": "legacy@example.com"
-            }
+                "email": "legacy@example.com",
+            },
         )
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "legacy_test_user", "password": "pass123"}
+            json={"username": "legacy_test_user", "password": "pass123"},
         )
         assert login_response.status_code == 200
         user_token = login_response.json()["access_token"]
@@ -767,11 +749,9 @@ class TestMultiTenantAfterMigration:
         # Create a collection
         response = client.post(
             "/api/kb/upload/",
-            files={
-                "file": ("user_doc.txt", "User private data", "text/plain")
-            },
+            files={"file": ("user_doc.txt", "User private data", "text/plain")},
             data={"collection_name": "user_collection"},
-            headers=headers
+            headers=headers,
         )
         assert response.status_code == 200
 
@@ -788,11 +768,7 @@ class TestMultiTenantAfterMigration:
         # If there were legacy orphan collections, they should not appear
         # (unless the system has specific logic to handle them)
 
-    def test_isolation_with_mixed_schema_versions(
-        self,
-        client,
-        clean_storage: None
-    ):
+    def test_isolation_with_mixed_schema_versions(self, client, clean_storage: None):
         """Test isolation works with mixed schema versions.
 
         This simulates a scenario where some collections use the old schema
@@ -800,8 +776,16 @@ class TestMultiTenantAfterMigration:
         """
         # Create two users
         users = [
-            {"username": "schema_user1", "password": "pass123", "email": "schema1@example.com"},
-            {"username": "schema_user2", "password": "pass123", "email": "schema2@example.com"}
+            {
+                "username": "schema_user1",
+                "password": "pass123",
+                "email": "schema1@example.com",
+            },
+            {
+                "username": "schema_user2",
+                "password": "pass123",
+                "email": "schema2@example.com",
+            },
         ]
 
         user_tokens = []
@@ -809,7 +793,7 @@ class TestMultiTenantAfterMigration:
             client.post("/api/auth/register", json=user)
             login_response = client.post(
                 "/api/auth/login",
-                json={"username": user["username"], "password": user["password"]}
+                json={"username": user["username"], "password": user["password"]},
             )
             assert login_response.status_code == 200
             user_tokens.append(login_response.json()["access_token"])
@@ -821,10 +805,10 @@ class TestMultiTenantAfterMigration:
             response = client.post(
                 "/api/kb/upload/",
                 files={
-                    "file": (f"user{i+1}_doc.txt", f"User {i+1} data", "text/plain")
+                    "file": (f"user{i + 1}_doc.txt", f"User {i + 1} data", "text/plain")
                 },
-                data={"collection_name": f"user{i+1}_collection"},
-                headers=headers
+                data={"collection_name": f"user{i + 1}_collection"},
+                headers=headers,
             )
             assert response.status_code == 200
             collection_ids.append(response.json()["collection_id"])
@@ -832,11 +816,11 @@ class TestMultiTenantAfterMigration:
         # Verify cross-access is denied
         headers1 = {"Authorization": f"Bearer {user_tokens[0]}"}
         response = client.get(
-            f"/api/kb/collections/{collection_ids[1]}/documents/",
-            headers=headers1
+            f"/api/kb/collections/{collection_ids[1]}/documents/", headers=headers1
         )
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "Cross-tenant access should be denied even with mixed schemas"
+        )
 
 
 class TestMultiTenantDeleteIsolation:
@@ -846,16 +830,20 @@ class TestMultiTenantDeleteIsolation:
     and documents, not other tenants'.
     """
 
-    def test_users_can_only_delete_own_collections(
-        self,
-        client,
-        clean_storage: None
-    ):
+    def test_users_can_only_delete_own_collections(self, client, clean_storage: None):
         """Test that users can only delete their own collections."""
         # Create two users
         users = [
-            {"username": "delete_user1", "password": "pass123", "email": "delete1@example.com"},
-            {"username": "delete_user2", "password": "pass123", "email": "delete2@example.com"}
+            {
+                "username": "delete_user1",
+                "password": "pass123",
+                "email": "delete1@example.com",
+            },
+            {
+                "username": "delete_user2",
+                "password": "pass123",
+                "email": "delete2@example.com",
+            },
         ]
 
         user_tokens = []
@@ -865,7 +853,7 @@ class TestMultiTenantDeleteIsolation:
             client.post("/api/auth/register", json=user)
             login_response = client.post(
                 "/api/auth/login",
-                json={"username": user["username"], "password": user["password"]}
+                json={"username": user["username"], "password": user["password"]},
             )
             assert login_response.status_code == 200
             token = login_response.json()["access_token"]
@@ -876,10 +864,10 @@ class TestMultiTenantDeleteIsolation:
             response = client.post(
                 "/api/kb/upload/",
                 files={
-                    "file": (f"user{i+1}_doc.txt", f"User {i+1} data", "text/plain")
+                    "file": (f"user{i + 1}_doc.txt", f"User {i + 1} data", "text/plain")
                 },
-                data={"collection_name": f"user{i+1}_collection"},
-                headers=headers
+                data={"collection_name": f"user{i + 1}_collection"},
+                headers=headers,
             )
             assert response.status_code == 200
             collection_ids.append(response.json()["collection_id"])
@@ -887,28 +875,24 @@ class TestMultiTenantDeleteIsolation:
         # User 1 tries to delete User 2's collection
         headers1 = {"Authorization": f"Bearer {user_tokens[0]}"}
         response = client.delete(
-            f"/api/kb/collections/{collection_ids[1]}/",
-            headers=headers1
+            f"/api/kb/collections/{collection_ids[1]}/", headers=headers1
         )
 
         # Should be denied
-        assert response.status_code in [403, 404], \
+        assert response.status_code in [403, 404], (
             "User should not be able to delete other tenant's collection"
+        )
 
         # Verify User 2's collection still exists
         headers2 = {"Authorization": f"Bearer {user_tokens[1]}"}
         response = client.get(
-            f"/api/kb/collections/{collection_ids[1]}/",
-            headers=headers2
+            f"/api/kb/collections/{collection_ids[1]}/", headers=headers2
         )
-        assert response.status_code == 200, \
+        assert response.status_code == 200, (
             "Other tenant's collection should still exist"
+        )
 
-    def test_users_can_only_delete_own_documents(
-        self,
-        client,
-        clean_storage: None
-    ):
+    def test_users_can_only_delete_own_documents(self, client, clean_storage: None):
         """Test that users can only delete their own documents."""
         # Create two users in same collection scenario
         # (if system supports shared collections)
@@ -916,8 +900,16 @@ class TestMultiTenantDeleteIsolation:
 
         # For now, test that file_id based deletion is isolated
         users = [
-            {"username": "doc_delete_user1", "password": "pass123", "email": "docdel1@example.com"},
-            {"username": "doc_delete_user2", "password": "pass123", "email": "docdel2@example.com"}
+            {
+                "username": "doc_delete_user1",
+                "password": "pass123",
+                "email": "docdel1@example.com",
+            },
+            {
+                "username": "doc_delete_user2",
+                "password": "pass123",
+                "email": "docdel2@example.com",
+            },
         ]
 
         user_tokens = []
@@ -927,7 +919,7 @@ class TestMultiTenantDeleteIsolation:
             client.post("/api/auth/register", json=user)
             login_response = client.post(
                 "/api/auth/login",
-                json={"username": user["username"], "password": user["password"]}
+                json={"username": user["username"], "password": user["password"]},
             )
             assert login_response.status_code == 200
             token = login_response.json()["access_token"]
@@ -938,10 +930,14 @@ class TestMultiTenantDeleteIsolation:
             response = client.post(
                 "/api/kb/upload/",
                 files={
-                    "file": (f"user{i+1}_file.txt", f"User {i+1} file content", "text/plain")
+                    "file": (
+                        f"user{i + 1}_file.txt",
+                        f"User {i + 1} file content",
+                        "text/plain",
+                    )
                 },
-                data={"collection_name": f"user{i+1}_collection"},
-                headers=headers
+                data={"collection_name": f"user{i + 1}_collection"},
+                headers=headers,
             )
             assert response.status_code == 200
             # Get file_id from response
@@ -951,10 +947,10 @@ class TestMultiTenantDeleteIsolation:
         if file_ids[1]:  # If file_id is available
             headers1 = {"Authorization": f"Bearer {user_tokens[0]}"}
             response = client.delete(
-                f"/api/kb/documents/?file_id={file_ids[1]}",
-                headers=headers1
+                f"/api/kb/documents/?file_id={file_ids[1]}", headers=headers1
             )
 
             # Should be denied
-            assert response.status_code in [403, 404], \
+            assert response.status_code in [403, 404], (
                 "User should not be able to delete other tenant's document"
+            )

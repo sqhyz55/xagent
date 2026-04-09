@@ -10,7 +10,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,10 +18,7 @@ from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
-    IngestionConfig,
-    IngestionResult,
 )
-
 
 # ==========================================
 # TEST FIXTURES
@@ -68,7 +64,9 @@ def stub_embedding_adapter():
 
 
 @pytest.fixture
-def mock_parsing_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
+def mock_parsing_rag_pipeline(
+    monkeypatch, stub_embedding_config, stub_embedding_adapter
+):
     """Mock the RAG pipeline components for parsing behavior E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
@@ -632,8 +630,6 @@ class TestParsedContentVerification:
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_text"
         file_path = files["simple.txt"]
-
-        original_content = Path(file_path).read_text(encoding="utf-8")
 
         with open(file_path, "rb") as f:
             response = client.post(

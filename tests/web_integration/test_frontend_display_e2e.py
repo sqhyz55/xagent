@@ -11,7 +11,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,9 +19,7 @@ from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
-    IngestionResult,
 )
-
 
 # ==========================================
 # TEST FIXTURES
@@ -68,7 +65,9 @@ def stub_embedding_adapter():
 
 
 @pytest.fixture
-def mock_display_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
+def mock_display_rag_pipeline(
+    monkeypatch, stub_embedding_config, stub_embedding_adapter
+):
     """Mock the RAG pipeline components for display verification E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
@@ -249,7 +248,7 @@ class TestCollectionDisplay:
         for filename in ["report_2024.pdf", "user_guide.md"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
-                response = client.post(
+                client.post(
                     "/api/kb/ingest",
                     files={"file": (filename, f, "text/plain")},
                     data={"collection": collection_name},
@@ -305,8 +304,6 @@ class TestCollectionDisplay:
         """Test that legacy data is handled with fallback display."""
         # This test verifies that when documents table decoding fails,
         # the system falls back to UploadedFile records
-
-        collection_name = "e2e_display_legacy"
 
         # Try to list collections (may include legacy data)
         list_response = client.get("/api/kb/collections", headers=auth_headers)

@@ -12,6 +12,7 @@ This module tests the complete knowledge base lifecycle:
 from __future__ import annotations
 
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest

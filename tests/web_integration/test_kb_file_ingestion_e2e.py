@@ -443,5 +443,5 @@ def test_env():
     """
     from xagent.web.api.test_kb_dir import test_env as kb_test_env
 
-    # Re-use existing test environment from kb_dir tests
+    # Reuse existing test environment from kb_dir tests
     yield from kb_test_env()

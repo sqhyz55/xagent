@@ -11,10 +11,10 @@ These tests use real URLs to verify:
 4. Display shows correct metadata
 """
 
-import pytest
-from pathlib import Path
-from typing import Dict, List, Any
 import time
+from typing import Dict
+
+import pytest
 
 
 class TestRealURLIngestion:
@@ -38,10 +38,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_github_readme_ingestion(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test ingestion of GitHub repository README.
 
@@ -56,21 +53,21 @@ class TestRealURLIngestion:
         # Upload GitHub URL
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": github_url,
-                "collection_name": "github_xagent_repo"
-            },
-            headers=auth_headers
+            json={"url": github_url, "collection_name": "github_xagent_repo"},
+            headers=auth_headers,
         )
 
         # Accept both success and async processing responses
-        assert response.status_code in [200, 202], \
+        assert response.status_code in [200, 202], (
             f"GitHub URL ingestion failed: {response.text}"
+        )
 
         result = response.json()
 
         # Should have collection info
-        assert "collection_id" in result or "collection" in result or "task_id" in result
+        assert (
+            "collection_id" in result or "collection" in result or "task_id" in result
+        )
 
         # If async, wait for completion
         if "task_id" in result:
@@ -80,8 +77,7 @@ class TestRealURLIngestion:
 
             while time.time() - start_time < max_wait:
                 status_response = client.get(
-                    f"/api/kb/tasks/{task_id}/",
-                    headers=auth_headers
+                    f"/api/kb/tasks/{task_id}/", headers=auth_headers
                 )
                 if status_response.status_code == 200:
                     status = status_response.json()
@@ -98,8 +94,7 @@ class TestRealURLIngestion:
 
         # Verify documents were created
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=auth_headers
+            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -113,7 +108,7 @@ class TestRealURLIngestion:
         response = client.post(
             f"/api/kb/collections/{collection_id}/search/",
             json={"query": "xagent AI agent framework"},
-            headers=auth_headers
+            headers=auth_headers,
         )
 
         # Search should work (might return no results if not indexed, but should not error)
@@ -122,10 +117,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_github_raw_content_ingestion(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test ingestion of raw GitHub content.
 
@@ -137,16 +129,14 @@ class TestRealURLIngestion:
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": raw_url,
-                "collection_name": "github_raw_readme"
-            },
-            headers=auth_headers
+            json={"url": raw_url, "collection_name": "github_raw_readme"},
+            headers=auth_headers,
         )
 
         # Should succeed
-        assert response.status_code in [200, 202], \
+        assert response.status_code in [200, 202], (
             f"Raw GitHub URL ingestion failed: {response.text}"
+        )
 
         result = response.json()
         collection_id = result.get("collection_id")
@@ -158,8 +148,7 @@ class TestRealURLIngestion:
 
         # Verify document was created
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=auth_headers
+            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -169,10 +158,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_real_url_search_verification(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that ingested real URLs produce searchable content.
 
@@ -189,9 +175,9 @@ class TestRealURLIngestion:
             "/api/kb/ingest/url/",
             json={
                 "url": github_url,
-                "collection_name": "search_verification_collection"
+                "collection_name": "search_verification_collection",
             },
-            headers=auth_headers
+            headers=auth_headers,
         )
 
         assert response.status_code in [200, 202]
@@ -211,7 +197,7 @@ class TestRealURLIngestion:
             response = client.post(
                 f"/api/kb/collections/{collection_id}/search/",
                 json={"query": "xagent agent framework"},
-                headers=auth_headers
+                headers=auth_headers,
             )
 
             if response.status_code == 200:
@@ -226,7 +212,7 @@ class TestRealURLIngestion:
         response = client.post(
             f"/api/kb/collections/{collection_id}/search/",
             json={"query": "xagent agent framework"},
-            headers=auth_headers
+            headers=auth_headers,
         )
 
         assert response.status_code == 200
@@ -241,10 +227,7 @@ class TestRealURLIngestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_multiple_github_urls_ingestion(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test ingestion of multiple GitHub URLs into same collection.
 
@@ -261,14 +244,12 @@ class TestRealURLIngestion:
         for url in urls:
             response = client.post(
                 "/api/kb/ingest/url/",
-                json={
-                    "url": url,
-                    "collection_name": collection_name
-                },
-                headers=auth_headers
+                json={"url": url, "collection_name": collection_name},
+                headers=auth_headers,
             )
-            assert response.status_code in [200, 202], \
+            assert response.status_code in [200, 202], (
                 f"Failed to ingest {url}: {response.text}"
+            )
 
         # Find the collection
         response = client.get("/api/kb/collections/", headers=auth_headers)
@@ -276,8 +257,7 @@ class TestRealURLIngestion:
 
         collections = response.json()["collections"]
         test_collection = next(
-            (c for c in collections if c["name"] == collection_name),
-            None
+            (c for c in collections if c["name"] == collection_name), None
         )
         assert test_collection is not None
 
@@ -285,15 +265,15 @@ class TestRealURLIngestion:
 
         # Verify multiple documents exist
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=auth_headers
+            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
         documents = response.json().get("documents", [])
         # Should have documents from multiple URLs
-        assert len(documents) >= len(urls), \
+        assert len(documents) >= len(urls), (
             f"Expected at least {len(urls)} documents, got {len(documents)}"
+        )
 
 
 class TestRealURLParsing:
@@ -306,10 +286,7 @@ class TestRealURLParsing:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_github_markdown_parsing(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that GitHub markdown is parsed correctly.
 
@@ -321,11 +298,8 @@ class TestRealURLParsing:
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": url,
-                "collection_name": "github_markdown_test"
-            },
-            headers=auth_headers
+            json={"url": url, "collection_name": "github_markdown_test"},
+            headers=auth_headers,
         )
 
         assert response.status_code in [200, 202]
@@ -339,8 +313,7 @@ class TestRealURLParsing:
 
         # Check documents
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=auth_headers
+            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -353,10 +326,7 @@ class TestRealURLParsing:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_url_metadata_extraction(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that metadata is correctly extracted from URLs.
 
@@ -370,11 +340,8 @@ class TestRealURLParsing:
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": url,
-                "collection_name": "metadata_test_collection"
-            },
-            headers=auth_headers
+            json={"url": url, "collection_name": "metadata_test_collection"},
+            headers=auth_headers,
         )
 
         assert response.status_code in [200, 202]
@@ -386,8 +353,7 @@ class TestRealURLParsing:
 
         # Check documents for metadata
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=auth_headers
+            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -398,9 +364,12 @@ class TestRealURLParsing:
             metadata = doc.get("metadata", {})
 
             # Verify source URL is preserved
-            assert "source" in metadata or "url" in metadata or \
-                   doc.get("source_url") or doc.get("url"), \
-                   "Source URL should be in metadata"
+            assert (
+                "source" in metadata
+                or "url" in metadata
+                or doc.get("source_url")
+                or doc.get("url")
+            ), "Source URL should be in metadata"
 
             # Other metadata fields (optional, might not be present)
             # title, author, date, content_type, etc.
@@ -416,37 +385,31 @@ class TestRealURLErrors:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_invalid_url_handling(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that invalid URLs are handled gracefully.
 
         This uses a real but invalid URL to verify error handling.
         """
-        invalid_url = "https://this-domain-definitely-does-not-exist-12345.com/README.md"
+        invalid_url = (
+            "https://this-domain-definitely-does-not-exist-12345.com/README.md"
+        )
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": invalid_url,
-                "collection_name": "invalid_url_test"
-            },
-            headers=auth_headers
+            json={"url": invalid_url, "collection_name": "invalid_url_test"},
+            headers=auth_headers,
         )
 
         # Should fail gracefully
-        assert response.status_code in [400, 404, 500], \
+        assert response.status_code in [400, 404, 500], (
             "Invalid URL should be handled with appropriate error"
+        )
 
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_private_url_handling(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that private/restricted URLs are handled properly.
 
@@ -459,24 +422,19 @@ class TestRealURLErrors:
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": private_url,
-                "collection_name": "private_url_test"
-            },
-            headers=auth_headers
+            json={"url": private_url, "collection_name": "private_url_test"},
+            headers=auth_headers,
         )
 
         # Should fail gracefully (401, 403, or 404)
-        assert response.status_code in [400, 401, 403, 404], \
+        assert response.status_code in [400, 401, 403, 404], (
             "Private URL should be handled with appropriate error"
+        )
 
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_malformed_url_handling(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that malformed URLs are rejected.
 
@@ -492,16 +450,14 @@ class TestRealURLErrors:
         for malformed_url in malformed_urls:
             response = client.post(
                 "/api/kb/ingest/url/",
-                json={
-                    "url": malformed_url,
-                    "collection_name": "malformed_url_test"
-                },
-                headers=auth_headers
+                json={"url": malformed_url, "collection_name": "malformed_url_test"},
+                headers=auth_headers,
             )
 
             # Should reject malformed URLs
-            assert response.status_code in [400, 422], \
+            assert response.status_code in [400, 422], (
                 f"Malformed URL should be rejected: {malformed_url}"
+            )
 
 
 class TestRealURLDisplay:
@@ -514,10 +470,7 @@ class TestRealURLDisplay:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_ingested_url_document_display(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that ingested URL documents display correctly.
 
@@ -531,11 +484,8 @@ class TestRealURLDisplay:
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": url,
-                "collection_name": "display_test_collection"
-            },
-            headers=auth_headers
+            json={"url": url, "collection_name": "display_test_collection"},
+            headers=auth_headers,
         )
 
         assert response.status_code in [200, 202]
@@ -547,8 +497,7 @@ class TestRealURLDisplay:
 
         # Get documents for display
         response = client.get(
-            f"/api/kb/collections/{collection_id}/documents/",
-            headers=auth_headers
+            f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
         )
         assert response.status_code == 200
 
@@ -556,14 +505,18 @@ class TestRealURLDisplay:
 
         for doc in documents:
             # Should have displayable name
-            assert "name" in doc or "filename" in doc or "title" in doc, \
-                   "Document should have displayable name"
+            assert "name" in doc or "filename" in doc or "title" in doc, (
+                "Document should have displayable name"
+            )
 
             # Should show source URL
             metadata = doc.get("metadata", {})
-            assert "source" in metadata or "url" in metadata or \
-                   doc.get("source_url") or doc.get("url"), \
-                   "Source URL should be visible for display"
+            assert (
+                "source" in metadata
+                or "url" in metadata
+                or doc.get("source_url")
+                or doc.get("url")
+            ), "Source URL should be visible for display"
 
             # Should have content preview
             # (This depends on implementation)
@@ -571,10 +524,7 @@ class TestRealURLDisplay:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_collection_list_with_url_documents(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test that collections with URL documents display correctly.
 
@@ -585,11 +535,8 @@ class TestRealURLDisplay:
 
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": url,
-                "collection_name": "url_collection_display_test"
-            },
-            headers=auth_headers
+            json={"url": url, "collection_name": "url_collection_display_test"},
+            headers=auth_headers,
         )
 
         assert response.status_code in [200, 202]
@@ -600,14 +547,16 @@ class TestRealURLDisplay:
 
         collections = response.json()["collections"]
         test_collection = next(
-            (c for c in collections if c["name"] == "url_collection_display_test"),
-            None
+            (c for c in collections if c["name"] == "url_collection_display_test"), None
         )
 
         assert test_collection is not None
 
         # Should show document count
-        assert any(k in test_collection for k in ["document_count", "doc_count", "count", "size"])
+        assert any(
+            k in test_collection
+            for k in ["document_count", "doc_count", "count", "size"]
+        )
 
         # Should show collection metadata
         # (This depends on implementation)
@@ -623,10 +572,7 @@ class TestRealURLReingestion:
     @pytest.mark.slow
     @pytest.mark.requires_network
     def test_url_reingestion(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        clean_storage: None
+        self, client, auth_headers: Dict[str, str], clean_storage: None
     ):
         """Test re-ingesting the same URL.
 
@@ -641,11 +587,8 @@ class TestRealURLReingestion:
         # First ingestion
         response = client.post(
             "/api/kb/ingest/url/",
-            json={
-                "url": url,
-                "collection_name": collection_name
-            },
-            headers=auth_headers
+            json={"url": url, "collection_name": collection_name},
+            headers=auth_headers,
         )
         assert response.status_code in [200, 202]
 
@@ -653,8 +596,7 @@ class TestRealURLReingestion:
         collections_response = client.get("/api/kb/collections/", headers=auth_headers)
         collections = collections_response.json()["collections"]
         test_collection = next(
-            (c for c in collections if c["name"] == collection_name),
-            None
+            (c for c in collections if c["name"] == collection_name), None
         )
 
         if test_collection:
@@ -662,26 +604,21 @@ class TestRealURLReingestion:
 
             # Get document count before re-ingestion
             docs_response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/",
-                headers=auth_headers
+                f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
             )
             docs_before = docs_response.json().get("documents", [])
 
             # Re-ingest same URL
             response = client.post(
                 "/api/kb/ingest/url/",
-                json={
-                    "url": url,
-                    "collection_name": collection_name
-                },
-                headers=auth_headers
+                json={"url": url, "collection_name": collection_name},
+                headers=auth_headers,
             )
             assert response.status_code in [200, 202]
 
             # Get document count after re-ingestion
             docs_response = client.get(
-                f"/api/kb/collections/{collection_id}/documents/",
-                headers=auth_headers
+                f"/api/kb/collections/{collection_id}/documents/", headers=auth_headers
             )
             docs_after = docs_response.json().get("documents", [])
 
@@ -689,5 +626,6 @@ class TestRealURLReingestion:
             # - Should update existing documents (same count)
             # - Or create new versions (increased count)
             # - Or skip duplicates (same count)
-            assert len(docs_after) >= len(docs_before), \
-                   "Re-ingestion should not decrease document count"
+            assert len(docs_after) >= len(docs_before), (
+                "Re-ingestion should not decrease document count"
+            )

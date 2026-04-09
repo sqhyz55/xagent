@@ -11,7 +11,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,16 +19,9 @@ from fastapi.testclient import TestClient
 from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
-    ChunkStrategy,
-    ChunkDocumentResponse,
     CollectionInfo,
-    IngestionConfig,
     IngestionResult,
-    ParseMethod,
-    ParseResultResponse,
-    ParsedParagraph,
 )
-
 
 # ==========================================
 # TEST FIXTURES
