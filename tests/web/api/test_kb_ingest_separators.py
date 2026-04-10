@@ -294,7 +294,13 @@ def test_ingest_returns_403_when_file_save_fails(app_with_kb, mock_user):
 
 
 async def _fake_run_web_ingestion(
-    collection, crawl_config, *, ingestion_config, user_id, is_admin=False, file_handler=None
+    collection,
+    crawl_config,
+    *,
+    ingestion_config,
+    user_id,
+    is_admin=False,
+    file_handler=None,
 ):
     """Async fake that captures ingestion_config and returns WebIngestionResult."""
     captured_config: list = _fake_run_web_ingestion.captured  # type: ignore[attr-defined]

@@ -1108,7 +1108,7 @@ async def ingest_web(
 
         # Define file handler for persistent storage and UploadedFile record creation
         def _handle_web_file(
-            temp_file_path: Path, title: str, collection_name: str
+            temp_file_path: Path, title: str, collection_name: str, db_session: Session
         ) -> dict:
             """Handle file persistence and UploadedFile record creation for web ingestion.
 
@@ -1160,7 +1160,7 @@ async def ingest_web(
 
             # Create UploadedFile record
             file_record = _upsert_uploaded_file_record(
-                db,
+                db_session,
                 user_id=int(_user.id),
                 filename=filename,
                 storage_path=persistent_file,
@@ -1178,6 +1178,15 @@ async def ingest_web(
                 "file_id": str(file_record.file_id),
             }
 
+        # Create a wrapper that passes db to the file handler
+        # Note: db is injected via Depends(get_db) in the function signature
+        _db_session = db  # type: ignore[name-defined] # noqa: F821
+
+        def _file_handler_with_db(
+            temp_file_path: Path, title: str, collection_name: str
+        ) -> dict:
+            return _handle_web_file(temp_file_path, title, collection_name, _db_session)
+
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: asyncio.run(
@@ -1187,7 +1196,7 @@ async def ingest_web(
                     ingestion_config=ingestion_config,
                     user_id=int(_user.id),
                     is_admin=bool(_user.is_admin),
-                    file_handler=_handle_web_file,
+                    file_handler=_file_handler_with_db,
                 )
             ),
         )

@@ -503,7 +503,9 @@ class TestWebIngestionFileHandler:
                 assert file_handler_calls[0]["title"] == "Test Page"
                 assert file_handler_calls[0]["collection"] == "test_collection"
                 # Note: temp_file_path no longer exists at this point (temp dir cleaned up)
-                assert "xagent_web_ingest" in str(file_handler_calls[0]["temp_file_path"])
+                assert "xagent_web_ingest" in str(
+                    file_handler_calls[0]["temp_file_path"]
+                )
 
                 # Verify run_document_ingestion was called with file_id
                 mock_ingest.assert_called_once()
