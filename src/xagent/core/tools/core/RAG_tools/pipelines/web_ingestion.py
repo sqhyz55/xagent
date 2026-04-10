@@ -8,7 +8,7 @@ import logging
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional, TypedDict
 
 from ..core.schemas import (
     CrawlResult,
@@ -26,6 +26,18 @@ from .document_ingestion import run_document_ingestion
 logger = logging.getLogger(__name__)
 
 
+class FileHandlerResult(TypedDict):
+    """Return type for file_handler callback.
+
+    Attributes:
+        file_path: Path to the file for ingestion (persistent or temporary)
+        file_id: Optional file_id for stable doc_id generation
+    """
+
+    file_path: str
+    file_id: Optional[str]
+
+
 async def run_web_ingestion(
     collection: str,
     crawl_config: WebCrawlConfig,
@@ -34,7 +46,7 @@ async def run_web_ingestion(
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
-    file_handler: Optional[Callable[[Path, str, str], dict[str, Any]]] = None,
+    file_handler: Optional[Callable[[Path, str, str, str], FileHandlerResult]] = None,
 ) -> WebIngestionResult:
     """Crawl a website and ingest all pages into the knowledge base.
 
@@ -53,10 +65,8 @@ async def run_web_ingestion(
         user_id: Optional user ID for ownership tracking
         is_admin: Whether the user has admin privileges
         file_handler: Optional callback to handle file persistence and UploadedFile
-            record creation. Signature: (temp_file_path: Path, title: str,
-            collection: str) -> dict with keys:
-            - 'file_path': Path to the file for ingestion
-            - 'file_id': Optional[str] file_id for ingestion
+            record creation. Signature: (temp_file_path, title, collection, url)
+            Returns FileHandlerResult with file_path and optional file_id.
             If not provided, temporary files will be used without UploadedFile records.
 
     Returns:
@@ -157,6 +167,7 @@ async def run_web_ingestion(
                 # Call file_handler if provided (for persistent storage and UploadedFile record)
                 final_file_path = temp_file
                 final_file_id = None
+                copied_persistent_file = None
 
                 if file_handler:
                     try:
@@ -164,9 +175,15 @@ async def run_web_ingestion(
                             temp_file,
                             crawl_result.title or f"page_{i + 1}",
                             collection,
+                            crawl_result.url,
                         )
                         final_file_path = Path(file_info.get("file_path", temp_file))
                         final_file_id = file_info.get("file_id")
+
+                        # Track if we successfully copied a persistent file for cleanup
+                        if final_file_path != temp_file and final_file_path.exists():
+                            copied_persistent_file = final_file_path
+
                         logger.debug(
                             f"File handler returned: path={final_file_path}, file_id={final_file_id}"
                         )
@@ -177,47 +194,69 @@ async def run_web_ingestion(
                         )
                         final_file_path = temp_file
                         final_file_id = None
+                        copied_persistent_file = None
 
-                # Ingest the file
-                import concurrent.futures
+                try:
+                    # Ingest the file
+                    import concurrent.futures
 
-                progress_manager = get_progress_manager()
+                    progress_manager = get_progress_manager()
 
-                def _ingest_file() -> IngestionResult:
-                    return run_document_ingestion(
-                        collection=collection,
-                        source_path=str(final_file_path),
-                        file_id=final_file_id,
-                        ingestion_config=ing_cfg,
-                        progress_manager=progress_manager,
-                        user_id=user_id,
-                        is_admin=is_admin,
-                    )
+                    def _ingest_file() -> IngestionResult:
+                        return run_document_ingestion(
+                            collection=collection,
+                            source_path=str(final_file_path),
+                            file_id=final_file_id,
+                            ingestion_config=ing_cfg,
+                            progress_manager=progress_manager,
+                            user_id=user_id,
+                            is_admin=is_admin,
+                        )
 
-                # Run ingestion in thread pool to avoid event loop conflicts
-                loop = asyncio.get_event_loop()
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    ingest_result: IngestionResult = await loop.run_in_executor(
-                        executor, _ingest_file
-                    )
+                    # Run ingestion in thread pool to avoid event loop conflicts
+                    loop = asyncio.get_event_loop()
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        ingest_result: IngestionResult = await loop.run_in_executor(
+                            executor, _ingest_file
+                        )
 
-                # Track statistics
-                if ingest_result.status == "success":
-                    documents_created += 1
-                    total_chunks += ingest_result.chunk_count
-                    total_embeddings += ingest_result.embedding_count
-                    logger.info(
-                        f"Ingested {crawl_result.url}: "
-                        f"{ingest_result.chunk_count} chunks, "
-                        f"{ingest_result.embedding_count} embeddings"
-                    )
-                else:
-                    failed_urls[crawl_result.url] = ingest_result.message
-                    msg = (
-                        f"Partial ingestion for {crawl_result.url}: "
-                        f"{ingest_result.message}"
-                    )
-                    warnings.append(msg)
+                    # Track statistics
+                    if ingest_result.status == "success":
+                        documents_created += 1
+                        total_chunks += ingest_result.chunk_count
+                        total_embeddings += ingest_result.embedding_count
+                        logger.info(
+                            f"Ingested {crawl_result.url}: "
+                            f"{ingest_result.chunk_count} chunks, "
+                            f"{ingest_result.embedding_count} embeddings"
+                        )
+                        # Only clear temp file reference on success
+                        copied_persistent_file = None
+                    else:
+                        failed_urls[crawl_result.url] = ingest_result.message
+                        msg = (
+                            f"Partial ingestion for {crawl_result.url}: "
+                            f"{ingest_result.message}"
+                        )
+                        warnings.append(msg)
+
+                except Exception as e:
+                    logger.exception(f"Failed to ingest {crawl_result.url}")
+                    failed_urls[crawl_result.url] = str(e)
+                    warnings.append(f"Failed to ingest {crawl_result.url}: {str(e)}")
+
+                    # Clean up copied persistent file on ingestion failure
+                    if copied_persistent_file and copied_persistent_file.exists():
+                        try:
+                            copied_persistent_file.unlink()
+                            logger.info(
+                                f"Cleaned up persistent file due to ingestion failure: {copied_persistent_file}"
+                            )
+                        except Exception as cleanup_error:
+                            logger.warning(
+                                f"Failed to clean up persistent file {copied_persistent_file}: {cleanup_error}"
+                            )
+                    copied_persistent_file = None
 
             except Exception as e:
                 logger.exception(f"Failed to ingest {crawl_result.url}")

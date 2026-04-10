@@ -53,7 +53,10 @@ from ...core.tools.core.RAG_tools.pipelines.document_ingestion import (
     run_document_ingestion,
 )
 from ...core.tools.core.RAG_tools.pipelines.document_search import run_document_search
-from ...core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
+from ...core.tools.core.RAG_tools.pipelines.web_ingestion import (
+    FileHandlerResult,
+    run_web_ingestion,
+)
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
 from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ...core.tools.core.RAG_tools.utils.string_utils import (
@@ -986,6 +989,7 @@ async def ingest_web(
         description="Delay between retries in seconds (default: 1.0)",
     ),
     _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> WebIngestionResult | JSONResponse:
     """Ingest website content into the knowledge base.
 
@@ -1106,30 +1110,92 @@ async def ingest_web(
             ),
         )
 
+        # Track processed URLs to prevent duplicate UploadedFile records
+        # Key: URL hash, Value: file_id
+        # TODO: For large-scale web ingestion (>10000 pages), consider using
+        # functools.lru_cache for memory-efficient URL tracking
+        _processed_urls: Dict[str, str] = {}
+
         # Define file handler for persistent storage and UploadedFile record creation
         def _handle_web_file(
-            temp_file_path: Path, title: str, collection_name: str, db_session: Session
-        ) -> dict:
+            temp_file_path: Path,
+            title: str,
+            collection_name: str,
+            url: str,
+            db_session: Session,
+        ) -> FileHandlerResult:
             """Handle file persistence and UploadedFile record creation for web ingestion.
 
             This function:
-            1. Copies the temporary file to the persistent uploads directory
-            2. Creates an UploadedFile record in the database
-            3. Returns the file_path and file_id for ingestion
+            1. Checks if a file with this URL already exists (URL-based deduplication)
+            2. If exists, reuses the existing file and UploadedFile record
+            3. If not, copies the temporary file to the persistent uploads directory
+            4. Creates an UploadedFile record in the database
+            5. Returns the file_path and file_id for ingestion
 
             Args:
                 temp_file_path: Path to the temporary markdown file
-                title: Page title (used for filename)
+                title: Page title (used for display)
                 collection_name: Collection name for organizing files
+                url: Source URL (used for unique identification)
 
             Returns:
-                dict with keys:
-                - 'file_path': Path to the persistent file
-                - 'file_id': UUID file_id from UploadedFile record
+                FileHandlerResult with file_path and optional file_id
             """
+            import hashlib
             import shutil
 
-            filename = f"{title}.md"
+            # Use URL hash for unique filename (true URL deduplication)
+            # Using SHA256 for better collision resistance than MD5
+            url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+            safe_title = (
+                sanitize_path_component(title, "filename") if title else "untitled"
+            )
+            filename = f"{url_hash}_{safe_title}.md"
+
+            # Check if we've already processed this URL (in-memory cache)
+            if url_hash in _processed_urls:
+                existing_file_id = _processed_urls[url_hash]
+                logger.info(
+                    f"Reusing existing UploadedFile record for web ingestion: "
+                    f"url={url}, file_id={existing_file_id}"
+                )
+                # Query the database to get the storage path
+                from ...web.models.uploaded_file import UploadedFile
+
+                existing_record = (
+                    db_session.query(UploadedFile)
+                    .filter(UploadedFile.file_id == existing_file_id)
+                    .first()
+                )
+                if existing_record:
+                    return FileHandlerResult(
+                        file_path=str(existing_record.storage_path),
+                        file_id=str(existing_record.file_id),
+                    )
+
+            # Check database for existing file with same URL hash (cross-session deduplication)
+            from ...web.models.uploaded_file import UploadedFile
+
+            existing_record = (
+                db_session.query(UploadedFile)
+                .filter(
+                    UploadedFile.user_id == int(_user.id),
+                    UploadedFile.filename == filename,
+                )
+                .first()
+            )
+
+            if existing_record:
+                logger.info(
+                    f"Found existing UploadedFile record from previous session: "
+                    f"url={url}, file_id={existing_record.file_id}"
+                )
+                _processed_urls[url_hash] = str(existing_record.file_id)
+                return FileHandlerResult(
+                    file_path=str(existing_record.storage_path),
+                    file_id=str(existing_record.file_id),
+                )
 
             try:
                 # Generate persistent file path
@@ -1170,22 +1236,28 @@ async def ingest_web(
 
             logger.info(
                 f"Created UploadedFile record for web ingestion: file_id={file_record.file_id}, "
-                f"filename={filename}"
+                f"filename={filename}, url={url}"
             )
 
-            return {
-                "file_path": str(persistent_file),
-                "file_id": str(file_record.file_id),
-            }
+            # Track this URL to prevent duplicates
+            _processed_urls[url_hash] = str(file_record.file_id)
+
+            return FileHandlerResult(
+                file_path=str(persistent_file),
+                file_id=str(file_record.file_id),
+            )
 
         # Create a wrapper that passes db to the file handler
         # Note: db is injected via Depends(get_db) in the function signature
-        _db_session = db  # type: ignore[name-defined] # noqa: F821
+        # Use cast to help static analyzers understand the injected type
+        _db_session: Session = cast(Session, db)
 
         def _file_handler_with_db(
-            temp_file_path: Path, title: str, collection_name: str
-        ) -> dict:
-            return _handle_web_file(temp_file_path, title, collection_name, _db_session)
+            temp_file_path: Path, title: str, collection_name: str, url: str
+        ) -> FileHandlerResult:
+            return _handle_web_file(
+                temp_file_path, title, collection_name, url, _db_session
+            )
 
         result = await asyncio.get_event_loop().run_in_executor(
             None,

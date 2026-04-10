@@ -463,7 +463,7 @@ class TestWebIngestionFileHandler:
         file_handler_calls = []
 
         def mock_file_handler(
-            temp_file_path: Path, title: str, collection: str
+            temp_file_path: Path, title: str, collection: str, url: str
         ) -> dict[str, Any]:
             """Mock file handler that tracks calls and returns test data."""
             file_handler_calls.append(
@@ -471,6 +471,7 @@ class TestWebIngestionFileHandler:
                     "temp_file_path": temp_file_path,
                     "title": title,
                     "collection": collection,
+                    "url": url,
                 }
             )
             return {
@@ -545,7 +546,7 @@ class TestWebIngestionFileHandler:
 
         # File handler that raises an exception
         def failing_file_handler(
-            temp_file_path: Path, title: str, collection: str
+            temp_file_path: Path, title: str, collection: str, url: str
         ) -> dict[str, Any]:
             raise Exception("File handler failed!")
 
