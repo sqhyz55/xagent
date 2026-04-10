@@ -8,7 +8,7 @@ import logging
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from ..core.schemas import (
     CrawlResult,
@@ -34,13 +34,15 @@ async def run_web_ingestion(
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     user_id: Optional[int] = None,
     is_admin: bool = False,
+    file_handler: Optional[Callable[[Path, str, str], dict[str, Any]]] = None,
 ) -> WebIngestionResult:
     """Crawl a website and ingest all pages into the knowledge base.
 
     This pipeline performs the following steps:
     1. Crawl the website according to the provided configuration
-    2. For each crawled page, save as a temporary file and ingest
-    3. Aggregate statistics and return comprehensive results
+    2. For each crawled page, save content and call file_handler (if provided)
+    3. Ingest each page using the returned file information
+    4. Aggregate statistics and return comprehensive results
 
     Args:
         collection: Target collection name for ingestion
@@ -50,6 +52,12 @@ async def run_web_ingestion(
             Args: (message, completed, total)
         user_id: Optional user ID for ownership tracking
         is_admin: Whether the user has admin privileges
+        file_handler: Optional callback to handle file persistence and UploadedFile
+            record creation. Signature: (temp_file_path: Path, title: str,
+            collection: str) -> dict with keys:
+            - 'file_path': Path to the file for ingestion
+            - 'file_id': Optional[str] file_id for ingestion
+            If not provided, temporary files will be used without UploadedFile records.
 
     Returns:
         WebIngestionResult: Comprehensive result with statistics
@@ -146,7 +154,31 @@ async def run_web_ingestion(
 
                 logger.debug(f"Saved {crawl_result.url} to {temp_file}")
 
-                # Ingest the temporary file
+                # Call file_handler if provided (for persistent storage and UploadedFile record)
+                final_file_path = temp_file
+                final_file_id = None
+
+                if file_handler:
+                    try:
+                        file_info = file_handler(
+                            temp_file,
+                            crawl_result.title or f"page_{i + 1}",
+                            collection,
+                        )
+                        final_file_path = Path(file_info.get("file_path", temp_file))
+                        final_file_id = file_info.get("file_id")
+                        logger.debug(
+                            f"File handler returned: path={final_file_path}, file_id={final_file_id}"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"File handler failed for {crawl_result.url}: {e}. "
+                            f"Using temporary file instead."
+                        )
+                        final_file_path = temp_file
+                        final_file_id = None
+
+                # Ingest the file
                 import concurrent.futures
 
                 progress_manager = get_progress_manager()
@@ -154,7 +186,8 @@ async def run_web_ingestion(
                 def _ingest_file() -> IngestionResult:
                     return run_document_ingestion(
                         collection=collection,
-                        source_path=str(temp_file),
+                        source_path=str(final_file_path),
+                        file_id=final_file_id,
                         ingestion_config=ing_cfg,
                         progress_manager=progress_manager,
                         user_id=user_id,

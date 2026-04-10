@@ -1106,6 +1106,78 @@ async def ingest_web(
             ),
         )
 
+        # Define file handler for persistent storage and UploadedFile record creation
+        def _handle_web_file(
+            temp_file_path: Path, title: str, collection_name: str
+        ) -> dict:
+            """Handle file persistence and UploadedFile record creation for web ingestion.
+
+            This function:
+            1. Copies the temporary file to the persistent uploads directory
+            2. Creates an UploadedFile record in the database
+            3. Returns the file_path and file_id for ingestion
+
+            Args:
+                temp_file_path: Path to the temporary markdown file
+                title: Page title (used for filename)
+                collection_name: Collection name for organizing files
+
+            Returns:
+                dict with keys:
+                - 'file_path': Path to the persistent file
+                - 'file_id': UUID file_id from UploadedFile record
+            """
+            import shutil
+
+            filename = f"{title}.md"
+
+            try:
+                # Generate persistent file path
+                persistent_file = get_upload_path(
+                    filename,
+                    user_id=int(_user.id),
+                    collection=collection_name,
+                    collection_is_sanitized=True,
+                )
+            except TypeError as e:
+                # Backward compatibility
+                if "collection_is_sanitized" not in str(e):
+                    raise
+                persistent_file = get_upload_path(
+                    filename,
+                    user_id=int(_user.id),
+                    collection=collection_name,
+                )
+
+            # Ensure directory exists
+            persistent_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # Copy file to persistent location
+            shutil.copy2(temp_file_path, persistent_file)
+            logger.info(
+                f"Copied web ingestion file from {temp_file_path} to {persistent_file}"
+            )
+
+            # Create UploadedFile record
+            file_record = _upsert_uploaded_file_record(
+                db,
+                user_id=int(_user.id),
+                filename=filename,
+                storage_path=persistent_file,
+                mime_type="text/markdown",
+                file_size=persistent_file.stat().st_size,
+            )
+
+            logger.info(
+                f"Created UploadedFile record for web ingestion: file_id={file_record.file_id}, "
+                f"filename={filename}"
+            )
+
+            return {
+                "file_path": str(persistent_file),
+                "file_id": str(file_record.file_id),
+            }
+
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: asyncio.run(
@@ -1115,6 +1187,7 @@ async def ingest_web(
                     ingestion_config=ingestion_config,
                     user_id=int(_user.id),
                     is_admin=bool(_user.is_admin),
+                    file_handler=_handle_web_file,
                 )
             ),
         )

@@ -1,6 +1,8 @@
 """Unit tests for web ingestion pipeline."""
 
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -405,3 +407,234 @@ def test_sanitize_for_doc_id_behavior() -> None:
     fallback = sanitize_for_doc_id("")
     assert len(fallback) == 8
     assert fallback.isalnum()
+
+
+class TestWebIngestionFileHandler:
+    """Test file_handler callback functionality for persistent storage."""
+
+    @pytest.fixture
+    def crawl_config(self):
+        """Create a test crawl configuration."""
+        return WebCrawlConfig(
+            start_url="https://example.com",
+            max_pages=1,
+            max_depth=1,
+            concurrent_requests=1,
+            request_delay=0,
+        )
+
+    @pytest.fixture
+    def ingestion_config(self):
+        """Create a test ingestion configuration."""
+        return IngestionConfig(
+            chunk_size=500,
+            chunk_overlap=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_file_handler_is_called(self, crawl_config, ingestion_config):
+        """Test that file_handler callback is called for each crawled page."""
+        mock_crawl_results = [
+            MagicMock(
+                url="https://example.com/page1",
+                title="Test Page",
+                content_markdown="# Test Page\n\nContent",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=30,
+            )
+        ]
+
+        mock_ingestion_result = IngestionResult(
+            status="success",
+            doc_id="doc1",
+            parse_hash="hash1",
+            chunk_count=1,
+            embedding_count=1,
+            vector_count=1,
+            completed_steps=[],
+            failed_step=None,
+            message="Success",
+            warnings=[],
+        )
+
+        # Track file_handler calls
+        file_handler_calls = []
+
+        def mock_file_handler(
+            temp_file_path: Path, title: str, collection: str
+        ) -> dict[str, Any]:
+            """Mock file handler that tracks calls and returns test data."""
+            file_handler_calls.append(
+                {
+                    "temp_file_path": temp_file_path,
+                    "title": title,
+                    "collection": collection,
+                }
+            )
+            return {
+                "file_path": "/fake/persistent/path.md",
+                "file_id": "test-file-id-123",
+            }
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=mock_crawl_results)
+            mock_crawler.total_urls_found = 1
+            mock_crawler.failed_urls = {}
+            mock_crawler_class.return_value = mock_crawler
+
+            with patch(
+                "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.run_document_ingestion",
+                return_value=mock_ingestion_result,
+            ) as mock_ingest:
+                await run_web_ingestion(
+                    collection="test_collection",
+                    crawl_config=crawl_config,
+                    ingestion_config=ingestion_config,
+                    file_handler=mock_file_handler,
+                )
+
+                # Verify file_handler was called
+                assert len(file_handler_calls) == 1
+                assert file_handler_calls[0]["title"] == "Test Page"
+                assert file_handler_calls[0]["collection"] == "test_collection"
+                # Note: temp_file_path no longer exists at this point (temp dir cleaned up)
+                assert "xagent_web_ingest" in str(file_handler_calls[0]["temp_file_path"])
+
+                # Verify run_document_ingestion was called with file_id
+                mock_ingest.assert_called_once()
+                call_kwargs = mock_ingest.call_args[1]
+                assert call_kwargs["file_id"] == "test-file-id-123"
+                assert call_kwargs["source_path"] == "/fake/persistent/path.md"
+
+    @pytest.mark.asyncio
+    async def test_file_handler_failure_fallback_to_temp_file(
+        self, crawl_config, ingestion_config
+    ):
+        """Test that if file_handler fails, it falls back to temporary file."""
+        mock_crawl_results = [
+            MagicMock(
+                url="https://example.com/page1",
+                title="Test Page",
+                content_markdown="# Test Page\n\nContent",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=30,
+            )
+        ]
+
+        mock_ingestion_result = IngestionResult(
+            status="success",
+            doc_id="doc1",
+            parse_hash="hash1",
+            chunk_count=1,
+            embedding_count=1,
+            vector_count=1,
+            completed_steps=[],
+            failed_step=None,
+            message="Success",
+            warnings=[],
+        )
+
+        # File handler that raises an exception
+        def failing_file_handler(
+            temp_file_path: Path, title: str, collection: str
+        ) -> dict[str, Any]:
+            raise Exception("File handler failed!")
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=mock_crawl_results)
+            mock_crawler.total_urls_found = 1
+            mock_crawler.failed_urls = {}
+            mock_crawler_class.return_value = mock_crawler
+
+            with patch(
+                "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.run_document_ingestion",
+                return_value=mock_ingestion_result,
+            ) as mock_ingest:
+                # Should not raise exception, should fall back to temp file
+                result = await run_web_ingestion(
+                    collection="test_collection",
+                    crawl_config=crawl_config,
+                    ingestion_config=ingestion_config,
+                    file_handler=failing_file_handler,
+                )
+
+                # Verify ingestion still succeeded
+                assert result.status == "success"
+                assert result.documents_created == 1
+
+                # Verify run_document_ingestion was called with temp file (no file_id)
+                mock_ingest.assert_called_once()
+                call_kwargs = mock_ingest.call_args[1]
+                assert call_kwargs["file_id"] is None
+                # source_path should be the temporary file path
+                assert "xagent_web_ingest" in call_kwargs["source_path"]
+
+    @pytest.mark.asyncio
+    async def test_no_file_handler_uses_temp_files(
+        self, crawl_config, ingestion_config
+    ):
+        """Test that without file_handler, temporary files are used."""
+        mock_crawl_results = [
+            MagicMock(
+                url="https://example.com/page1",
+                title="Test Page",
+                content_markdown="# Test Page\n\nContent",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=30,
+            )
+        ]
+
+        mock_ingestion_result = IngestionResult(
+            status="success",
+            doc_id="doc1",
+            parse_hash="hash1",
+            chunk_count=1,
+            embedding_count=1,
+            vector_count=1,
+            completed_steps=[],
+            failed_step=None,
+            message="Success",
+            warnings=[],
+        )
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=mock_crawl_results)
+            mock_crawler.total_urls_found = 1
+            mock_crawler.failed_urls = {}
+            mock_crawler_class.return_value = mock_crawler
+
+            with patch(
+                "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.run_document_ingestion",
+                return_value=mock_ingestion_result,
+            ) as mock_ingest:
+                # Call without file_handler
+                result = await run_web_ingestion(
+                    collection="test_collection",
+                    crawl_config=crawl_config,
+                    ingestion_config=ingestion_config,
+                )
+
+                # Verify ingestion succeeded
+                assert result.status == "success"
+
+                # Verify run_document_ingestion was called without file_id
+                mock_ingest.assert_called_once()
+                call_kwargs = mock_ingest.call_args[1]
+                assert call_kwargs["file_id"] is None
+                # source_path should be the temporary file path
+                assert "xagent_web_ingest" in call_kwargs["source_path"]
