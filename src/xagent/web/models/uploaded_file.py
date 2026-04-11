@@ -22,7 +22,9 @@ class UploadedFile(Base):  # type: ignore
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     task_id = Column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True)
-    filename = Column(String(512), nullable=False, index=True)
+    # Index is created by migration 20260410_add_index_on_uploaded_files_filename.py
+    # to ensure existing databases have the index for URL deduplication queries.
+    filename = Column(String(512), nullable=False)
     storage_path = Column(String(2048), nullable=False, unique=True)
     mime_type = Column(String(255), nullable=True)
     file_size = Column(Integer, nullable=False, default=0)

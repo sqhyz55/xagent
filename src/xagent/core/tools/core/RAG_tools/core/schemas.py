@@ -26,6 +26,13 @@ DEFAULT_EMBEDDING_CONCURRENT: int = 10
 DEFAULT_MAX_RETRIES: int = 3
 DEFAULT_RETRY_DELAY_SECONDS: float = 1.0
 
+# LanceDB NULL sentinel values
+# LanceDB doesn't support NULL values in non-nullable columns.
+# We use sentinel values to represent NULL in storage.
+# These are converted back to None on read.
+LANCEDB_NULL_INT_SENTINEL: int = -1  # For integer fields like embedding_dimension
+LANCEDB_NULL_STR_SENTINEL: str = ""  # For string fields like embedding_model_id
+
 # ------------------------- Enums -------------------------
 
 
@@ -1374,10 +1381,10 @@ class CollectionInfo(BaseModel):
                 data[key] = None
 
         # Handle empty string fallback for string fields that might have been stored as "" to avoid non-null errors
-        if data.get("embedding_model_id") == "":
+        if data.get("embedding_model_id") == LANCEDB_NULL_STR_SENTINEL:
             data["embedding_model_id"] = None
 
-        if data.get("embedding_dimension") == -1:
+        if data.get("embedding_dimension") == LANCEDB_NULL_INT_SENTINEL:
             data["embedding_dimension"] = None
 
         # 3. Check version and migrate if needed (no DB access on read path)
@@ -1403,15 +1410,14 @@ class CollectionInfo(BaseModel):
         if data.get("ingestion_config"):
             data["ingestion_config"] = json.dumps(data["ingestion_config"])
         else:
-            data["ingestion_config"] = (
-                ""  # Use empty string instead of None to prevent LanceDB non-null schema errors
-            )
+            # Use empty string sentinel instead of None to prevent LanceDB non-null schema errors
+            data["ingestion_config"] = LANCEDB_NULL_STR_SENTINEL
 
         if data.get("embedding_model_id") is None:
-            data["embedding_model_id"] = ""
+            data["embedding_model_id"] = LANCEDB_NULL_STR_SENTINEL
 
         if data.get("embedding_dimension") is None:
-            data["embedding_dimension"] = -1
+            data["embedding_dimension"] = LANCEDB_NULL_INT_SENTINEL
 
         return data
 

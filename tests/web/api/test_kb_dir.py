@@ -83,6 +83,7 @@ def temp_uploads():
             user_id=None,
             collection=None,
             create_if_not_exists=True,
+            collection_is_sanitized=False,
         ):
             base = temp_path
             if user_id:

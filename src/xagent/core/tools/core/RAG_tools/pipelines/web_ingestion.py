@@ -4,6 +4,7 @@ Crawls a website and imports all discovered pages into the knowledge base.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import tempfile
 from datetime import datetime, timezone
@@ -198,8 +199,6 @@ async def run_web_ingestion(
 
                 try:
                     # Ingest the file
-                    import concurrent.futures
-
                     progress_manager = get_progress_manager()
 
                     def _ingest_file() -> IngestionResult:
@@ -233,6 +232,10 @@ async def run_web_ingestion(
                         # Only clear temp file reference on success
                         copied_persistent_file = None
                     else:
+                        # Non-success ingestion (e.g., embedding failed) without exception.
+                        # Keep file and DB record for potential retry scenarios.
+                        # Note: This accumulates files on persistent failures.
+                        # TODO: Add periodic cleanup for orphaned files from persistent failures.
                         failed_urls[crawl_result.url] = ingest_result.message
                         msg = (
                             f"Partial ingestion for {crawl_result.url}: "
