@@ -45,7 +45,7 @@ export function ExcelPreviewRenderer({ base64Content }: ExcelPreviewRendererProp
 
                 const sheetData: { [key: string]: string } = {}
 
-                workbook.SheetNames.forEach((sheetName) => {
+                workbook.SheetNames.forEach((sheetName: string) => {
                     const worksheet = workbook.Sheets[sheetName]
                     const html = XLSX.utils.sheet_to_html(worksheet)
                     sheetData[sheetName] = html

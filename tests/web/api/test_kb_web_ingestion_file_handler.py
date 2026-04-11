@@ -83,7 +83,9 @@ class TestHandleWebFile:
                 _processed_urls = {}
 
                 # Mock sanitize_path_component
-                with patch("xagent.web.api.kb.sanitize_path_component") as mock_sanitize:
+                with patch(
+                    "xagent.web.api.kb.sanitize_path_component"
+                ) as mock_sanitize:
                     mock_sanitize.return_value = "test_page"
 
                     # Call the file handler logic (simplified from actual implementation)
@@ -93,9 +95,9 @@ class TestHandleWebFile:
                     # Simulate URL hash generation
                     import hashlib
 
-                    url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[
-                        :16
-                    ]
+                    url_hash = hashlib.sha256(
+                        f"{collection}:{url}".encode()
+                    ).hexdigest()[:16]
                     filename = f"{url_hash}_test_page.md"
 
                     # Generate persistent file path
@@ -213,7 +215,9 @@ class TestHandleWebFile:
 
                 import hashlib
 
-                url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[:16]
+                url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[
+                    :16
+                ]
                 filename = f"{url_hash}_test.md"
 
                 # Create existing file and record
@@ -304,7 +308,9 @@ class TestHandleWebFile:
 
                 import hashlib
 
-                url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[:16]
+                url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[
+                    :16
+                ]
                 filename = f"{url_hash}_test.md"
 
                 # Create file and record
@@ -353,7 +359,9 @@ class TestHandleWebFile:
 
                 import hashlib
 
-                url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[:16]
+                url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[
+                    :16
+                ]
                 filename = f"{url_hash}_test.md"
 
                 # Simulate cache with non-existent file_id

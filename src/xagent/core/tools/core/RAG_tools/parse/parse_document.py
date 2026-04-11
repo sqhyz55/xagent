@@ -324,35 +324,58 @@ def _convert_parse_result_to_paragraphs(result: Any) -> List[ParsedParagraph]:
 def _get_document_from_db(
     collection: str, doc_id: str, user_id: Optional[int] = None, is_admin: bool = False
 ) -> Optional[Any]:
-    """Get document from database by doc_id using abstraction layer."""
-    try:
-        vector_store = get_vector_index_store()
-        query_filters = {"collection": collection, "doc_id": doc_id}
+    """Get document from database by doc_id using abstraction layer.
 
-        if (
-            vector_store.count_rows_or_zero(
-                "documents", filters=query_filters, user_id=user_id, is_admin=is_admin
-            )
-            == 0
-        ):
+    Uses direct iter_batches lookup with retry to handle transient
+    LanceDB read-after-write latency. Avoids count_rows_or_zero which
+    silently swallows DatabaseOperationError, hiding the real failure.
+    """
+    vector_store = get_vector_index_store()
+    query_filters = {"collection": collection, "doc_id": doc_id}
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            for batch in vector_store.iter_batches(
+                table_name="documents",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                batch_df = batch.to_pandas()
+                for _, row in batch_df.iterrows():
+                    return row.to_dict()
+
+            # No rows found — retry if attempts remain
+            if attempt < max_retries - 1:
+                logger.debug(
+                    "Document %s not found in documents table, retrying (%d/%d)",
+                    doc_id,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(0.1 * (attempt + 1))
+                continue
             return None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.debug(
+                    "Error looking up document %s, retrying (%d/%d): %s",
+                    doc_id,
+                    attempt + 1,
+                    max_retries,
+                    e,
+                )
+                time.sleep(0.1 * (attempt + 1))
+                continue
+            logger.error(
+                "Failed to get document from database after %d retries: %s",
+                max_retries,
+                e,
+            )
+            raise DatabaseOperationError(f"Failed to get document: {e}") from e
 
-        # Use iter_batches to load the document
-        for batch in vector_store.iter_batches(
-            table_name="documents",
-            filters=query_filters,
-            user_id=user_id,
-            is_admin=is_admin,
-        ):
-            batch_df = batch.to_pandas()
-            for _, row in batch_df.iterrows():
-                return row.to_dict()
-
-        return None
-
-    except Exception as e:
-        logger.error(f"Failed to get document from database: {e}")
-        raise DatabaseOperationError(f"Failed to get document: {e}") from e
+    return None
 
 
 def _validate_parse_params(parse_method: ParseMethod, params: Dict[str, Any]) -> None:

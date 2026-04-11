@@ -6,6 +6,7 @@ backend-specific database semantics.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -24,6 +25,8 @@ from typing import (
 
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
 from ..core.schemas import CollectionInfo, IndexResult
+
+logger = logging.getLogger(__name__)
 
 # Field name whitelist for filter validation
 # Derived from all LanceDB table schemas in schema_manager.py
@@ -555,7 +558,12 @@ class VectorIndexStore(ABC):
 
         try:
             return self.count_rows(table_name, filters, user_id, is_admin)
-        except DatabaseOperationError:
+        except DatabaseOperationError as e:
+            logger.debug(
+                "count_rows_or_zero suppressed error for table '%s': %s",
+                table_name,
+                e,
+            )
             return 0
 
     @abstractmethod
