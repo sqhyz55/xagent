@@ -287,7 +287,6 @@ class TestParseDocumentFallback:
         mock_batch.to_pandas.return_value = pd.DataFrame([doc_data])
 
         # Mock iter_batches to yield the mock batch
-        mock_vector_store.count_rows_or_zero.return_value = 1
         mock_vector_store.iter_batches.return_value = iter([mock_batch])
 
         with patch(
@@ -302,8 +301,7 @@ class TestParseDocumentFallback:
 
             assert result is not None
             assert result["doc_id"] == "doc1"
-            # Verify methods were called
-            mock_vector_store.count_rows_or_zero.assert_called_once()
+            # Verify iter_batches was called (no count_rows_or_zero)
             mock_vector_store.iter_batches.assert_called_once()
 
     def test_parse_document_fallback_to_list(
@@ -340,7 +338,6 @@ class TestParseDocumentFallback:
         mock_batch.to_pandas.return_value = pd.DataFrame([doc_data])
 
         # Mock iter_batches to yield the mock batch
-        mock_vector_store.count_rows_or_zero.return_value = 1
         mock_vector_store.iter_batches.return_value = iter([mock_batch])
 
         with patch(
@@ -355,8 +352,7 @@ class TestParseDocumentFallback:
 
             assert result is not None
             assert result["doc_id"] == "doc1"
-            # Verify methods were called
-            mock_vector_store.count_rows_or_zero.assert_called_once()
+            # Verify iter_batches was called (no count_rows_or_zero)
             mock_vector_store.iter_batches.assert_called_once()
 
     def test_parse_document_fallback_to_pandas_with_nan(
@@ -393,7 +389,6 @@ class TestParseDocumentFallback:
         mock_batch.to_pandas.return_value = pd.DataFrame([doc_data])
 
         # Mock iter_batches to yield the mock batch
-        mock_vector_store.count_rows_or_zero.return_value = 1
         mock_vector_store.iter_batches.return_value = iter([mock_batch])
 
         with patch(
