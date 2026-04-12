@@ -210,8 +210,8 @@ async def startup_event() -> None:
     )
 
     # Auto-migrate LanceDB tables if needed (for multi-tenancy support)
-    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: false)
-    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "false").lower() == "true"
+    # Controlled by LANCEDB_AUTO_MIGRATE environment variable (default: true)
+    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "true").lower() == "true"
 
     try:
         from ..core.tools.core.RAG_tools.LanceDB.schema_manager import (
