@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,6 +22,8 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
     IngestionResult,
 )
+
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 # ==========================================
 # TEST FIXTURES
@@ -50,7 +52,7 @@ class _StubEmbeddingAdapter(BaseEmbedding):
 
 
 @pytest.fixture
-def stub_embedding_config():
+def stub_embedding_config() -> EmbeddingModelConfig:
     """Create stub embedding configuration for CRUD testing."""
     return EmbeddingModelConfig(
         id="e2e-crud-embedding",
@@ -61,17 +63,23 @@ def stub_embedding_config():
 
 
 @pytest.fixture
-def stub_embedding_adapter():
+def stub_embedding_adapter() -> _StubEmbeddingAdapter:
     """Create stub embedding adapter for CRUD testing."""
     return _StubEmbeddingAdapter()
 
 
 @pytest.fixture
-def mock_crud_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
+def mock_crud_rag_pipeline(
+    monkeypatch: Any,
+    stub_embedding_config: EmbeddingModelConfig,
+    stub_embedding_adapter: _StubEmbeddingAdapter,
+) -> None:
     """Mock the RAG pipeline components for CRUD E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
     from xagent.core.tools.core.RAG_tools.utils import model_resolver
+
+    mgr = collection_manager.collection_manager
 
     # Mock collection to exist
     mock_collection = CollectionInfo(
@@ -89,18 +97,18 @@ def mock_crud_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_ad
         return mock_collection
 
     def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs
+        model_id: str | None = None, **kwargs: Any
     ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
         return (stub_embedding_config, stub_embedding_adapter)
 
-    # Apply mocks
+    # Apply mocks (patch singleton used by KB routes)
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "get_collection",
         mock_get_collection,
     )
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "initialize_collection_embedding",
         mock_initialize_collection,
     )
@@ -119,7 +127,7 @@ def mock_crud_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_ad
 
 
 @pytest.fixture
-def sample_crud_files():
+def sample_crud_files() -> Generator[tuple[dict[str, str], str], None, None]:
     """Create sample test files for CRUD testing."""
     files = {}
 
@@ -155,7 +163,7 @@ class TestKBCreateOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test creating a collection by ingesting a single file."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_create_single"
@@ -183,7 +191,7 @@ class TestKBCreateOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test creating a collection by ingesting multiple files."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_create_multiple"
@@ -212,7 +220,7 @@ class TestKBCreateOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test creating documents with different file types."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_create_types"
@@ -248,7 +256,7 @@ class TestKBCreateOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test creating documents with custom ingestion configuration."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_create_config"
@@ -280,7 +288,7 @@ class TestKBCreateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test creating a collection by ingesting from a web URL."""
         collection_name = "e2e_create_web"
         target_url = "https://github.com/xorbitsai/xagent"
@@ -325,11 +333,11 @@ class TestKBCreateOperations:
                 return_value=mock_ingestion_result,
             ):
                 response = client.post(
-                    "/api/kb/ingest_web",
-                    json={
+                    "/api/kb/ingest-web",
+                    data={
                         "collection": collection_name,
-                        "url": target_url,
-                        "max_pages": 1,
+                        "start_url": target_url,
+                        "max_pages": "1",
                     },
                     headers=auth_headers,
                 )
@@ -355,7 +363,7 @@ class TestKBReadOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test listing collections when none exist."""
         response = client.get("/api/kb/collections", headers=auth_headers)
 
@@ -372,7 +380,7 @@ class TestKBReadOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test listing collections after creating one."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_read_list"
@@ -402,7 +410,7 @@ class TestKBReadOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test getting detailed information about a collection."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_read_details"
@@ -418,13 +426,10 @@ class TestKBReadOperations:
             )
 
         if create_response.status_code == 200:
-            # Get collection details
-            detail_response = client.get(
-                f"/api/kb/collections/{collection_name}",
-                headers=auth_headers,
-            )
-            # May succeed or fail depending on implementation
-            assert detail_response.status_code in [200, 404, 500]
+            list_response = client.get("/api/kb/collections", headers=auth_headers)
+            assert list_response.status_code == 200
+            names = {c.get("name") for c in list_response.json().get("collections", [])}
+            assert collection_name in names
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -434,7 +439,7 @@ class TestKBReadOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test listing documents within a collection."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_read_documents"
@@ -450,13 +455,13 @@ class TestKBReadOperations:
             )
 
         if create_response.status_code == 200:
-            # List documents in collection
-            list_response = client.get(
-                f"/api/kb/collections/{collection_name}/documents",
+            list_response = client.post(
+                f"/api/kb/collections/{collection_name}/documents/check",
+                json={"filenames": ["document1.txt"]},
                 headers=auth_headers,
             )
-            # May succeed or fail depending on implementation
-            assert list_response.status_code in [200, 404, 500]
+            assert list_response.status_code == 200
+            assert "document1.txt" in list_response.json().get("existing_filenames", [])
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -466,7 +471,7 @@ class TestKBReadOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test getting statistics for a specific document."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_read_stats"
@@ -482,13 +487,17 @@ class TestKBReadOperations:
             )
 
         if create_response.status_code == 200:
-            # Get document stats
-            stats_response = client.get(
-                f"/api/kb/collections/{collection_name}/documents/document1.txt/stats",
-                headers=auth_headers,
-            )
-            # May succeed or fail depending on implementation
-            assert stats_response.status_code in [200, 404, 500]
+            body = create_response.json()
+            assert "chunk_count" in body
+            assert int(body["chunk_count"]) >= 0
+            doc_id = body.get("doc_id")
+            if doc_id:
+                parse_response = client.get(
+                    f"/api/kb/collections/{collection_name}/parses/{doc_id}/parse_result",
+                    params={"page": 1, "page_size": 20},
+                    headers=auth_headers,
+                )
+                assert parse_response.status_code in [200, 404, 500]
 
 
 # ==========================================
@@ -506,7 +515,7 @@ class TestKBUpdateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test updating collection configuration."""
         collection_name = "e2e_update_config"
 
@@ -534,7 +543,7 @@ class TestKBUpdateOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test re-ingesting a document to update its content."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_update_reingest"
@@ -570,7 +579,7 @@ class TestKBUpdateOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test updating document metadata."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_update_metadata"
@@ -613,7 +622,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test deleting a single document by filename (legacy method)."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_single_filename"
@@ -645,7 +654,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test deleting a single document by file_id (recommended method)."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_single_fileid"
@@ -691,7 +700,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test deleting a single document by doc_id."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_single_docid"
@@ -737,7 +746,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that file_id takes precedence over filename when both are provided."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_prefer_fileid"
@@ -775,7 +784,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test deleting multiple documents from a collection."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_multiple"
@@ -815,7 +824,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test deleting an entire collection with documents."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_collection"
@@ -847,7 +856,7 @@ class TestKBDeleteOperations:
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
         mock_crud_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that collection deletion properly cleans up resources."""
         files, temp_dir = sample_crud_files
         collection_name = "e2e_delete_cleanup"
@@ -870,39 +879,9 @@ class TestKBDeleteOperations:
             )
 
             if delete_response.status_code == 200:
-                # Verify collection is no longer accessible
-                verify_response = client.get(
-                    f"/api/kb/collections/{collection_name}",
-                    headers=auth_headers,
-                )
-                # Should get 404 or similar error
-                assert verify_response.status_code in [404, 500]
-
-
-# ==========================================
-# TEST FIXTURES FOR MODULE
-# ==========================================
-
-
-@pytest.fixture
-def client(test_env):
-    """Provide test client for CRUD E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    from fastapi.testclient import TestClient
-
-    return TestClient(app)
-
-
-@pytest.fixture
-def auth_headers(test_env):
-    """Provide authentication headers for CRUD E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    return headers
-
-
-@pytest.fixture
-def test_env():
-    """Provide complete test environment for CRUD E2E tests."""
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
-
-    yield from kb_test_env()
+                list_after = client.get("/api/kb/collections", headers=auth_headers)
+                assert list_after.status_code == 200
+                names = {
+                    c.get("name") for c in list_after.json().get("collections", [])
+                }
+                assert collection_name not in names

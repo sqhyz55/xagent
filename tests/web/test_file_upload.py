@@ -433,8 +433,13 @@ class TestFileManagement:
 
         # If upload was successful, try to download
         if upload_response.status_code in [200, 201]:
+            upload_data = upload_response.json()
+            file_id = upload_data.get("file_id")
+            assert file_id, "upload response should include file_id"
             # Try to download the file using the download endpoint
-            response = client.get("/api/files/download/test.txt", headers=auth_headers)
+            response = client.get(
+                f"/api/files/download/{file_id}", headers=auth_headers
+            )
             # Should return 200 for success or 404 if file not found
             assert response.status_code in [200, 404]
         else:
@@ -467,8 +472,11 @@ class TestFileManagement:
 
         # If upload was successful, try to delete
         if upload_response.status_code in [200, 201]:
+            upload_data = upload_response.json()
+            file_id = upload_data.get("file_id")
+            assert file_id, "upload response should include file_id"
             # Try to delete the file
-            response = client.delete("/api/files/test.txt", headers=auth_headers)
+            response = client.delete(f"/api/files/{file_id}", headers=auth_headers)
             # Should return 200 for success or 404 if file not found/endpoint doesn't exist
             assert response.status_code in [200, 404]
         else:
@@ -532,18 +540,23 @@ class TestFileUploadIntegration:
 
         # If upload was successful, continue with workflow
         if upload_response.status_code in [200, 201]:
+            upload_data = upload_response.json()
+            file_id = upload_data.get("file_id")
+            assert file_id, "upload response should include file_id"
             # List files
             list_response = client.get("/api/files/list", headers=auth_headers)
             assert list_response.status_code == 200
 
             # Download file
             download_response = client.get(
-                "/api/files/download/test.txt", headers=auth_headers
+                f"/api/files/download/{file_id}", headers=auth_headers
             )
             assert download_response.status_code in [200, 404]
 
             # Delete file
-            delete_response = client.delete("/api/files/test.txt", headers=auth_headers)
+            delete_response = client.delete(
+                f"/api/files/{file_id}", headers=auth_headers
+            )
             assert delete_response.status_code in [200, 404]
         else:
             # If upload failed, test passes as we verified the behavior

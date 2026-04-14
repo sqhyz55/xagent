@@ -18,6 +18,10 @@ from typing import Dict
 
 import pytest
 
+from tests.web_integration.http_helpers import http_detail
+
+pytestmark = [pytest.mark.e2e, pytest.mark.real_rag]
+
 
 class TestSchemaMigrationCompatibility:
     """Test schema migration compatibility and coexistence.
@@ -72,46 +76,6 @@ schema evolution migration compatibility
 
         return docs
 
-    def test_ingestion_with_new_schema_fields(
-        self,
-        client,
-        auth_headers: Dict[str, str],
-        sample_documents: Dict[str, Path],
-    ):
-        """Test that ingestion works with new schema fields.
-
-        This verifies that when new fields are added to the schema,
-        ingestion still works and both old and new fields are handled.
-        """
-        # Upload a document
-        file_path = sample_documents["text"]
-        with open(file_path, "rb") as f:
-            response = client.post(
-                "/api/kb/ingest",
-                files={"file": (file_path.name, f, "text/plain")},
-                data={"collection": "schema_test_collection"},
-                headers=auth_headers,
-            )
-
-        assert response.status_code == 200
-        result = response.json()
-
-        # Verify response contains both legacy and new fields
-        assert "collection" in result or "collection_id" in result
-        assert "file_id" in result or "doc_id" in result or "filename" in result
-
-        # New schema fields (if present)
-        optional_new_fields = [
-            "created_at",
-            "updated_at",
-            "schema_version",
-            "metadata",
-            "chunk_count",
-            "status",
-        ]
-        # At least some new fields should be present
-        _ = any(f in result for f in optional_new_fields)
-
     def test_read_operations_with_mixed_schemas(
         self,
         client,
@@ -125,8 +89,18 @@ schema evolution migration compatibility
         """
         collection = "mixed_schema_collection"
 
-        # Upload multiple documents (potentially creating mixed schemas)
-        file_ids = []
+        # Upload multiple documents (potentially creating mixed schemas);
+        # first document also asserts ingest contract / optional schema fields.
+        doc_ids = []
+        first = True
+        optional_new_fields = [
+            "created_at",
+            "updated_at",
+            "schema_version",
+            "metadata",
+            "chunk_count",
+            "status",
+        ]
         for doc_key, file_path in sample_documents.items():
             with open(file_path, "rb") as f:
                 response = client.post(
@@ -145,12 +119,19 @@ schema evolution migration compatibility
                     data={"collection": collection},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
-                file_ids.append(response.json().get("file_id"))
+                assert response.status_code == 200, http_detail(response)
+                result = response.json()
+                if first:
+                    assert result.get("status") in {"success", "partial"}
+                    assert "doc_id" in result
+                    assert "file_id" in result
+                    _ = any(f in result for f in optional_new_fields)
+                    first = False
+                doc_ids.append(result.get("doc_id"))
 
         # List collections - should handle mixed schemas
         response = client.get("/api/kb/collections", headers=auth_headers)
-        assert response.status_code == 200
+        assert response.status_code == 200, http_detail(response)
 
         collections = response.json()["collections"]
         test_collection = next(
@@ -160,7 +141,7 @@ schema evolution migration compatibility
 
         # Note: No endpoint to list documents in a collection
         # Verify collection exists and has document count instead
-        assert "document_count" in test_collection or "doc_count" in test_collection
+        assert "documents" in test_collection
 
     def test_field_absence_graceful_degradation(
         self, client, auth_headers: Dict[str, str], clean_storage: None
@@ -183,13 +164,13 @@ schema evolution migration compatibility
                     data={"collection": "field_test_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
+                assert response.status_code == 200, http_detail(response)
 
                 # Even if some new fields are missing, basic operations should work
                 result = response.json()
 
                 # Core fields should be present
-                assert "collection_id" in result or "collection" in result
+                assert "doc_id" in result
 
                 # Optional new fields might be missing - that's OK
                 # The system should not crash
@@ -220,8 +201,7 @@ schema evolution migration compatibility
                     data={"collection": "legacy_search_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
-                collection_id = response.json().get("collection")
+                assert response.status_code == 200, http_detail(response)
 
             # Search should work even with legacy schema
             response = client.post(
@@ -232,7 +212,7 @@ schema evolution migration compatibility
                 },
                 headers=auth_headers,
             )
-            assert response.status_code == 200
+            assert response.status_code == 200, http_detail(response)
 
             _ = response.json().get("results", [])
             # Should find results regardless of schema version
@@ -261,19 +241,18 @@ schema evolution migration compatibility
                 response = client.post(
                     "/api/kb/ingest",
                     files={"file": ("crud_test.txt", f, "text/plain")},
-                    data={"collection": collection_name},
+                    data={"collection": collection},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
+                assert response.status_code == 200, http_detail(response)
                 result = response.json()
-                collection_id = result["collection_id"]
                 file_id = result.get("file_id")
 
             # READ: Get collections list
             response = client.get("/api/kb/collections", headers=auth_headers)
-            assert response.status_code == 200
+            assert response.status_code == 200, http_detail(response)
             collections = response.json()["collections"]
-            assert any(c["name"] == collection_name for c in collections)
+            assert any(c["name"] == collection for c in collections)
 
             # READ: Verify collection exists (no document listing endpoint)
             assert len(collections) >= 1
@@ -283,23 +262,20 @@ schema evolution migration compatibility
                 response = client.post(
                     "/api/kb/ingest",
                     files={"file": ("crud_test.txt", f, "text/plain")},
-                    data={"collection": collection_name},
+                    data={"collection": collection},
                     headers=auth_headers,
                 )
-                # Should handle reingestion gracefully
-                assert response.status_code in [
-                    200,
-                    409,
-                ]  # 409 if duplicate not allowed
+                # Reingestion behavior is expected to be deterministic and successful.
+                assert response.status_code == 200, http_detail(response)
 
             # DELETE: Delete document (using collection_name and filename)
             if file_id:
                 response = client.delete(
-                    f"/api/kb/collections/{collection_name}/documents/crud_test.txt?file_id={file_id}",
-                    headers=auth_headers
+                    f"/api/kb/collections/{collection}/documents/crud_test.txt?file_id={file_id}",
+                    headers=auth_headers,
                 )
-                # Should handle deletion regardless of schema version
-                assert response.status_code in [200, 204, 404]
+                # Known document deletion should succeed explicitly.
+                assert response.status_code == 200, http_detail(response)
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -352,11 +328,10 @@ class TestBehaviorConsistency:
                     response = client.post(
                         "/api/kb/ingest",
                         files={"file": (filename, f, "text/plain")},
-                        data={"collection": collection_name},
+                        data={"collection": collection},
                         headers=auth_headers,
                     )
-                    assert response.status_code == 200
-                    collection_id = response.json().get("collection")
+                    assert response.status_code == 200, http_detail(response)
             finally:
                 temp_path.unlink(missing_ok=True)
 
@@ -364,23 +339,19 @@ class TestBehaviorConsistency:
         response = client.post(
             "/api/kb/search",
             data={
-                "collection": collection_name,
+                "collection": collection,
                 "query_text": "Python programming",
             },
             headers=auth_headers,
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, http_detail(response)
 
         results = response.json().get("results", [])
 
         # Verify search results structure is consistent
         for result in results:
-            # Should have expected fields regardless of schema version
-            assert "content" in result or "text" in result or "chunk" in result
-            # Metadata might be in different fields
-            assert any(
-                k in result for k in ["metadata", "score", "distance", "relevance"]
-            )
+            assert "content" in result
+            assert "score" in result
 
     def test_ingestion_consistency_before_after_migration(
         self, client, auth_headers: Dict[str, str], clean_storage: None
@@ -410,16 +381,17 @@ class TestBehaviorConsistency:
                     data={"collection": "ingestion_consistency_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
+                assert response.status_code == 200, http_detail(response)
 
                 result = response.json()
 
                 # Verify ingestion response structure is consistent
-                # Should have collection identifier
-                assert "collection" in result or "collection_id" in result
+                # Should expose stable ingestion fields
+                assert "doc_id" in result
 
                 # Should have document identifier
-                assert any(k in result for k in ["file_id", "doc_id", "filename"])
+                assert "doc_id" in result
+                assert "file_id" in result
 
                 # Status information (might vary by schema version)
                 # Should not crash if fields are missing
@@ -447,55 +419,47 @@ class TestBehaviorConsistency:
                 create_response = client.post(
                     "/api/kb/ingest",
                     files={"file": ("crud_consistency.txt", f, "text/plain")},
-                    data={"collection": collection_name},
+                    data={"collection": collection},
                     headers=auth_headers,
                 )
-                assert create_response.status_code == 200
+                assert create_response.status_code == 200, http_detail(create_response)
                 create_result = create_response.json()
 
                 # Verify create response structure
-                assert "collection_id" in create_result
+                assert "doc_id" in create_result
 
             # READ: List collections
             list_response = client.get("/api/kb/collections", headers=auth_headers)
-            assert list_response.status_code == 200
+            assert list_response.status_code == 200, http_detail(list_response)
             collections = list_response.json()["collections"]
 
             # Find our collection
             test_collection = next(
-                (c for c in collections if c["name"] == collection_name), None
+                (c for c in collections if c["name"] == collection), None
             )
             assert test_collection is not None
-            assert test_collection["id"] == create_result["collection_id"]
+            assert test_collection.get("documents", 0) >= 1
 
-            # READ: Get documents
-            collection_id = test_collection["id"]
-            docs_response = client.get(
-                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
-            )
-            assert docs_response.status_code == 200
-            documents = docs_response.json().get("documents", [])
-            assert len(documents) >= 1
-
-            # UPDATE: Update collection (if supported)
-            # This might be a PUT/PATCH request
-            # For now, verify the endpoint exists and responds consistently
+            # UPDATE: Rename collection with a deterministic target name.
+            # Use a unique target name to avoid collision with stale directories
+            # from previous runs in shared upload paths.
+            renamed_collection = f"{collection}_renamed_{create_result['doc_id'][:8]}"
             update_response = client.put(
-                f"/api/kb/collections{collection_id}/",
-                json={"description": "Updated description"},
+                f"/api/kb/collections/{collection}",
+                data={"new_name": renamed_collection},
                 headers=auth_headers,
             )
-            # Update might not be supported, so 404/405 is acceptable
-            assert update_response.status_code in [200, 404, 405]
+            assert update_response.status_code == 200, http_detail(update_response)
 
             # DELETE: Delete document
             file_id = create_result.get("file_id")
             if file_id:
                 delete_response = client.delete(
-                    f"api/kb/collections/{collection_name}/documents/{filename}?file_id={file_id}", headers=auth_headers
+                    f"/api/kb/collections/{renamed_collection}/documents/crud_consistency.txt?file_id={file_id}",
+                    headers=auth_headers,
                 )
-                # Delete should work consistently
-                assert delete_response.status_code in [200, 204]
+                # Known document deletion should succeed explicitly.
+                assert delete_response.status_code == 200, http_detail(delete_response)
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -521,41 +485,33 @@ class TestBehaviorConsistency:
                     data={"collection": "display_consistency_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
-                collection_id = response.json()["collection_id"]
+                assert response.status_code == 200, http_detail(response)
+                assert "doc_id" in response.json()
 
             # Get collections list (frontend display endpoint)
             response = client.get("/api/kb/collections", headers=auth_headers)
-            assert response.status_code == 200
+            assert response.status_code == 200, http_detail(response)
 
             collections = response.json()["collections"]
 
             # Verify response structure is frontend-friendly
             for collection in collections:
                 # Should have displayable fields
-                assert "name" in collection or "id" in collection
-                # Document count should be present (field name might vary)
-                assert any(
-                    k in collection
-                    for k in ["document_count", "doc_count", "count", "size"]
-                )
+                assert "name" in collection
+                # Document count should be present
+                assert "documents" in collection
 
             # Get documents (frontend display endpoint)
-            response = client.get(
-                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
+            test_collection = next(
+                (
+                    c
+                    for c in collections
+                    if c["name"] == "display_consistency_collection"
+                ),
+                None,
             )
-            assert response.status_code == 200
-
-            documents = response.json().get("documents", [])
-
-            # Verify document structure is frontend-friendly
-            for doc in documents:
-                # Should have identifiable fields
-                assert any(k in doc for k in ["name", "filename", "title"])
-                # Metadata should be accessible
-                assert "metadata" in doc or any(
-                    k.startswith("meta") for k in doc.keys()
-                )
+            assert test_collection is not None
+            assert "documents" in test_collection
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -589,21 +545,12 @@ class TestLegacyDataAccessAfterMigration:
                     data={"collection": "legacy_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
-                collection_id = response.json()["collection_id"]
+                assert response.status_code == 200, http_detail(response)
+                assert "doc_id" in response.json()
 
             # Access legacy collection
-            response = client.get(
-                f"/api/kb/collections{collection_id}/", headers=auth_headers
-            )
-            # Should work regardless of schema version
-            assert response.status_code in [200, 404]  # 404 if endpoint not implemented
-
-            # List documents in legacy collection
-            response = client.get(
-                f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
-            )
-            assert response.status_code == 200
+            response = client.get("/api/kb/collections", headers=auth_headers)
+            assert response.status_code == 200, http_detail(response)
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -633,16 +580,19 @@ class TestLegacyDataAccessAfterMigration:
                     data={"collection": "legacy_search_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
-                collection_id = response.json()["collection_id"]
+                assert response.status_code == 200, http_detail(response)
+                assert "doc_id" in response.json()
 
             # Search in legacy collection
             response = client.post(
-                f"/api/kb/collections{collection_id}/search/",
-                json={"query": "legacy search"},
+                "/api/kb/search",
+                data={
+                    "collection": "legacy_search_collection",
+                    "query_text": "legacy search",
+                },
                 headers=auth_headers,
             )
-            assert response.status_code == 200
+            assert response.status_code == 200, http_detail(response)
 
             # Should return results (might be empty if not indexed yet)
             results = response.json().get("results", [])
@@ -673,16 +623,17 @@ class TestLegacyDataAccessAfterMigration:
                     data={"collection": "legacy_delete_collection"},
                     headers=auth_headers,
                 )
-                assert response.status_code == 200
+                assert response.status_code == 200, http_detail(response)
                 file_id = response.json().get("file_id")
 
             # Delete legacy document
             if file_id:
                 response = client.delete(
-                    f"api/kb/collections/{collection_name}/documents/{filename}?file_id={file_id}", headers=auth_headers
+                    f"/api/kb/collections/legacy_delete_collection/documents/legacy_delete.txt?file_id={file_id}",
+                    headers=auth_headers,
                 )
-                # Should work with legacy schema
-                assert response.status_code in [200, 204, 404]
+                # Known document deletion should succeed explicitly.
+                assert response.status_code == 200, http_detail(response)
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -710,37 +661,30 @@ class TestLegacyDataAccessAfterMigration:
                     response = client.post(
                         "/api/kb/ingest",
                         files={"file": (f"doc{i + 1}.txt", f, "text/plain")},
-                        data={"collection": collection_name},
+                        data={"collection": collection},
                         headers=auth_headers,
                     )
-                    assert response.status_code == 200
+                    assert response.status_code == 200, http_detail(response)
             finally:
                 temp_path.unlink(missing_ok=True)
 
         # List collections - should handle mixed state
         response = client.get("/api/kb/collections", headers=auth_headers)
-        assert response.status_code == 200
+        assert response.status_code == 200, http_detail(response)
 
         collections = response.json()["collections"]
         test_collection = next(
-            (c for c in collections if c["name"] == collection_name), None
+            (c for c in collections if c["name"] == collection), None
         )
         assert test_collection is not None
 
         # Get documents - should return all regardless of schema version
-        collection_id = test_collection["id"]
-        response = client.get(
-            f"/api/kb/collections{collection_id}/documents/", headers=auth_headers
-        )
-        assert response.status_code == 200
-
-        documents = response.json().get("documents", [])
-        assert len(documents) >= 3
+        assert test_collection.get("documents", 0) >= 3
 
         # Search - should work across mixed schemas
         response = client.post(
-            f"/api/kb/collections{collection_id}/search/",
-            json={"query": "Document"},
+            "/api/kb/search",
+            data={"collection": collection, "query_text": "Document"},
             headers=auth_headers,
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, http_detail(response)

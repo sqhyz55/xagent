@@ -21,6 +21,8 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     IngestionResult,
 )
 
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
+
 # ==========================================
 # TEST FIXTURES
 # ==========================================
@@ -75,6 +77,8 @@ def mock_web_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_ada
     from xagent.core.tools.core.RAG_tools.management import collection_manager
     from xagent.core.tools.core.RAG_tools.utils import model_resolver
 
+    mgr = collection_manager.collection_manager
+
     # Mock collection to exist
     mock_collection = CollectionInfo(
         name="e2e_web_test_collection",
@@ -95,14 +99,14 @@ def mock_web_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_ada
     ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
         return (stub_embedding_config, stub_embedding_adapter)
 
-    # Apply mocks
+    # Apply mocks (patch singleton used by KB routes)
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "get_collection",
         mock_get_collection,
     )
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "initialize_collection_embedding",
         mock_initialize_collection,
     )
@@ -209,12 +213,12 @@ class TestKBWebIngestionE2E:
             ):
                 # Submit web ingestion request
                 response = client.post(
-                    "/api/kb/ingest_web",
-                    json={
+                    "/api/kb/ingest-web",
+                    data={
                         "collection": collection_name,
-                        "url": github_url,
-                        "max_pages": 2,
-                        "max_depth": 1,
+                        "start_url": github_url,
+                        "max_pages": "2",
+                        "max_depth": "1",
                     },
                     headers=auth_headers,
                 )
@@ -265,10 +269,10 @@ class TestKBWebIngestionE2E:
                 return_value=mock_ingestion_result,
             ):
                 response = client.post(
-                    "/api/kb/ingest_web",
-                    json={
+                    "/api/kb/ingest-web",
+                    data={
                         "collection": collection_name,
-                        "url": website_url,
+                        "start_url": website_url,
                         "max_pages": 3,
                         "max_depth": 1,
                     },
@@ -300,10 +304,10 @@ class TestKBWebIngestionE2E:
             mock_crawler_class.return_value = mock_crawler
 
             response = client.post(
-                "/api/kb/ingest_web",
-                json={
+                "/api/kb/ingest-web",
+                data={
                     "collection": collection_name,
-                    "url": invalid_url,
+                    "start_url": invalid_url,
                     "max_pages": 1,
                 },
                 headers=auth_headers,
@@ -335,10 +339,10 @@ class TestKBWebIngestionE2E:
             mock_crawler_class.return_value = mock_crawler
 
             response = client.post(
-                "/api/kb/ingest_web",
-                json={
+                "/api/kb/ingest-web",
+                data={
                     "collection": collection_name,
-                    "url": slow_url,
+                    "start_url": slow_url,
                     "max_pages": 1,
                 },
                 headers=auth_headers,
@@ -411,10 +415,10 @@ class TestKBWebIngestionE2E:
                 return_value=success_result,
             ):
                 response = client.post(
-                    "/api/kb/ingest_web",
-                    json={
+                    "/api/kb/ingest-web",
+                    data={
                         "collection": collection_name,
-                        "url": url,
+                        "start_url": url,
                         "max_pages": 2,
                     },
                     headers=auth_headers,
@@ -447,10 +451,10 @@ class TestKBWebIngestionE2E:
             mock_crawler_class.return_value = mock_crawler
 
             response = client.post(
-                "/api/kb/ingest_web",
-                json={
+                "/api/kb/ingest-web",
+                data={
                     "collection": collection_name,
-                    "url": url,
+                    "start_url": url,
                     "max_pages": 1,
                 },
                 headers=auth_headers,
@@ -460,32 +464,3 @@ class TestKBWebIngestionE2E:
             result = response.json()
             # Should handle gracefully
             assert result["status"] in ["success", "error"]
-
-
-# ==========================================
-# TEST FIXTURES FOR MODULE
-# ==========================================
-
-
-@pytest.fixture
-def client(test_env):
-    """Provide test client for web ingestion E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    from fastapi.testclient import TestClient
-
-    return TestClient(app)
-
-
-@pytest.fixture
-def auth_headers(test_env):
-    """Provide authentication headers for web ingestion E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    return headers
-
-
-@pytest.fixture
-def test_env():
-    """Provide complete test environment for web ingestion E2E tests."""
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
-
-    yield from kb_test_env()

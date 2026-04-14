@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -831,12 +831,14 @@ class TestAPIMultiTenancy:
     @pytest.mark.asyncio
     @patch("xagent.web.api.kb._check_can_delete_collection")
     @patch("xagent.web.api.kb.get_vector_index_store")
+    @patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock)
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
     async def test_delete_collection_api_with_user(
         self,
         mock_delete_collection,
         mock_delete_collection_physical_dir,
+        _mock_ensure_collection_access,
         mock_get_vector_store,
         mock_check_can_delete,
     ):
@@ -887,12 +889,14 @@ class TestAPIMultiTenancy:
     @pytest.mark.asyncio
     @patch("xagent.web.api.kb._check_can_delete_collection")
     @patch("xagent.web.api.kb.get_vector_index_store")
+    @patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock)
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
     @patch("xagent.web.api.kb.delete_collection")
     async def test_delete_collection_api_admin_access(
         self,
         mock_delete_collection,
         mock_delete_collection_physical_dir,
+        _mock_ensure_collection_access,
         mock_get_vector_store,
         mock_check_can_delete,
     ):

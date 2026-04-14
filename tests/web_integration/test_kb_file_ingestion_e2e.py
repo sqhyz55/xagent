@@ -22,6 +22,8 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
 )
 
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
+
 # ==========================================
 # TEST FIXTURES
 # ==========================================
@@ -99,6 +101,8 @@ def mock_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter
     from xagent.core.tools.core.RAG_tools.management import collection_manager
     from xagent.core.tools.core.RAG_tools.utils import model_resolver
 
+    mgr = collection_manager.collection_manager
+
     # Mock collection to exist
     mock_collection = CollectionInfo(
         name="e2e_test_collection",
@@ -119,14 +123,14 @@ def mock_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter
     ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
         return (stub_embedding_config, stub_embedding_adapter)
 
-    # Apply mocks
+    # Apply mocks (patch singleton used by KB routes)
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "get_collection",
         mock_get_collection,
     )
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "initialize_collection_embedding",
         mock_initialize_collection,
     )
@@ -408,40 +412,3 @@ class TestKBFileIngestionE2E:
             assert response.status_code in [200, 400, 422, 500]
 
             os.unlink(tmp.name)
-
-
-# ==========================================
-# TEST FIXTURES FOR MODULE
-# ==========================================
-
-
-@pytest.fixture
-def client(test_env):
-    """Provide test client for E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    from fastapi.testclient import TestClient
-
-    return TestClient(app)
-
-
-@pytest.fixture
-def auth_headers(test_env):
-    """Provide authentication headers for E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    return headers
-
-
-@pytest.fixture
-def test_env():
-    """Provide complete test environment for E2E tests.
-
-    This fixture sets up:
-    - FastAPI app with all routes
-    - Authentication headers
-    - Test database session
-    - Temporary upload directory
-    """
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
-
-    # Reuse existing test environment from kb_dir tests
-    yield from kb_test_env()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,7 +47,7 @@ class _StubEmbeddingAdapter(BaseEmbedding):
 
 
 @pytest.fixture
-def stub_embedding_config():
+def stub_embedding_config() -> EmbeddingModelConfig:
     """Create stub embedding configuration for parsing tests."""
     return EmbeddingModelConfig(
         id="e2e-parsing-embedding",
@@ -58,19 +58,23 @@ def stub_embedding_config():
 
 
 @pytest.fixture
-def stub_embedding_adapter():
+def stub_embedding_adapter() -> _StubEmbeddingAdapter:
     """Create stub embedding adapter for parsing tests."""
     return _StubEmbeddingAdapter()
 
 
 @pytest.fixture
 def mock_parsing_rag_pipeline(
-    monkeypatch, stub_embedding_config, stub_embedding_adapter
-):
+    monkeypatch: Any,
+    stub_embedding_config: EmbeddingModelConfig,
+    stub_embedding_adapter: _StubEmbeddingAdapter,
+) -> None:
     """Mock the RAG pipeline components for parsing behavior E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
     from xagent.core.tools.core.RAG_tools.utils import model_resolver
+
+    mgr = collection_manager.collection_manager
 
     # Mock collection to exist
     mock_collection = CollectionInfo(
@@ -88,18 +92,18 @@ def mock_parsing_rag_pipeline(
         return mock_collection
 
     def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs
+        model_id: str | None = None, **kwargs: Any
     ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
         return (stub_embedding_config, stub_embedding_adapter)
 
-    # Apply mocks
+    # Apply mocks (patch singleton used by KB routes)
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "get_collection",
         mock_get_collection,
     )
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "initialize_collection_embedding",
         mock_initialize_collection,
     )
@@ -118,7 +122,7 @@ def mock_parsing_rag_pipeline(
 
 
 @pytest.fixture
-def sample_parsing_files():
+def sample_parsing_files() -> Generator[tuple[dict[str, str], str], None, None]:
     """Create sample test files for parsing behavior testing."""
     files = {}
 
@@ -178,7 +182,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that .txt files use the default parser correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_txt"
@@ -210,7 +214,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that multiline .txt files are parsed into multiple chunks."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_multiline"
@@ -240,7 +244,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that Chinese text is parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_chinese"
@@ -267,7 +271,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that .md files use markdown-aware parsing."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_md"
@@ -296,7 +300,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that complex markdown with headers, lists, formatting is parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_md_complex"
@@ -325,7 +329,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that .json files are parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_json"
@@ -351,7 +355,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that JSON arrays are parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_json_array"
@@ -377,7 +381,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that nested JSON structures are parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_json_nested"
@@ -403,7 +407,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that .csv files are parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_csv"
@@ -429,7 +433,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that CSV with quoted fields is parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_csv_quoted"
@@ -455,7 +459,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that .html files are parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_html"
@@ -481,7 +485,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that code files (.py, .js, etc.) are parsed correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_code"
@@ -521,7 +525,7 @@ class TestParserSelectionVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that .txt files use the default parser."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_txt_parser"
@@ -550,7 +554,7 @@ class TestParserSelectionVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that .md files can use markdown-specific parsing."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_md_parser"
@@ -580,7 +584,7 @@ class TestParserSelectionVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that deepdoc parser can be explicitly selected."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_deepdoc"
@@ -625,7 +629,7 @@ class TestParsedContentVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that text content is accurately preserved."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_text"
@@ -651,7 +655,7 @@ class TestParsedContentVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that Chinese text is accurately preserved."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_chinese"
@@ -695,7 +699,7 @@ class TestMetadataExtraction:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that file type is correctly detected."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_file_type"
@@ -731,7 +735,7 @@ class TestMetadataExtraction:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that source path is recorded in metadata."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_source"
@@ -774,7 +778,7 @@ class TestChunkCountVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that fixed-size chunking works correctly."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_chunks"
@@ -805,7 +809,7 @@ class TestChunkCountVerification:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Verify that markdown chunking respects markdown structure."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_verify_md_chunks"
@@ -842,7 +846,7 @@ class TestParsingEdgeCases:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that empty files are handled gracefully."""
         collection_name = "e2e_parse_empty"
 
@@ -873,7 +877,7 @@ class TestParsingEdgeCases:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that special characters are handled correctly."""
         collection_name = "e2e_parse_special"
 
@@ -908,7 +912,7 @@ class TestParsingEdgeCases:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_parsing_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that mixed encoding files are handled."""
         collection_name = "e2e_parse_encoding"
 
@@ -938,32 +942,3 @@ class TestParsingEdgeCases:
                 import os
 
                 os.unlink(tmp.name)
-
-
-# ==========================================
-# TEST FIXTURES FOR MODULE
-# ==========================================
-
-
-@pytest.fixture
-def client(test_env):
-    """Provide test client for parsing behavior E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    from fastapi.testclient import TestClient
-
-    return TestClient(app)
-
-
-@pytest.fixture
-def auth_headers(test_env):
-    """Provide authentication headers for parsing behavior E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    return headers
-
-
-@pytest.fixture
-def test_env():
-    """Provide complete test environment for parsing behavior E2E tests."""
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
-
-    yield from kb_test_env()

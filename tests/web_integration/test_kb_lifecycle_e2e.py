@@ -11,6 +11,7 @@ This module tests the complete knowledge base lifecycle:
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,15 @@ from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
 )
+
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
+
+
+def _log(msg: str) -> None:
+    """Helper to log messages immediately."""
+    sys.stdout.write(f"{msg}\n")
+    sys.stdout.flush()
+
 
 # ==========================================
 # TEST FIXTURES
@@ -76,6 +86,8 @@ def mock_lifecycle_rag_pipeline(
     from xagent.core.tools.core.RAG_tools.management import collection_manager
     from xagent.core.tools.core.RAG_tools.utils import model_resolver
 
+    mgr = collection_manager.collection_manager
+
     # Mock collection to exist
     mock_collection = CollectionInfo(
         name="e2e_lifecycle_test",
@@ -96,14 +108,14 @@ def mock_lifecycle_rag_pipeline(
     ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
         return (stub_embedding_config, stub_embedding_adapter)
 
-    # Apply mocks
+    # Apply mocks (patch singleton used by KB routes)
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "get_collection",
         mock_get_collection,
     )
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "initialize_collection_embedding",
         mock_initialize_collection,
     )
@@ -166,11 +178,15 @@ class TestKBLifecycleE2E:
         mock_lifecycle_rag_pipeline: None,
     ):
         """Test complete KB lifecycle: create → ingest → search → delete."""
+        _log("\n=== START test_complete_kb_lifecycle_single_document ===")
         files, temp_dir = sample_lifecycle_files
         collection_name = "e2e_lifecycle_single"
         file_path = files["document1.txt"]
+        _log(f"Collection name: {collection_name}")
+        _log(f"File path: {file_path}")
 
         # Step 1: Create collection and ingest document
+        _log("Step 1: Ingesting document...")
         with open(file_path, "rb") as f:
             ingest_response = client.post(
                 "/api/kb/ingest",
@@ -181,25 +197,32 @@ class TestKBLifecycleE2E:
                 },
                 headers=auth_headers,
             )
+        _log(f"Ingest response status: {ingest_response.status_code}")
 
         # Verify ingestion succeeded
         assert ingest_response.status_code == 200
         ingest_result = ingest_response.json()
         assert ingest_result["status"] in ["success", "partial"]
+        _log(f"Ingest result status: {ingest_result.get('status')}")
 
         # Step 2: List collections to verify KB exists
+        _log("Step 2: Listing collections...")
         list_response = client.get("/api/kb/collections", headers=auth_headers)
         assert list_response.status_code == 200
         collections = list_response.json()
         assert "collections" in collections
+        _log(f"Collections count: {len(collections.get('collections', []))}")
 
         # Step 3: Try to delete the document
+        _log("Step 3: Deleting document...")
         delete_doc_response = client.delete(
             f"/api/kb/collections/{collection_name}/documents/document1.txt",
             headers=auth_headers,
         )
         # Delete may succeed or fail - both are acceptable for E2E
         assert delete_doc_response.status_code in [200, 404, 500]
+        _log(f"Delete response status: {delete_doc_response.status_code}")
+        _log("=== END test_complete_kb_lifecycle_single_document ===\n")
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -211,12 +234,16 @@ class TestKBLifecycleE2E:
         mock_lifecycle_rag_pipeline: None,
     ):
         """Test KB lifecycle with multiple documents of different formats."""
+        _log("\n=== START test_complete_kb_lifecycle_multiple_documents ===")
         files, temp_dir = sample_lifecycle_files
         collection_name = "e2e_lifecycle_multi"
+        _log(f"Collection name: {collection_name}")
 
         # Step 1: Ingest multiple documents
+        _log("Step 1: Ingesting multiple documents...")
         uploaded_docs = []
         for filename in ["document1.txt", "document2.md", "document3.json"]:
+            print(f"  Ingesting {filename}...")
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 response = client.post(
@@ -225,24 +252,32 @@ class TestKBLifecycleE2E:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
+                print(f"    Response status: {response.status_code}")
                 if response.status_code == 200:
                     uploaded_docs.append(filename)
 
         # Verify at least some documents were ingested
         assert len(uploaded_docs) >= 1
+        print(f"Uploaded {len(uploaded_docs)} documents")
 
         # Step 2: List collections
+        _log("Step 2: Listing collections...")
         list_response = client.get("/api/kb/collections", headers=auth_headers)
         assert list_response.status_code == 200
+        print(f"List response status: {list_response.status_code}")
 
         # Step 3: Try to delete each document
+        _log("Step 3: Deleting documents...")
         for doc_name in uploaded_docs:
+            print(f"  Deleting {doc_name}...")
             delete_response = client.delete(
                 f"/api/kb/collections/{collection_name}/documents/{doc_name}",
                 headers=auth_headers,
             )
             # Accept various response codes
             assert delete_response.status_code in [200, 404, 500]
+            print(f"    Delete response: {delete_response.status_code}")
+        _log("=== END test_complete_kb_lifecycle_multiple_documents ===\n")
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -254,11 +289,14 @@ class TestKBLifecycleE2E:
         mock_lifecycle_rag_pipeline: None,
     ):
         """Test deleting an entire collection after document ingestion."""
+        _log("\n=== START test_delete_collection_after_ingestion ===")
         files, temp_dir = sample_lifecycle_files
         collection_name = "e2e_delete_collection"
         file_path = files["document1.txt"]
+        print(f"Collection name: {collection_name}")
 
         # Step 1: Ingest a document
+        _log("Step 1: Ingesting document...")
         with open(file_path, "rb") as f:
             ingest_response = client.post(
                 "/api/kb/ingest",
@@ -266,15 +304,19 @@ class TestKBLifecycleE2E:
                 data={"collection": collection_name},
                 headers=auth_headers,
             )
+        print(f"Ingest response: {ingest_response.status_code}")
 
         if ingest_response.status_code == 200:
             # Step 2: Delete the entire collection
+            _log("Step 2: Deleting collection...")
             delete_response = client.delete(
                 f"/api/kb/collections/{collection_name}",
                 headers=auth_headers,
             )
             # Collection deletion should succeed
             assert delete_response.status_code in [200, 404, 500]
+            print(f"Delete response: {delete_response.status_code}")
+        _log("=== END test_delete_collection_after_ingestion ===\n")
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -286,6 +328,7 @@ class TestKBLifecycleE2E:
         mock_lifecycle_rag_pipeline: None,
     ):
         """Test that different collections maintain document isolation."""
+        _log("\n=== START test_collection_isolation ===")
         files, temp_dir = sample_lifecycle_files
 
         # Create two separate collections
@@ -328,9 +371,11 @@ class TestKBLifecycleE2E:
         mock_lifecycle_rag_pipeline: None,
     ):
         """Test saving and retrieving collection configuration."""
+        _log("\n=== START test_collection_config_management ===")
         collection_name = "e2e_config_test"
 
         # Save collection config
+        _log("Saving config...")
         config_response = client.post(
             f"/api/kb/collections/{collection_name}/config",
             json={
@@ -342,9 +387,11 @@ class TestKBLifecycleE2E:
             },
             headers=auth_headers,
         )
+        print(f"Config response: {config_response.status_code}")
 
         # Config save should succeed
         assert config_response.status_code in [200, 500]
+        _log("=== END test_collection_config_management ===\n")
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -408,13 +455,15 @@ class TestKBLifecycleE2E:
                     uploaded.append(filename)
 
         if len(uploaded) > 0:
-            # Get collection details which should include document list
-            detail_response = client.get(
-                f"/api/kb/collections/{collection_name}",
+            # No collection-detail GET; verify filenames via documents/check.
+            check_response = client.post(
+                f"/api/kb/collections/{collection_name}/documents/check",
+                json={"filenames": uploaded},
                 headers=auth_headers,
             )
-            # May succeed or fail depending on implementation
-            assert detail_response.status_code in [200, 404, 500]
+            assert check_response.status_code == 200
+            existing = set(check_response.json().get("existing_filenames", []))
+            assert existing.issuperset(set(uploaded))
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -489,32 +538,3 @@ class TestKBLifecycleE2E:
         # At least some requests should succeed
         success_count = sum(1 for code in results if code == 200)
         assert success_count >= 1
-
-
-# ==========================================
-# TEST FIXTURES FOR MODULE
-# ==========================================
-
-
-@pytest.fixture
-def client(test_env):
-    """Provide test client for lifecycle E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    from fastapi.testclient import TestClient
-
-    return TestClient(app)
-
-
-@pytest.fixture
-def auth_headers(test_env):
-    """Provide authentication headers for lifecycle E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    return headers
-
-
-@pytest.fixture
-def test_env():
-    """Provide complete test environment for lifecycle E2E tests."""
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
-
-    yield from kb_test_env()

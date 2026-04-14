@@ -26,8 +26,9 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
-# In-memory locks for collection operations to prevent concurrent initialization conflicts
-# Lock key is (loop_id, collection_name) to prevent cross-thread deadlock
+# In-memory locks for collection operations to prevent concurrent initialization conflicts.
+# Lock key is (loop_id, collection_name): avoids cross-thread deadlock and avoids sharing
+# asyncio.Lock instances across different event loops.
 _collection_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _collection_locks_lock = threading.Lock()
 
@@ -125,7 +126,6 @@ def _get_collection_lock(collection_name: str) -> asyncio.Lock:
     Returns:
         asyncio.Lock for the specific (loop_id, collection_name) combination
     """
-    # Get current event loop ID for lock key
     try:
         loop = asyncio.get_running_loop()
         loop_id = id(loop)
@@ -142,6 +142,11 @@ def _get_collection_lock(collection_name: str) -> asyncio.Lock:
     # Second check (with lock) - for safety on cold path
     with _collection_locks_lock:
         if lock_key not in _collection_locks:
+            logger.debug(
+                "[COLLECTION_LOCK] Creating new lock for '%s' (loop %s)",
+                collection_name,
+                loop_id,
+            )
             _collection_locks[lock_key] = asyncio.Lock()
         return _collection_locks[lock_key]
 
@@ -348,9 +353,14 @@ class CollectionManager:
         Raises:
             ValueError: If collection already initialized with different model
         """
+        logger.debug(
+            f"[COLLECTION_INIT] Initializing '{collection_name}' with model '{embedding_model_id}'"
+        )
         lock = _get_collection_lock(collection_name)
+        logger.debug(f"[COLLECTION_INIT] Acquiring lock for '{collection_name}'...")
 
         async with lock:
+            logger.debug(f"[COLLECTION_INIT] Lock acquired for '{collection_name}'")
             # Get current state
             try:
                 collection = await self.get_collection(collection_name)
@@ -386,6 +396,7 @@ class CollectionManager:
             logger.info(
                 f"Initialized collection '{collection_name}' with embedding model '{embedding_model_id}'"
             )
+            logger.debug(f"[COLLECTION_INIT] Releasing lock for '{collection_name}'")
             return updated_collection
 
     async def update_collection_stats(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +20,8 @@ from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
 )
+
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 # ==========================================
 # TEST FIXTURES
@@ -48,7 +50,7 @@ class _StubEmbeddingAdapter(BaseEmbedding):
 
 
 @pytest.fixture
-def stub_embedding_config():
+def stub_embedding_config() -> EmbeddingModelConfig:
     """Create stub embedding configuration for display tests."""
     return EmbeddingModelConfig(
         id="e2e-display-embedding",
@@ -59,19 +61,23 @@ def stub_embedding_config():
 
 
 @pytest.fixture
-def stub_embedding_adapter():
+def stub_embedding_adapter() -> _StubEmbeddingAdapter:
     """Create stub embedding adapter for display tests."""
     return _StubEmbeddingAdapter()
 
 
 @pytest.fixture
 def mock_display_rag_pipeline(
-    monkeypatch, stub_embedding_config, stub_embedding_adapter
-):
+    monkeypatch: Any,
+    stub_embedding_config: EmbeddingModelConfig,
+    stub_embedding_adapter: _StubEmbeddingAdapter,
+) -> None:
     """Mock the RAG pipeline components for display verification E2E testing."""
     from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
     from xagent.core.tools.core.RAG_tools.utils import model_resolver
+
+    mgr = collection_manager.collection_manager
 
     # Mock collection to exist
     mock_collection = CollectionInfo(
@@ -89,18 +95,18 @@ def mock_display_rag_pipeline(
         return mock_collection
 
     def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs
+        model_id: str | None = None, **kwargs: Any
     ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
         return (stub_embedding_config, stub_embedding_adapter)
 
-    # Apply mocks
+    # Apply mocks (patch singleton used by KB routes)
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "get_collection",
         mock_get_collection,
     )
     monkeypatch.setattr(
-        collection_manager,
+        mgr,
         "initialize_collection_embedding",
         mock_initialize_collection,
     )
@@ -119,7 +125,7 @@ def mock_display_rag_pipeline(
 
 
 @pytest.fixture
-def sample_display_files():
+def sample_display_files() -> Generator[tuple[dict[str, str], str], None, None]:
     """Create sample test files for display verification testing."""
     files = {}
 
@@ -166,7 +172,7 @@ class TestCollectionDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that collection list displays all collections."""
         files, temp_dir = sample_display_files
 
@@ -205,7 +211,7 @@ class TestCollectionDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that collection list shows accurate document counts."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_count"
@@ -239,7 +245,7 @@ class TestCollectionDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that collection list shows document names correctly."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_names"
@@ -269,7 +275,7 @@ class TestCollectionDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that collection details show complete metadata."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_metadata"
@@ -285,13 +291,12 @@ class TestCollectionDisplay:
             )
 
         if create_response.status_code == 200:
-            # Get collection details
-            detail_response = client.get(
-                f"/api/kb/collections/{collection_name}",
-                headers=auth_headers,
-            )
-            # May succeed or fail depending on implementation
-            assert detail_response.status_code in [200, 404, 500]
+            # No per-collection GET on kb_router; metadata is in list_collections.
+            list_response = client.get("/api/kb/collections", headers=auth_headers)
+            assert list_response.status_code == 200
+            payload = list_response.json()
+            names = {c.get("name") for c in payload.get("collections", [])}
+            assert collection_name in names
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -300,7 +305,7 @@ class TestCollectionDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that legacy data is handled with fallback display."""
         # This test verifies that when documents table decoding fails,
         # the system falls back to UploadedFile records
@@ -336,7 +341,7 @@ class TestDocumentDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that document list shows all documents in a collection."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_docs"
@@ -356,13 +361,14 @@ class TestDocumentDisplay:
                     created_docs.append(filename)
 
         if len(created_docs) > 0:
-            # List documents in the collection
-            list_response = client.get(
-                f"/api/kb/collections/{collection_name}/documents",
+            check_response = client.post(
+                f"/api/kb/collections/{collection_name}/documents/check",
+                json={"filenames": created_docs},
                 headers=auth_headers,
             )
-            # May succeed or fail depending on implementation
-            assert list_response.status_code in [200, 404, 500]
+            assert check_response.status_code == 200
+            existing = set(check_response.json().get("existing_filenames", []))
+            assert existing.issuperset(set(created_docs))
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -372,7 +378,7 @@ class TestDocumentDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that document list shows correct metadata for each document."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_metadata"
@@ -388,12 +394,15 @@ class TestDocumentDisplay:
             )
 
         if response.status_code == 200:
-            # List documents to check metadata
-            list_response = client.get(
-                f"/api/kb/collections/{collection_name}/documents",
+            check_response = client.post(
+                f"/api/kb/collections/{collection_name}/documents/check",
+                json={"filenames": ["report_2024.pdf"]},
                 headers=auth_headers,
             )
-            assert list_response.status_code in [200, 404, 500]
+            assert check_response.status_code == 200
+            assert "report_2024.pdf" in check_response.json().get(
+                "existing_filenames", []
+            )
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -403,7 +412,7 @@ class TestDocumentDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that document list correctly handles different file types."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_types"
@@ -430,12 +439,15 @@ class TestDocumentDisplay:
                     created_count += 1
 
         if created_count > 0:
-            # List documents
-            list_response = client.get(
-                f"/api/kb/collections/{collection_name}/documents",
+            names = [fn for fn, _ in file_types]
+            check_response = client.post(
+                f"/api/kb/collections/{collection_name}/documents/check",
+                json={"filenames": names},
                 headers=auth_headers,
             )
-            assert list_response.status_code in [200, 404, 500]
+            assert check_response.status_code == 200
+            existing = set(check_response.json().get("existing_filenames", []))
+            assert len(existing & set(names)) >= 1
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -445,7 +457,7 @@ class TestDocumentDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that document list pagination works correctly."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_pagination"
@@ -472,13 +484,16 @@ class TestDocumentDisplay:
 
                     os.unlink(tmp.name)
 
-        # Test pagination parameters
-        list_response = client.get(
-            f"/api/kb/collections/{collection_name}/documents?limit=3&offset=0",
+        # No paginated document-list GET; verify batch presence via check.
+        expected = [f"doc{i}.txt" for i in range(5)]
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": expected},
             headers=auth_headers,
         )
-        # Should handle pagination parameters
-        assert list_response.status_code in [200, 404, 500]
+        assert check_response.status_code == 200
+        existing = set(check_response.json().get("existing_filenames", []))
+        assert len(existing & set(expected)) >= 1
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -488,7 +503,7 @@ class TestDocumentDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that document list can be filtered by search."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_search"
@@ -504,13 +519,14 @@ class TestDocumentDisplay:
                     headers=auth_headers,
                 )
 
-        # Test search filter
-        search_response = client.get(
-            f"/api/kb/collections/{collection_name}/documents?search=report",
+        # Filename search is a UI concern; backend exposes existence check only.
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": ["report_2024.pdf"]},
             headers=auth_headers,
         )
-        # Should handle search parameter
-        assert search_response.status_code in [200, 404, 500]
+        assert check_response.status_code == 200
+        assert "report_2024.pdf" in check_response.json().get("existing_filenames", [])
 
 
 # ==========================================
@@ -536,7 +552,7 @@ class TestIngestionProgressDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that ingestion progress updates are displayed."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_progress"
@@ -564,7 +580,7 @@ class TestIngestionProgressDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that ingestion errors are displayed with clear messages."""
         collection_name = "e2e_display_errors"
 
@@ -587,7 +603,7 @@ class TestIngestionProgressDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that ingestion completion status is accurate."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_completion"
@@ -631,7 +647,7 @@ class TestFileIdDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that file_id is returned after successful ingestion."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_fileid"
@@ -659,7 +675,7 @@ class TestFileIdDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that documents can be identified by file_id."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_identification"
@@ -677,15 +693,27 @@ class TestFileIdDisplay:
         if create_response.status_code == 200:
             create_result = create_response.json()
             file_id = create_result.get("file_id")
+            doc_id = create_result.get("doc_id")
 
             if file_id:
-                # Try to get document by file_id
-                get_response = client.get(
-                    f"/api/kb/collections/{collection_name}/documents/{file_id}",
+                # Document lookup by file_id is via DELETE .../documents/{filename}?file_id=...
+                # (no GET on this path). Use non-destructive checks instead.
+                check_response = client.post(
+                    f"/api/kb/collections/{collection_name}/documents/check",
+                    json={"filenames": ["readme.txt"]},
                     headers=auth_headers,
                 )
-                # May succeed or fail depending on implementation
-                assert get_response.status_code in [200, 404, 500]
+                assert check_response.status_code == 200
+                existing = check_response.json().get("existing_filenames", [])
+                assert "readme.txt" in existing
+
+            if doc_id:
+                parse_response = client.get(
+                    f"/api/kb/collections/{collection_name}/parses/{doc_id}/parse_result",
+                    params={"page": 1, "page_size": 20},
+                    headers=auth_headers,
+                )
+                assert parse_response.status_code in [200, 404, 500]
 
 
 # ==========================================
@@ -712,7 +740,7 @@ class TestMetadataDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that file types are correctly displayed."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_filetype"
@@ -728,12 +756,14 @@ class TestMetadataDisplay:
                     headers=auth_headers,
                 )
 
-        # List documents to verify file type display
-        list_response = client.get(
-            f"/api/kb/collections/{collection_name}/documents",
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": ["report_2024.pdf", "user_guide.md", "config.json"]},
             headers=auth_headers,
         )
-        assert list_response.status_code in [200, 404, 500]
+        assert check_response.status_code == 200
+        existing = set(check_response.json().get("existing_filenames", []))
+        assert len(existing) >= 1
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -743,7 +773,7 @@ class TestMetadataDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that document sizes are correctly displayed."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_size"
@@ -773,7 +803,7 @@ class TestMetadataDisplay:
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
         mock_display_rag_pipeline: None,
-    ):
+    ) -> None:
         """Test that upload dates are correctly displayed."""
         files, temp_dir = sample_display_files
         collection_name = "e2e_display_date"
@@ -794,32 +824,3 @@ class TestMetadataDisplay:
                 # Date should be in ISO format
                 date_field = result.get("uploaded_at") or result.get("created_at")
                 assert date_field is not None
-
-
-# ==========================================
-# TEST FIXTURES FOR MODULE
-# ==========================================
-
-
-@pytest.fixture
-def client(test_env):
-    """Provide test client for display verification E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    from fastapi.testclient import TestClient
-
-    return TestClient(app)
-
-
-@pytest.fixture
-def auth_headers(test_env):
-    """Provide authentication headers for display verification E2E tests."""
-    app, headers, user, TestingSessionLocal = test_env
-    return headers
-
-
-@pytest.fixture
-def test_env():
-    """Provide complete test environment for display verification E2E tests."""
-    from xagent.web.api.test_kb_dir import test_env as kb_test_env
-
-    yield from kb_test_env()

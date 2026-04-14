@@ -39,6 +39,7 @@ def test_env():
     app.include_router(kb_router)
     # Include auth router for register/login endpoints
     from xagent.web.api.auth import auth_router
+
     app.include_router(auth_router)
     app.dependency_overrides[get_db] = override_get_db
 
@@ -87,3 +88,20 @@ def auth_headers(test_env):
     """Provide authentication headers for E2E tests."""
     app, headers, user, TestingSessionLocal = test_env
     return headers
+
+
+@pytest.fixture
+def db_session_factory(test_env):
+    """Expose SQLAlchemy session factory for test data adjustments."""
+    app, headers, user, TestingSessionLocal = test_env
+    return TestingSessionLocal
+
+
+@pytest.fixture
+def clean_storage() -> None:
+    """Backward-compatible no-op fixture for legacy e2e tests.
+
+    Global RAG storage isolation is already handled by root ``isolate_rag_storage``
+    autouse fixture in ``tests/conftest.py``.
+    """
+    return None
