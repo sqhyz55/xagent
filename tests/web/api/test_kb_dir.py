@@ -1,7 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -513,7 +513,10 @@ def test_kb_delete_cleans_physical_dir(test_env, temp_uploads):
     (coll_dir / "some_file.txt").write_text("data")
 
     # Mock delete_collection (the database part)
-    with patch("xagent.web.api.kb.delete_collection") as mock_delete:
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.delete_collection") as mock_delete,
+    ):
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )
@@ -816,7 +819,10 @@ def test_kb_delete_accepts_space_collection_name(test_env, temp_uploads):
     coll_dir.mkdir(parents=True, exist_ok=True)
     (coll_dir / "some_file.txt").write_text("data")
 
-    with patch("xagent.web.api.kb.delete_collection") as mock_delete:
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.delete_collection") as mock_delete,
+    ):
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )
@@ -864,7 +870,10 @@ def test_kb_delete_normalizes_padded_collection_name(test_env, temp_uploads):
             deleted_counts={},
         )
 
-    with patch("xagent.web.api.kb.delete_collection", side_effect=_capture_delete):
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.delete_collection", side_effect=_capture_delete),
+    ):
         response = client.delete(
             f"/api/kb/collections/{quote('  team notes  ', safe='')}",
             headers=headers,
@@ -905,7 +914,10 @@ def test_kb_delete_accepts_unicode_collection_name(test_env, temp_uploads):
     coll_dir.mkdir(parents=True, exist_ok=True)
     (coll_dir / "some_file.txt").write_text("data")
 
-    with patch("xagent.web.api.kb.delete_collection") as mock_delete:
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.delete_collection") as mock_delete,
+    ):
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
         )
@@ -1057,7 +1069,10 @@ def test_kb_search_normalizes_padded_collection_name(test_env, temp_uploads):
             used_rerank=False,
         )
 
-    with patch("xagent.web.api.kb.run_document_search", side_effect=_capture_search):
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.run_document_search", side_effect=_capture_search),
+    ):
         response = client.post(
             "/api/kb/search",
             data={
@@ -1086,17 +1101,14 @@ def test_kb_delete_physical_cleanup_failure_aborts_operation(test_env, temp_uplo
 
     # Mock delete_collection to return success (database deletion would succeed)
     with (
-        patch("xagent.web.api.kb._check_can_delete_collection"),
-        patch(
-            "xagent.web.api.kb.delete_collection_physical_dir"
-        ) as mock_physical_delete,
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch("xagent.web.api.kb.delete_collection") as mock_delete,
+        patch(
+            "xagent.web.services.kb_collection_service.move_collection_dir_to_trash"
+        ) as mock_move_to_trash,
     ):
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
-        )
-        from xagent.web.services.kb_collection_service import (
-            CollectionPhysicalDeleteResult,
         )
 
         mock_delete.return_value = CollectionOperationResult(
@@ -1106,11 +1118,9 @@ def test_kb_delete_physical_cleanup_failure_aborts_operation(test_env, temp_uplo
             affected_documents=[],
             deleted_counts={},
         )
-        mock_physical_delete.return_value = CollectionPhysicalDeleteResult(
-            status="failed",
-            error="Permission denied",
-            collection_dir=coll_dir,
-        )
+
+        # Simulate move-to-trash failure (delete now uses rename-to-trash, not rmtree)
+        mock_move_to_trash.side_effect = PermissionError("Permission denied")
 
         # Attempt to delete collection
         response = client.delete(
@@ -1137,19 +1147,13 @@ def test_kb_delete_returns_physical_cleanup_status(test_env, temp_uploads):
     coll_dir.mkdir(parents=True, exist_ok=True)
     (coll_dir / "some_file.txt").write_text("data")
 
-    # Mock delete_collection and permission check path.
+    # Mock delete_collection
     with (
-        patch("xagent.web.api.kb._check_can_delete_collection"),
-        patch(
-            "xagent.web.api.kb.delete_collection_physical_dir"
-        ) as mock_physical_delete,
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch("xagent.web.api.kb.delete_collection") as mock_delete,
     ):
         from xagent.core.tools.core.RAG_tools.core.schemas import (
             CollectionOperationResult,
-        )
-        from xagent.web.services.kb_collection_service import (
-            CollectionPhysicalDeleteResult,
         )
 
         mock_delete.return_value = CollectionOperationResult(
@@ -1158,10 +1162,6 @@ def test_kb_delete_returns_physical_cleanup_status(test_env, temp_uploads):
             message="deleted",
             affected_documents=[],
             deleted_counts={},
-        )
-        mock_physical_delete.return_value = CollectionPhysicalDeleteResult(
-            status="success",
-            collection_dir=coll_dir,
         )
 
         # Delete collection
@@ -1242,7 +1242,10 @@ def test_kb_rename_rejects_path_traversal_in_collection_names(test_env, temp_upl
     from urllib.parse import quote
 
     # Mock database operations to avoid schema errors
-    with patch("xagent.web.api.kb.get_vector_index_store") as mock_store_factory:
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store") as mock_store_factory,
+    ):
         from unittest.mock import MagicMock
 
         # Mock connection and table
@@ -1298,6 +1301,7 @@ def test_kb_rename_physical_directory_rename(test_env, temp_uploads):
 
     # Mock the database update operations to avoid database errors
     with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections._list_table_names"
         ) as mock_list_tables,
@@ -1351,6 +1355,7 @@ def test_kb_rename_normalizes_padded_collection_names(test_env, temp_uploads):
     (old_coll_dir / "some_file.txt").write_text("data")
 
     with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections._list_table_names"
         ) as mock_list_tables,
@@ -1394,6 +1399,7 @@ def test_kb_rename_accepts_unicode_collection_name(test_env, temp_uploads):
     (old_coll_dir / "some_file.txt").write_text("data")
 
     with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections._list_table_names"
         ) as mock_list_tables,
@@ -1437,7 +1443,10 @@ def test_kb_rename_physical_rename_failure_aborts_operation(test_env, temp_uploa
     (old_coll_dir / "some_file.txt").write_text("data")
 
     # Mock database operations to avoid schema errors
-    with patch("xagent.web.api.kb.get_vector_index_store") as mock_store_factory:
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store") as mock_store_factory,
+    ):
         from unittest.mock import MagicMock
 
         # Mock connection and table
@@ -1492,7 +1501,10 @@ def test_kb_rename_target_directory_exists_conflict(test_env, temp_uploads):
     (new_coll_dir / "new_file.txt").write_text("new data")
 
     # Mock database operations to avoid schema errors
-    with patch("xagent.web.api.kb.get_vector_index_store") as mock_store_factory:
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store") as mock_store_factory,
+    ):
         from unittest.mock import MagicMock
 
         # Mock connection and table
@@ -2172,35 +2184,26 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         session.close()
 
     document_state = [
-        {
-            "collection": "demo",
-            "doc_id": "doc-1",
-            "file_id": target_file_id,
-            "source_path": str(file_path),
-        }
+        DocumentRecord(
+            doc_id="doc-1",
+            file_id=target_file_id,
+            source_path=str(file_path),
+        )
     ]
 
     def _fake_delete_document(collection_name, doc_id, user_id, is_admin):
         document_state.clear()
         return _successful_delete_result(collection_name, doc_id)
 
-    # Don't mock delete_uploaded_file_if_orphaned - let it actually run and delete the file
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
+
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=[list(document_state), []],
-        ),
-        patch(
-            "xagent.web.api.kb._build_uploaded_filename_map",
-            return_value={target_file_id: "orphan.txt"},
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
-        ),
-        patch(
-            "xagent.web.services.kb_file_service.get_uploads_dir",
-            return_value=temp_uploads.resolve(),
         ),
     ):
         response = client.delete(
@@ -2209,7 +2212,7 @@ def test_delete_document_prefers_file_id_and_cleans_orphan_file(test_env, temp_u
         )
 
     assert response.status_code == 200
-    assert not file_path.exists(), f"File still exists at {file_path}"
+    assert not file_path.exists()
 
     session = TestingSessionLocal()
     try:
@@ -2509,12 +2512,11 @@ def test_delete_document_accepts_unicode_collection_name(test_env, temp_uploads)
 
     deleted_doc_ids: list[str] = []
     document_state = [
-        {
-            "collection": collection_name,
-            "doc_id": "doc-1",
-            "file_id": None,
-            "source_path": str(file_path),
-        }
+        DocumentRecord(
+            doc_id="doc-1",
+            file_id=None,
+            source_path=str(file_path),
+        )
     ]
 
     def _fake_delete_document(collection_name_arg, doc_id, user_id, is_admin):
@@ -2522,11 +2524,12 @@ def test_delete_document_accepts_unicode_collection_name(test_env, temp_uploads)
         assert collection_name_arg == collection_name
         return _successful_delete_result(collection_name_arg, doc_id)
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
+
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            return_value=document_state,
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
@@ -2597,22 +2600,24 @@ def test_delete_document_by_filename_refuses_ambiguous_match(test_env, temp_uplo
     # Two documents share the same resolved filename. Without file_id/doc_id,
     # the API must refuse the deletion to avoid mass deletion by basename.
     document_state = [
-        {
-            "collection": "demo",
-            "doc_id": "doc-a",
-            "file_id": "file-a",
-            "source_path": str(file_a),
-        },
-        {
-            "collection": "demo",
-            "doc_id": "doc-b",
-            "file_id": "file-b",
-            "source_path": str(file_b),
-        },
+        DocumentRecord(
+            doc_id="doc-a",
+            file_id="file-a",
+            source_path=str(file_a),
+        ),
+        DocumentRecord(
+            doc_id="doc-b",
+            file_id="file-b",
+            source_path=str(file_b),
+        ),
     ]
 
-    with patch(
-        "xagent.web.api.kb._list_documents_for_user", return_value=document_state
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
+
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
     ):
         response = client.delete(
             "/api/kb/collections/demo/documents/dup.txt",
@@ -2634,33 +2639,29 @@ def test_delete_document_by_doc_id_disambiguates_duplicate_filename(
     file_path.write_text("content")
 
     document_state = [
-        {
-            "collection": "demo",
-            "doc_id": "doc-a",
-            "file_id": "file-a",
-            "source_path": str(file_path),
-        },
-        {
-            "collection": "demo",
-            "doc_id": "doc-b",
-            "file_id": "file-b",
-            "source_path": str(file_path),
-        },
+        DocumentRecord(
+            doc_id="doc-a",
+            file_id="file-a",
+            source_path=str(file_path),
+        ),
+        DocumentRecord(
+            doc_id="doc-b",
+            file_id="file-b",
+            source_path=str(file_path),
+        ),
     ]
     deleted_doc_ids: list[str] = []
-
-    def _fake_list_documents_for_user(*args, **kwargs):
-        return list(document_state)
 
     def _fake_delete_document(collection_name, doc_id, user_id, is_admin):
         deleted_doc_ids.append(doc_id)
         return _successful_delete_result(collection_name, doc_id)
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
+
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=_fake_list_documents_for_user,
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
@@ -2712,11 +2713,12 @@ def test_delete_document_by_file_id_survives_degraded_document_listing(
         deleted_doc_ids.append(doc_id)
         return _successful_delete_result(collection_name, doc_id)
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.side_effect = RuntimeError("documents unavailable")
+
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=RuntimeError("documents unavailable"),
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.web.api.kb.list_documents",
             side_effect=RuntimeError("documents unavailable"),
@@ -2841,19 +2843,12 @@ def test_delete_document_without_file_id_does_not_resurface_on_collection_refres
         session.close()
 
     document_state = [
-        {
-            "collection": "demo",
-            "doc_id": generate_deterministic_doc_id("demo", str(file_path)),
-            "file_id": None,
-            "source_path": str(file_path),
-        }
+        DocumentRecord(
+            doc_id=generate_deterministic_doc_id("demo", str(file_path)),
+            file_id=None,
+            source_path=str(file_path),
+        )
     ]
-
-    def _fake_list_documents_for_user(*args, **kwargs):
-        collection_name = kwargs.get("collection_name")
-        if collection_name == "demo":
-            return list(document_state)
-        return []
 
     def _fake_delete_document(collection_name, doc_id, user_id, is_admin):
         document_state.clear()
@@ -2867,11 +2862,12 @@ def test_delete_document_without_file_id_does_not_resurface_on_collection_refres
         warnings=[],
     )
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
+
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=_fake_list_documents_for_user,
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
@@ -2936,19 +2932,15 @@ def test_delete_document_without_file_id_preserves_uploaded_file_on_cleanup_refr
         session.close()
 
     document_state = [
-        {
-            "collection": "demo",
-            "doc_id": generate_deterministic_doc_id("demo", str(file_path)),
-            "file_id": None,
-            "source_path": str(file_path),
-        }
+        DocumentRecord(
+            doc_id=generate_deterministic_doc_id("demo", str(file_path)),
+            file_id=None,
+            source_path=str(file_path),
+        )
     ]
 
-    def _fake_list_documents_for_user(*args, **kwargs):
-        collection_name = kwargs.get("collection_name")
-        if collection_name == "demo":
-            return list(document_state)
-        raise RuntimeError("documents unavailable")
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
 
     def _fake_delete_document(collection_name, doc_id, user_id, is_admin):
         document_state.clear()
@@ -2963,10 +2955,8 @@ def test_delete_document_without_file_id_preserves_uploaded_file_on_cleanup_refr
     )
 
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=_fake_list_documents_for_user,
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
             side_effect=_fake_delete_document,
@@ -3046,8 +3036,12 @@ def test_delete_document_by_file_id_resolves_doc_id_via_list_documents(
         warnings=[],
     )
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = []
+
     with (
-        patch("xagent.web.api.kb._list_documents_for_user", return_value=[]),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch("xagent.web.api.kb.list_documents", return_value=doc_list),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
@@ -3100,8 +3094,12 @@ def test_delete_document_by_doc_id_succeeds_without_uploaded_file_record(
         warnings=[],
     )
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = []
+
     with (
-        patch("xagent.web.api.kb._list_documents_for_user", return_value=[]),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch("xagent.web.api.kb.list_documents", return_value=doc_list),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
@@ -3166,8 +3164,12 @@ def test_delete_document_by_file_id_rejects_unlinked_basename_match(
         warnings=[],
     )
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = []
+
     with (
-        patch("xagent.web.api.kb._list_documents_for_user", return_value=[]),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch("xagent.web.api.kb.list_documents", return_value=doc_list),
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document"
@@ -3208,16 +3210,15 @@ def test_delete_document_reports_cleanup_commit_failure(test_env, temp_uploads):
         session.close()
 
     document_state = [
-        {
-            "collection": "demo",
-            "doc_id": "doc-commit-failure",
-            "file_id": target_file_id,
-            "source_path": str(file_path),
-        }
+        DocumentRecord(
+            doc_id="doc-commit-failure",
+            file_id=target_file_id,
+            source_path=str(file_path),
+        )
     ]
 
-    def _fake_list_documents_for_user(*args, **kwargs):
-        return list(document_state)
+    mock_store = MagicMock()
+    mock_store.list_document_records.return_value = list(document_state)
 
     def _fake_delete_document(collection_name, doc_id, user_id, is_admin):
         document_state.clear()
@@ -3242,9 +3243,9 @@ def test_delete_document_reports_cleanup_commit_failure(test_env, temp_uploads):
     try:
         with (
             patch(
-                "xagent.web.api.kb._list_documents_for_user",
-                side_effect=_fake_list_documents_for_user,
+                "xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock
             ),
+            patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
             patch(
                 "xagent.core.tools.core.RAG_tools.management.collections.delete_document",
                 side_effect=_fake_delete_document,
@@ -3290,11 +3291,12 @@ def test_delete_document_rejects_mismatched_doc_id_and_file_id(test_env, temp_up
     finally:
         session.close()
 
+    mock_store = MagicMock()
+    mock_store.list_document_records.side_effect = RuntimeError("documents unavailable")
+
     with (
-        patch(
-            "xagent.web.api.kb._list_documents_for_user",
-            side_effect=RuntimeError("documents unavailable"),
-        ),
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch("xagent.web.api.kb.get_vector_index_store", return_value=mock_store),
         patch(
             "xagent.web.api.kb.list_documents",
             side_effect=RuntimeError("documents unavailable"),
@@ -3355,6 +3357,7 @@ def test_kb_delete_collection_cleans_file_id_managed_root_file(test_env, temp_up
         return list(document_state)
 
     with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch("xagent.web.api.kb.get_vector_index_store") as mock_get_store,
         patch("xagent.web.api.kb.delete_collection") as mock_delete,
     ):
@@ -3403,6 +3406,7 @@ def test_get_parse_result_accepts_unicode_collection_name(test_env, temp_uploads
     pagination = {"page": 1, "page_size": 20, "total_count": 1, "total_pages": 1}
 
     with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
         patch(
             "xagent.web.api.kb.reconstruct_parse_result_from_db",
             return_value=(elements, "hash-1"),

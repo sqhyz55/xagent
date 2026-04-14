@@ -24,7 +24,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from googleapiclient.discovery import build  # type: ignore
 from googleapiclient.http import MediaIoBaseDownload  # type: ignore
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ...core.tools.core.RAG_tools.core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT
@@ -67,6 +67,7 @@ from ...core.tools.core.RAG_tools.pipelines.web_ingestion import (
     run_web_ingestion,
 )
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
+from ...core.tools.core.RAG_tools.storage.contracts import DocumentRecord
 from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     generate_deterministic_doc_id,
@@ -543,6 +544,105 @@ def _build_cloud_storage_filename(original_filename: str, file_id: str) -> str:
     return f"{stem}__{digest}{suffix}"
 
 
+def _raise_if_list_collections_failed(
+    result: ListCollectionsResult, *, stage: str
+) -> None:
+    """Fail closed when collection listing cannot read storage (do not infer access)."""
+    if result.status != "success":
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Knowledge base temporarily unavailable ({stage}): {result.message}"
+            ),
+        )
+
+
+async def _list_collections_with_retry(
+    *,
+    user_id: Optional[int],
+    is_admin: bool,
+    stage: str,
+) -> ListCollectionsResult:
+    """Call ``list_collections`` with short retries on transient LanceDB/read errors."""
+    delay_s = 0.05
+    last: Optional[ListCollectionsResult] = None
+    for attempt in range(3):
+        last = await list_collections(user_id=user_id, is_admin=is_admin)
+        if last.status == "success":
+            return last
+        if attempt < 2:
+            logger.warning(
+                "list_collections non-success (attempt %s/3, stage=%s, status=%r): %s",
+                attempt + 1,
+                stage,
+                last.status,
+                last.message,
+            )
+            await asyncio.sleep(delay_s)
+            delay_s *= 2
+    if last is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Knowledge base temporarily unavailable ({stage}): no result",
+        )
+    _raise_if_list_collections_failed(last, stage=stage)
+    return last
+
+
+async def _ensure_collection_access(
+    collection_name: str,
+    user: User,
+    *,
+    hide_missing: bool = False,
+    allow_create: bool = False,
+) -> None:
+    """Enforce collection-level access semantics for KB APIs.
+
+    Rules:
+    - Admin users always pass.
+    - If collection exists but is not visible to current user: raise 403.
+    - If collection does not exist globally: when ``allow_create`` is True, allow
+      (first ingest / config for a new collection name); otherwise raise 404, or
+      403 when ``hide_missing`` is True.
+    - If ``list_collections`` returns ``status != "success"``, raise 503 (do not
+      infer access from an empty list after a storage read failure).
+    """
+    if bool(user.is_admin):
+        return
+
+    current_user_id = int(user.id)
+    visible = await _list_collections_with_retry(
+        user_id=current_user_id,
+        is_admin=False,
+        stage="list_visible_collections_for_access_check",
+    )
+    if any(c.name == collection_name for c in visible.collections):
+        return
+
+    all_collections = await _list_collections_with_retry(
+        user_id=None,
+        is_admin=True,
+        stage="list_all_collections_for_access_check",
+    )
+    if any(c.name == collection_name for c in all_collections.collections):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied for collection: {collection_name}",
+        )
+
+    if allow_create:
+        return
+
+    if hide_missing:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied for collection: {collection_name}",
+        )
+    raise HTTPException(
+        status_code=404, detail=f"Collection not found: {collection_name}"
+    )
+
+
 def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
     """Parse optional custom separators (JSON array of strings) from form input.
 
@@ -580,6 +680,8 @@ async def save_collection_config(
         raise HTTPException(
             status_code=422, detail=f"Invalid collection name: {str(e)}"
         ) from e
+
+    await _ensure_collection_access(safe_collection, _user, allow_create=True)
 
     config_json = config.model_dump_json(exclude_unset=True)
 
@@ -712,6 +814,8 @@ async def ingest(
             status_code=422, detail=f"Invalid collection name: {str(e)}"
         ) from e
 
+    await _ensure_collection_access(safe_collection, _user, allow_create=True)
+
     try:
         get_collection_sync(safe_collection)
         collection_existed_before = True
@@ -755,7 +859,7 @@ async def ingest(
             safe_filename,
             file_path,
             _user.id,
-            collection,
+            safe_collection,
         )
     except HTTPException:
         # Ensure partial file is removed on early abort (e.g., file too large)
@@ -850,7 +954,7 @@ async def ingest(
 
         def _run_ingestion() -> IngestionResult:
             return run_document_ingestion(
-                collection=collection,
+                collection=safe_collection,
                 source_path=str(file_path),
                 ingestion_config=config,
                 progress_manager=progress_manager,
@@ -980,6 +1084,15 @@ async def ingest_cloud(
         collection_existed_before = True
     except ValueError:
         collection_existed_before = False
+
+    try:
+        safe_collection = sanitize_path_component(request.collection, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    await _ensure_collection_access(safe_collection, _user, allow_create=True)
 
     # Concurrency limit for cloud ingestion to avoid overloading
     semaphore = asyncio.Semaphore(5)
@@ -1556,6 +1669,8 @@ async def search(
             detail="embedding_model_id is required",
         )
 
+    await _ensure_collection_access(collection, _user, hide_missing=False)
+
     # Build configuration from individual parameters
     config = SearchConfig(
         search_type=search_type or SearchType.HYBRID,
@@ -1727,6 +1842,8 @@ async def ingest_web(
             raise HTTPException(
                 status_code=422, detail=f"Invalid collection name: {str(e)}"
             ) from e
+
+        await _ensure_collection_access(safe_collection, _user, allow_create=True)
 
         url_patterns_list = (
             [p.strip() for p in url_patterns.split(",")] if url_patterns else None
@@ -2476,15 +2593,6 @@ async def check_documents_exist_api(
     for admins), so "already exists" matches what will be overwritten on re-upload.
     """
     try:
-        try:
-            safe_collection_name = sanitize_path_component(
-                collection_name, "collection"
-            )
-        except ValueError as e:
-            raise HTTPException(
-                status_code=422, detail=f"Invalid collection name: {str(e)}"
-            ) from e
-
         filenames = body.get("filenames")
         if not isinstance(filenames, list):
             raise HTTPException(
@@ -2500,10 +2608,19 @@ async def check_documents_exist_api(
         if not requested:
             return {"existing_filenames": []}
 
+        try:
+            safe_collection = sanitize_path_component(collection_name, "collection")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid collection name: {str(e)}"
+            ) from e
+
+        await _ensure_collection_access(safe_collection, _user, allow_create=True)
+
         # Use storage abstraction layer to fetch document records
         vector_store = get_vector_index_store()
         records = vector_store.list_document_records(
-            collection_name=safe_collection_name,
+            collection_name=safe_collection,
             user_id=int(_user.id),
             is_admin=False,
             max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
@@ -2574,12 +2691,34 @@ async def delete_document_api(
     # NOTE: Exceptions are normalized by @handle_kb_exceptions for consistent API responses.
     from ...core.tools.core.RAG_tools.management.collections import delete_document
 
+    # Parameter validation
     try:
         safe_collection_name = sanitize_path_component(collection_name, "collection")
     except ValueError as e:
         raise HTTPException(
             status_code=422, detail=f"Invalid collection name: {str(e)}"
         ) from e
+
+    # Access control check
+    await _ensure_collection_access(safe_collection_name, _user, hide_missing=True)
+
+    # Use storage abstraction layer to fetch document records
+    vector_store = get_vector_index_store()
+    records: List[DocumentRecord] = []
+    try:
+        records = vector_store.list_document_records(
+            collection_name=safe_collection_name,
+            user_id=int(_user.id),
+            is_admin=bool(_user.is_admin),
+            max_results=DEFAULT_VECTOR_STORE_SCAN_LIMIT,
+        )
+    except Exception as exc:
+        # Degrade gracefully when vector store cannot read records.
+        logger.warning(
+            "Failed to read documents for delete resolution (collection=%s): %s",
+            safe_collection_name,
+            exc,
+        )
 
     def _collect_candidate_doc_ids(
         docs: list[dict[str, Any]],
@@ -2870,21 +3009,8 @@ async def delete_document_api(
 
         return None
 
+    # Build filename map from file_ids (for UploadedFile lookup)
     user_id_int = int(_user.id)
-    records: List[Dict[str, Any]] = []
-    try:
-        records = _list_documents_for_user(
-            user_id=user_id_int,
-            is_admin=bool(_user.is_admin),
-            collection_name=safe_collection_name,
-        )
-    except Exception as exc:
-        # Degrade gracefully when LanceDB cannot decode legacy rows.
-        logger.warning(
-            "Failed to read documents for delete resolution (collection=%s): %s",
-            safe_collection_name,
-            exc,
-        )
     filename_map = _build_uploaded_filename_map(
         db,
         user_id=user_id_int,
@@ -2898,7 +3024,7 @@ async def delete_document_api(
     # Find all matching documents (handle duplicates)
     matching_docs = []
     for record in records:
-        current_doc_id = record.get("doc_id")
+        current_doc_id = record.doc_id
         current_file_id = _get_document_record_file_id(record)
         resolved_filename = _resolve_document_filename(record, filename_map)
 
@@ -2915,7 +3041,7 @@ async def delete_document_api(
                 "doc_id": current_doc_id,
                 "file_id": current_file_id,
                 "filename": resolved_filename or filename,
-                "source_path": record.get("source_path"),
+                "source_path": record.source_path,
             }
         )
 
@@ -3208,8 +3334,31 @@ async def rename_collection_api(
             status_code=422, detail=f"Invalid collection name: {str(e)}"
         ) from e
 
+    # Quick return if name unchanged
     if safe_new_collection == safe_old_collection:
         return {"status": "success", "message": "Collection name unchanged"}
+
+    # Access control check
+    await _ensure_collection_access(safe_old_collection, _user, hide_missing=False)
+
+    # Validate that target collection doesn't exist or user has access
+    if safe_new_collection != safe_old_collection:
+        visible_for_user = await _list_collections_with_retry(
+            user_id=int(_user.id),
+            is_admin=False,
+            stage="rename_list_visible_collections",
+        )
+        if not any(c.name == safe_new_collection for c in visible_for_user.collections):
+            all_named = await _list_collections_with_retry(
+                user_id=None,
+                is_admin=True,
+                stage="rename_list_all_collections",
+            )
+            if any(c.name == safe_new_collection for c in all_named.collections):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Access denied for collection: {safe_new_collection}",
+                )
 
     physical_rename_status = "not_found"
     physical_rename_error: Optional[str] = None
@@ -3370,13 +3519,6 @@ async def get_parse_result_api(
     from ...core.tools.core.RAG_tools.core.exceptions import DocumentNotFoundError
     from ...core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
 
-    try:
-        safe_collection_name = sanitize_path_component(collection_name, "collection")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=422, detail=f"Invalid collection name: {str(e)}"
-        ) from e
-
     safe_doc_id = sanitize_for_doc_id(doc_id)
     if safe_doc_id != doc_id:
         logger.warning("Invalid doc_id format detected: %s", doc_id)
@@ -3390,8 +3532,17 @@ async def get_parse_result_api(
         )
 
     try:
+        safe_collection = sanitize_path_component(collection_name, "collection")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid collection name: {str(e)}"
+        ) from e
+
+    await _ensure_collection_access(safe_collection, _user, hide_missing=False)
+
+    try:
         elements, actual_parse_hash = reconstruct_parse_result_from_db(
-            safe_collection_name,
+            safe_collection,
             doc_id,
             parse_hash,
             user_id=int(_user.id),
