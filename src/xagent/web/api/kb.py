@@ -1474,18 +1474,110 @@ def _check_can_delete_collection(
     user_id: int,
     is_admin: bool,
 ) -> None:
-    """Run lightweight validation before deletion.
-
-    IMPORTANT:
-    We intentionally avoid pre-checking ownership using count comparisons
-    (total_count vs own_count) because that creates a TOCTTOU race window.
-    Authorization is enforced at delete execution time in delete_collection()
-    through tenant-aware predicates (user_id/is_admin).
-    """
-    _ = (user_id, is_admin)
-
+    """Validate collection name and non-admin delete permission."""
     if not collection_name or not collection_name.strip():
         raise HTTPException(status_code=422, detail="Collection name cannot be empty")
+    if is_admin:
+        return
+    try:
+        vector_store = get_vector_index_store()
+        total_count = int(
+            vector_store.count_documents_grouped_by_collection(
+                [collection_name], user_id=None, is_admin=True
+            ).get(collection_name, 0)
+        )
+        own_count = int(
+            vector_store.count_documents_grouped_by_collection(
+                [collection_name], user_id=user_id, is_admin=False
+            ).get(collection_name, 0)
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to verify collection delete permission (documents table).",
+        ) from exc
+
+    if total_count > 0 and own_count < total_count:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only admin users can delete collections containing documents "
+                "from other users."
+            ),
+        )
+
+
+def _preflight_batch_delete_permissions(
+    unique_names: List[str],
+    user_id: int,
+    is_admin: bool,
+) -> tuple[List[str], List[BatchDeleteFailureItem]]:
+    """Preflight validation for batch delete permissions and empty names."""
+    failed: List[BatchDeleteFailureItem] = []
+    allowed: List[str] = []
+
+    if is_admin:
+        for name in unique_names:
+            if not name or not name.strip():
+                failed.append(
+                    BatchDeleteFailureItem(
+                        name=name or "",
+                        error="Collection name cannot be empty",
+                    )
+                )
+            else:
+                allowed.append(name)
+        return allowed, failed
+
+    non_empty: List[str] = []
+    for name in unique_names:
+        if not name or not name.strip():
+            failed.append(
+                BatchDeleteFailureItem(
+                    name=name or "",
+                    error="Collection name cannot be empty",
+                )
+            )
+        else:
+            non_empty.append(name)
+
+    if not non_empty:
+        return [], failed
+
+    vector_store = get_vector_index_store()
+    try:
+        totals = vector_store.count_documents_grouped_by_collection(
+            non_empty, user_id=None, is_admin=True
+        )
+        owns = vector_store.count_documents_grouped_by_collection(
+            non_empty, user_id=int(user_id), is_admin=False
+        )
+    except Exception as exc:
+        logger.error(
+            "Batch permission scan failed (vector store grouped counts): %s",
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to scan documents table for batch delete permission.",
+        ) from exc
+
+    forbidden_detail = (
+        "Only admin users can delete collections containing documents from other users."
+    )
+    for name in unique_names:
+        if not name or not name.strip():
+            continue
+        key = str(name).strip()
+        total = int(totals.get(key, 0))
+        own = int(owns.get(key, 0))
+        if total > 0 and own < total:
+            failed.append(BatchDeleteFailureItem(name=name, error=forbidden_detail))
+        else:
+            allowed.append(name)
+
+    return allowed, failed
 
 
 def _perform_kb_collection_delete(
@@ -1541,6 +1633,8 @@ def _perform_kb_collection_delete(
             if file_id
         }
 
+        # Re-check right before vector deletion to reduce TOCTTOU window.
+        _check_can_delete_collection(safe_collection, user_id, is_admin)
         result = delete_collection(safe_collection, user_id, is_admin)
 
         remaining_records = vector_store.list_document_records(
@@ -1680,29 +1774,56 @@ async def batch_delete_collections_api(
     user_id = int(_user.id)
     is_admin = bool(_user.is_admin)
     deleted: List[str] = []
-    failed: List[BatchDeleteFailureItem] = []
 
-    for name in body.collection_names:
-        try:
-            result = _perform_kb_collection_delete(name, user_id, is_admin, db)
-            if result.status in ("success", "partial_success"):
-                deleted.append(name)
-            else:
+    # Deduplicate while keeping request order.
+    seen: set[str] = set()
+    unique_names: List[str] = []
+    for raw_name in body.collection_names:
+        key = str(raw_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_names.append(raw_name)
+
+    allowed, failed = _preflight_batch_delete_permissions(
+        unique_names, user_id, is_admin
+    )
+
+    try:
+        for name in allowed:
+            try:
+                result = _perform_kb_collection_delete(name, user_id, is_admin, db)
+                if result.status in ("success", "partial_success"):
+                    deleted.append(name)
+                else:
+                    failed.append(
+                        BatchDeleteFailureItem(
+                            name=name,
+                            error=result.message or "Unknown error",
+                        )
+                    )
+            except HTTPException as e:
+                # SQL-only rollback for this request; no vector/file rollback.
+                db.rollback()
                 failed.append(
                     BatchDeleteFailureItem(
-                        name=name, error=result.message or "Unknown error"
+                        name=name,
+                        error=_http_detail_to_str(e.detail),
                     )
                 )
-        except HTTPException as e:
-            failed.append(
-                BatchDeleteFailureItem(
-                    name=name,
-                    error=_http_detail_to_str(e.detail),
+                logger.warning(
+                    "Batch delete aborted after HTTP error for %s; rolled back pending SQL.",
+                    name,
                 )
-            )
-        except Exception as e:
-            logger.exception("Batch delete failed for collection %s: %s", name, e)
-            failed.append(BatchDeleteFailureItem(name=name, error=str(e)))
+                break
+            except Exception as e:
+                db.rollback()
+                logger.exception("Batch delete failed for collection %s: %s", name, e)
+                failed.append(BatchDeleteFailureItem(name=name, error=str(e)))
+                break
+    except Exception:
+        db.rollback()
+        raise
 
     return BatchDeleteCollectionsResponse(deleted=deleted, failed=failed)
 

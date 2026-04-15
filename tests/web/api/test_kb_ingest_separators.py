@@ -168,27 +168,17 @@ def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
 ):
     """Non-admin is rejected by _check_can_delete_collection before delete_collection."""
     with (
-        patch("xagent.web.api.kb.get_connection_from_env") as mock_get_conn,
-        patch(
-            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
-        ) as mock_ensure_docs,
+        patch("xagent.web.api.kb.get_vector_index_store") as mock_get_vector_store,
         patch("xagent.web.api.kb.delete_collection") as mock_delete_collection,
     ):
-        mock_ensure_docs.return_value = None
-
-        mock_conn = MagicMock()
-        mock_table = MagicMock()
-        mock_conn.open_table.return_value = mock_table
-        mock_get_conn.return_value = mock_conn
-
-        # Simulate collection having documents from current user (id=1) and others
-        def count_rows_side_effect(filter_expr=None):
-            # own_filter includes user_id == '1'
-            if filter_expr and "user_id" in str(filter_expr):
-                return 3  # own docs
-            return 5  # total docs in collection
-
-        mock_table.count_rows.side_effect = count_rows_side_effect
+        mock_store = MagicMock()
+        mock_get_vector_store.return_value = mock_store
+        mock_store.list_document_records.return_value = []
+        # Simulate total_count=5 and own_count=3 for the same collection.
+        mock_store.count_documents_grouped_by_collection.side_effect = [
+            {"test_collection": 5},
+            {"test_collection": 3},
+        ]
 
         client = TestClient(app_with_kb)
         resp = client.delete("/api/kb/collections/test_collection")
@@ -203,22 +193,16 @@ def test_delete_collection_allowed_for_admin_with_other_users_docs(
 ):
     """Admin user can delete collections even when they contain other users' docs."""
     with (
-        patch("xagent.web.api.kb.get_connection_from_env") as mock_get_conn,
-        patch(
-            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
-        ) as mock_ensure_docs,
+        patch("xagent.web.api.kb.get_vector_index_store") as mock_get_vector_store,
         patch("xagent.web.api.kb.delete_collection") as mock_delete_collection,
     ):
-        mock_ensure_docs.return_value = None
-
-        mock_conn = MagicMock()
-        mock_table = MagicMock()
-        mock_conn.open_table.return_value = mock_table
-        mock_get_conn.return_value = mock_conn
-
-        # Admin path: delete_collection_api will not use count_rows for permission,
-        # but we still provide a default implementation to avoid errors if called.
-        mock_table.count_rows.return_value = 5
+        mock_store = MagicMock()
+        mock_get_vector_store.return_value = mock_store
+        mock_store.list_document_records.return_value = []
+        # Admin path bypasses permission pre-check, keep a safe default.
+        mock_store.count_documents_grouped_by_collection.return_value = {
+            "test_collection": 5
+        }
 
         # Simulate successful delete_collection
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -286,28 +270,16 @@ def test_delete_document_allowed_for_admin_any_doc(app_with_kb_admin, admin_user
     """Admin user can delete documents regardless of owner."""
     with (
         patch(
-            "xagent.providers.vector_store.lancedb.get_connection_from_env"
-        ) as mock_get_conn,
-        patch(
-            "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager.ensure_documents_table"
-        ) as mock_ensure_docs,
-        patch(
-            "xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils.query_to_list"
-        ) as mock_query_to_list,
+            "xagent.web.api.kb._list_documents_for_user"
+        ) as mock_list_documents_for_user,
         patch(
             "xagent.core.tools.core.RAG_tools.management.collections.delete_document"
         ) as mock_delete_document,
     ):
-        mock_ensure_docs.return_value = None
-
-        mock_conn = MagicMock()
-        mock_table = MagicMock()
-        mock_conn.open_table.return_value = mock_table
-        mock_get_conn.return_value = mock_conn
-
-        # For admin, query_to_list should return all matching records
-        mock_query_to_list.return_value = [
+        # For admin, list_documents path should return all matching records.
+        mock_list_documents_for_user.return_value = [
             {
+                "collection": "test_collection",
                 "doc_id": "doc_123",
                 "source_path": "/tmp/doc.txt",
             }

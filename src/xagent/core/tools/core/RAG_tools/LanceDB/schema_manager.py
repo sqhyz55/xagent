@@ -80,7 +80,14 @@ def _validate_schema_fields(
 def _create_table(conn: DBConnection, name: str, schema: object | None = None) -> None:
     if _table_exists(conn, name):
         return
-    conn.create_table(name, schema=schema)
+    try:
+        conn.create_table(name, schema=schema)
+    except Exception as e:
+        # Concurrent creators may race between existence check and create_table.
+        # Treat "already exists" as benign to keep ensure_* idempotent.
+        if "already exists" in str(e).lower():
+            return
+        raise
 
 
 def _validate_user_id_int64(table: object, table_name: str) -> None:

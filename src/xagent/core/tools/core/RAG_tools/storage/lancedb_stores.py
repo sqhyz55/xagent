@@ -17,7 +17,7 @@ from xagent.providers.vector_store.lancedb import get_connection_from_env
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
 from ..core.schemas import CollectionInfo, IndexResult
 from ..LanceDB.schema_manager import ensure_documents_table
-from ..utils.lancedb_query_utils import query_to_list
+from ..utils.lancedb_query_utils import list_table_names, query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from .contracts import (
@@ -90,6 +90,8 @@ class LanceDBMetadataStore(MetadataStore):
                 ("chunks", pa.int32()),
                 ("embeddings", pa.int32()),
                 ("document_names", pa.string()),
+                # Schema-only compat column; owners are derived at list time.
+                ("owners", pa.string()),
                 ("collection_locked", pa.bool_()),
                 ("allow_mixed_parse_methods", pa.bool_()),
                 ("skip_config_validation", pa.bool_()),
@@ -100,18 +102,33 @@ class LanceDBMetadataStore(MetadataStore):
                 ("extra_metadata", pa.string()),
             ]
         )
-        table_names_fn = getattr(conn, "table_names", None)
         table_exists = False
-        if table_names_fn:
-            try:
-                table_exists = "collection_metadata" in table_names_fn()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("collection_metadata existence check failed: %s", exc)
+        try:
+            table_exists = "collection_metadata" in list_table_names(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("collection_metadata existence check failed: %s", exc)
         if not table_exists:
             try:
                 conn.create_table("collection_metadata", schema=schema)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("collection_metadata create_table no-op/failure: %s", exc)
+        else:
+            # Backward compatibility: old tables may miss "owners".
+            try:
+                table = conn.open_table("collection_metadata")
+                table_schema = getattr(table, "schema", None)
+                names = getattr(table_schema, "names", None) or []
+                if "owners" not in names:
+                    add_fn = getattr(table, "add_columns", None)
+                    if add_fn is not None:
+                        add_fn({"owners": "cast('[]' as string)"})
+                        logger.info(
+                            "collection_metadata: added missing 'owners' column"
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "collection_metadata add owners column skipped/failed: %s", exc
+                )
 
     async def save_collection_config(
         self,
@@ -313,6 +330,43 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             )
         return records
 
+    def count_documents_grouped_by_collection(
+        self,
+        collection_names: Sequence[str],
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, int]:
+        """Count documents grouped by collection names with tenant filtering."""
+        names = [str(name).strip() for name in collection_names if str(name).strip()]
+        if not names:
+            return {}
+
+        conn = self._get_connection()
+        ensure_documents_table(conn)
+        table = conn.open_table("documents")
+
+        collection_expr: list[FilterExpression] = [
+            FilterCondition("collection", FilterOperator.EQ, name) for name in names
+        ]
+        base_filter = self.build_filter_expression(
+            filters=collection_expr,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        if not base_filter:
+            return {}
+
+        rows = query_to_list(
+            table.search().where(base_filter).select(["collection"]).limit(-1)
+        )
+        counts: Dict[str, int] = {}
+        for row in rows:
+            name = str(row.get("collection") or "")
+            if not name:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+        return counts
+
     def rename_collection_data(
         self,
         collection_name: str,
@@ -342,11 +396,8 @@ class LanceDBVectorIndexStore(VectorIndexStore):
 
     def list_table_names(self) -> Sequence[str]:
         conn = self._get_connection()
-        table_names_fn = getattr(conn, "table_names", None)
-        if table_names_fn is None:
-            return []
         try:
-            return [str(name) for name in table_names_fn()]
+            return list_table_names(conn)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to list LanceDB tables: %s", exc)
             return []

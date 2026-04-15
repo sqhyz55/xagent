@@ -137,6 +137,10 @@ class CollectionManager:
     def __init__(self) -> None:
         self._metadata_store = get_metadata_store()
 
+    async def _get_connection(self) -> Any:
+        """Get raw metadata storage connection for legacy helper methods."""
+        return self._metadata_store.get_raw_connection()
+
     async def get_collection(self, collection_name: str) -> CollectionInfo:
         """Get collection metadata from storage.
 

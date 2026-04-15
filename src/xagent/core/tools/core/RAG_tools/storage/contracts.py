@@ -379,6 +379,28 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
+    def count_documents_grouped_by_collection(
+        self,
+        collection_names: Sequence[str],
+        user_id: Optional[int],
+        is_admin: bool,
+    ) -> Dict[str, int]:
+        """Count documents grouped by collection.
+
+        Applies the same multi-tenancy filter semantics as other vector store
+        reads: when ``is_admin`` is False, results are filtered by ``user_id``.
+
+        Args:
+            collection_names: Target collection names to include.
+            user_id: User ID for multi-tenancy filtering.
+            is_admin: Whether the caller has admin privileges.
+
+        Returns:
+            Mapping ``collection_name -> row_count`` for the requested names.
+            Collections not present in results are treated as ``0``.
+        """
+
+    @abstractmethod
     def rename_collection_data(
         self,
         collection_name: str,

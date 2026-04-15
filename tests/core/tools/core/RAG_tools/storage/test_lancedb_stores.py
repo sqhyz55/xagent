@@ -26,10 +26,11 @@ def create_mock_arrow_table(data_list: List[Dict[str, Any]]) -> Mock:
 
 
 @pytest.fixture(autouse=True)
-def mock_ensure_schema_fields() -> None:
-    """Mock _ensure_schema_fields to avoid schema iteration errors in tests."""
+def mock_schema_manager_user_id_migration() -> None:
+    """Disable schema-manager user_id migration side effects in unit tests."""
     with patch(
-        "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager._ensure_schema_fields"
+        "xagent.core.tools.core.RAG_tools.LanceDB.schema_manager._migrate_table_user_id_to_int64",
+        return_value=None,
     ):
         yield
 
@@ -122,6 +123,7 @@ def test_metadata_store_get_collection_config_not_found(
     mock_get_connection.return_value = mock_conn
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_conn.open_table.return_value = mock_table
     mock_result = Mock()
     mock_result.__len__ = Mock(return_value=0)
@@ -150,6 +152,7 @@ def test_metadata_store_get_collection_config_admin_picks_newest(
     mock_get_connection.return_value = mock_conn
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_conn.open_table.return_value = mock_table
 
     older = datetime(2020, 1, 1)
@@ -186,6 +189,7 @@ def test_metadata_store_get_collection_success(mock_get_connection: Mock) -> Non
     mock_get_connection.return_value = mock_conn
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_conn.open_table.return_value = mock_table
 
     # Use helper to create mock Arrow table
@@ -270,14 +274,17 @@ def test_vector_store_rename_collection_data_updates_expected_tables(
     """Rename should update core and embeddings tables only."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
-    mock_conn.table_names.return_value = [
+    table_names = [
         "documents",
         "parses",
         "chunks",
         "embeddings_text_embedding_v4",
         "collection_metadata",
     ]
+    mock_conn.table_names.return_value = table_names
+    mock_conn.list_tables.return_value = table_names
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_conn.open_table.return_value = mock_table
 
     store = LanceDBVectorIndexStore()
@@ -298,8 +305,10 @@ def test_upsert_embeddings_merge_insert_success(mock_get_connection: Mock) -> No
     """Test successful merge_insert upsert."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=["collection", "doc_id", "chunk_id", "vector"])
     mock_conn.open_table.return_value = mock_table
 
     # Mock merge_insert chain
@@ -346,8 +355,10 @@ def test_upsert_embeddings_merge_insert_fallback_to_add(
     """Test fallback to add() when merge_insert fails with recoverable error."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=["collection", "doc_id", "chunk_id", "vector"])
     mock_conn.open_table.return_value = mock_table
 
     # Mock merge_insert chain that fails
@@ -393,8 +404,10 @@ def test_upsert_embeddings_non_recoverable_error_no_fallback(
     """Test that non-recoverable errors (schema, type mismatch) do not fallback."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=["collection", "doc_id", "chunk_id", "vector"])
     mock_conn.open_table.return_value = mock_table
 
     # Mock merge_insert chain that fails with non-recoverable error
@@ -437,8 +450,10 @@ def test_upsert_embeddings_both_methods_fail(mock_get_connection: Mock) -> None:
     """Test that error is raised when both merge_insert and add() fail."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     mock_table = Mock()
+    mock_table.schema = Mock(names=["collection", "doc_id", "chunk_id", "vector"])
     mock_conn.open_table.return_value = mock_table
 
     # Mock merge_insert chain that fails
@@ -1009,6 +1024,7 @@ async def test_search_vectors_async_basic(
 
     # Mock table and vector search
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_async_conn.open_table = AsyncMock(return_value=mock_table)
 
     # Mock vector search - chain needs to return mock objects
@@ -1069,6 +1085,7 @@ async def test_search_fts_async_basic(
 
     # Mock table and FTS search
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_async_conn.open_table = AsyncMock(return_value=mock_table)
 
     # Mock search to return our table
@@ -1235,9 +1252,12 @@ async def test_upsert_chunks_async(
     mock_conn = Mock()
     mock_conn.uri = "test_uri"
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     # Mock sync connection for ensure_chunks_table
-    mock_conn.open_table.return_value = Mock()
+    sync_table = Mock()
+    sync_table.schema = Mock(names=["collection", "doc_id", "chunk_id"])
+    mock_conn.open_table.return_value = sync_table
 
     # Mock async connection
     mock_async_conn = Mock()
@@ -1286,9 +1306,12 @@ async def test_upsert_embeddings_async(
     mock_conn = Mock()
     mock_conn.uri = "test_uri"
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     # Mock sync connection for ensure_embeddings_table
-    mock_conn.open_table.return_value = Mock()
+    sync_table = Mock()
+    sync_table.schema = Mock(names=["collection", "doc_id", "chunk_id", "vector"])
+    mock_conn.open_table.return_value = sync_table
 
     # Mock async connection
     mock_async_conn = Mock()
@@ -1340,6 +1363,7 @@ def test_upsert_documents_basic(mock_get_connection: Mock) -> None:
 
     # Mock table and merge_insert
     mock_table = Mock()
+    mock_table.schema = Mock(names=[])
     mock_conn.open_table.return_value = mock_table
 
     mock_merge = Mock()
@@ -1420,9 +1444,11 @@ def test_upsert_chunks_basic(mock_get_connection: Mock) -> None:
     """Test basic chunk upsert."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
+    mock_conn.list_tables.return_value = []
 
     # Mock table and merge_insert
     mock_table = Mock()
+    mock_table.schema = Mock(names=["collection", "doc_id", "chunk_id"])
     mock_conn.open_table.return_value = mock_table
 
     mock_merge = Mock()
@@ -1754,14 +1780,14 @@ def test_list_table_names_success(mock_get_connection: Mock) -> None:
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
 
-    # Mock table_names to return list of names
-    mock_conn.table_names.return_value = ["documents", "chunks", "embeddings_test"]
+    # New compatibility path prefers list_tables.
+    mock_conn.list_tables.return_value = ["documents", "chunks", "embeddings_test"]
 
     store = LanceDBVectorIndexStore()
     names = store.list_table_names()
 
     assert names == ["documents", "chunks", "embeddings_test"]
-    mock_conn.table_names.assert_called_once()
+    mock_conn.list_tables.assert_called_once()
 
 
 @patch(

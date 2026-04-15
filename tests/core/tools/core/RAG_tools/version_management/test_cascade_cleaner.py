@@ -501,7 +501,7 @@ def test_cleanup_document_preview_respects_model_tag(mock_get_conn: MagicMock) -
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cascade_delete_collection_with_user_id_column_applies_user_filter(
     mock_get_conn: MagicMock,
@@ -529,7 +529,7 @@ def test_cascade_delete_collection_with_user_id_column_applies_user_filter(
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cascade_delete_document_with_user_id_column_applies_user_filter(
     mock_get_conn: MagicMock,
@@ -559,7 +559,7 @@ def test_cascade_delete_document_with_user_id_column_applies_user_filter(
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cascade_delete_collection_without_user_id_column_compatible(
     mock_get_conn: MagicMock,
@@ -586,7 +586,7 @@ def test_cascade_delete_collection_without_user_id_column_compatible(
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cascade_delete_document_without_user_id_column_compatible(
     mock_get_conn: MagicMock,
@@ -615,7 +615,7 @@ def test_cascade_delete_document_without_user_id_column_compatible(
 
 
 @patch(
-    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_connection_from_env"
+    "xagent.core.tools.core.RAG_tools.version_management.cascade_cleaner.get_vector_store_raw_connection"
 )
 def test_cascade_delete_admin_vs_non_admin_user_filter_behavior(
     mock_get_conn: MagicMock,
