@@ -105,3 +105,27 @@ def clean_storage() -> None:
     autouse fixture in ``tests/conftest.py``.
     """
     return None
+
+
+def pytest_collection_modifyitems(config, items):
+    """Automatically skip tests that require unavailable external dependencies.
+
+    This hook checks for tests marked with `pytest.mark.real_rag` which require
+    embedding API keys (DASHSCOPE_API_KEY or ZHIPU_API_KEY). If these keys are not
+    configured in the environment, the tests are automatically skipped rather than
+    failing.
+
+    This allows CI to run without API keys while still allowing developers to run
+    the full test suite locally when keys are available.
+    """
+    has_embedding_api = bool(
+        os.getenv("DASHSCOPE_API_KEY") or os.getenv("ZHIPU_API_KEY")
+    )
+
+    for item in items:
+        if "real_rag" in item.keywords and not has_embedding_api:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="Requires DASHSCOPE_API_KEY or ZHIPU_API_KEY environment variable"
+                )
+            )

@@ -1,0 +1,101 @@
+name: Real RAG Integration Tests
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real_rag_tests:
+    name: Real RAG E2E Tests
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Ensure uv is available
+        shell: bash
+        run: |
+          set -e
+          if ! command -v uv >/dev/null 2>&1; then
+            echo "uv not found, installing..."
+            python3 -m pip install --user uv
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          fi
+          python3 -m uv --version || uv --version
+
+      - name: Create virtual environment
+        shell: bash
+        run: |
+          set -e
+          _UV="python3 -m uv"
+          $_UV --version
+          $_UV venv --python 3.12
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -e
+          python3 -m uv sync --all-extras
+
+      - name: Download Deepdoc models
+        shell: bash
+        run: |
+          set -e
+          python3 -m uv run deepdoc-download-models
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pptxgenjs globally
+        run: |
+          set -e
+          npm install -g pptxgenjs@4.0.1
+
+      - name: Run real_rag tests (serial, requires embedding API)
+        shell: bash
+        run: |
+          set -e
+          # Skip if embedding API keys are not available
+          if [ -z "${{ secrets.DASHSCOPE_API_KEY }}" ] && [ -z "${{ secrets.ZHIPU_API_KEY }}" ]; then
+            echo "⚠️  No embedding API keys configured, skipping real_rag tests"
+            echo "To enable these tests, add DASHSCOPE_API_KEY or ZHIPU_API_KEY to repository secrets"
+            exit 0
+          fi
+
+          # Export API keys for the tests
+          if [ -n "${{ secrets.DASHSCOPE_API_KEY }}" ]; then
+            export DASHSCOPE_API_KEY="${{ secrets.DASHSCOPE_API_KEY }}"
+            echo "✓ DASHSCOPE_API_KEY configured"
+          fi
+          if [ -n "${{ secrets.ZHIPU_API_KEY }}" ]; then
+            export ZHIPU_API_KEY="${{ secrets.ZHIPU_API_KEY }}"
+            echo "✓ ZHIPU_API_KEY configured"
+          fi
+
+          # Run real_rag tests serially as required
+          python3 -m uv run python -m pytest -m "real_rag" -v -n 0
+        env:
+          # Pass secrets as environment variables
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## Real RAG Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "These tests require real embedding API keys to run." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To enable locally, set DASHSCOPE_API_KEY or ZHIPU_API_KEY." >> $GITHUB_STEP_SUMMARY
