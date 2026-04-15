@@ -23,7 +23,7 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
 )
 
-pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub, pytest.mark.real_rag]
 
 # ==========================================
 # TEST FIXTURES
