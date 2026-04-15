@@ -44,7 +44,8 @@ example_env_file = project_root / "example.env"
 if env_file.exists():
     load_dotenv(env_file, override=True)  # Force override existing env vars
 elif example_env_file.exists():
-    load_dotenv(example_env_file, override=True)
+    # Don't override existing env vars (especially API keys from user's shell)
+    load_dotenv(example_env_file, override=False)
 else:
     print("Warning: Neither .env nor example.env file found")
 
@@ -63,10 +64,21 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "docker: tests that require Docker daemon (run with --run-special)"
     )
+    config.addinivalue_line(
+        "markers",
+        "real_rag: tests that require real embedding API (DASHSCOPE_API_KEY or ZHIPU_API_KEY)",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip Docker tests unless --run-special is specified."""
+    """Skip Docker tests unless --run-special is specified.
+
+    Also automatically skip tests that require unavailable external dependencies.
+    Tests marked with `pytest.mark.real_rag` require embedding API keys
+    (DASHSCOPE_API_KEY or ZHIPU_API_KEY). If these keys are not configured
+    in the environment, the tests are automatically skipped rather than failing.
+    """
+    # Skip Docker tests unless --run-special is specified
     if not config.getoption("--run-special", default=False):
         skip_docker = pytest.mark.skip(
             reason="Requires --run-special flag (Docker needed)"
@@ -74,6 +86,38 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "docker" in item.keywords:
                 item.add_marker(skip_docker)
+
+    # Skip real_rag tests when embedding API keys are unavailable
+    # Check for actual API keys, not placeholder values from example.env
+    dashscope_key = os.getenv("DASHSCOPE_API_KEY", "")
+    zhipu_key = os.getenv("ZHIPU_API_KEY", "")
+
+    # Common placeholder patterns that indicate the key is not set
+    placeholder_patterns = [
+        "your-dashscope-api-key",
+        "your-api-key",
+        "your-zhipu-api-key",
+        "test-key",
+    ]
+
+    def is_valid_key(key: str) -> bool:
+        """Check if the key is not a placeholder value."""
+        if not key:
+            return False
+        key_lower = key.lower().strip()
+        for pattern in placeholder_patterns:
+            if pattern in key_lower:
+                return False
+        return True
+
+    has_embedding_api = is_valid_key(dashscope_key) or is_valid_key(zhipu_key)
+    if not has_embedding_api:
+        skip_real_rag = pytest.mark.skip(
+            reason="Requires DASHSCOPE_API_KEY or ZHIPU_API_KEY environment variable"
+        )
+        for item in items:
+            if "real_rag" in item.keywords:
+                item.add_marker(skip_real_rag)
 
 
 # ==========================================
