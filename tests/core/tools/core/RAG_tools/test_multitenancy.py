@@ -829,7 +829,6 @@ class TestAPIMultiTenancy:
         assert result.total_count == 0
 
     @pytest.mark.asyncio
-    @patch("xagent.web.api.kb._check_can_delete_collection")
     @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock)
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
@@ -840,7 +839,6 @@ class TestAPIMultiTenancy:
         mock_delete_collection_physical_dir,
         _mock_ensure_collection_access,
         mock_get_vector_store,
-        mock_check_can_delete,
     ):
         """Test delete_collection_api passes user context and moves dir to trash."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
@@ -887,7 +885,6 @@ class TestAPIMultiTenancy:
         assert result.status == "success"
 
     @pytest.mark.asyncio
-    @patch("xagent.web.api.kb._check_can_delete_collection")
     @patch("xagent.web.api.kb.get_vector_index_store")
     @patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock)
     @patch("xagent.web.api.kb.delete_collection_physical_dir")
@@ -898,7 +895,6 @@ class TestAPIMultiTenancy:
         mock_delete_collection_physical_dir,
         _mock_ensure_collection_access,
         mock_get_vector_store,
-        mock_check_can_delete,
     ):
         """Test admin can delete collections (move dir to trash)."""
         from xagent.core.tools.core.RAG_tools.core.schemas import (
