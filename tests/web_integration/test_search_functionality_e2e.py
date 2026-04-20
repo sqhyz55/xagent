@@ -12,182 +12,33 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any, Generator
+from typing import Generator
 
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
-from xagent.core.tools.core.RAG_tools.core.schemas import (
-    CollectionInfo,
-)
 
-pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub, pytest.mark.real_rag]
+pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
+
 
 # ==========================================
-# TEST FIXTURES
+# TEST-SPECIFIC FIXTURES
 # ==========================================
-
-
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding adapter for search E2E tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
+# Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
+# are provided by conftest.py with autouse=True
+# Each test file only needs to define its own stub_embedding_config
 
 
 @pytest.fixture
 def stub_embedding_config() -> EmbeddingModelConfig:
-    """Create stub embedding configuration for search tests."""
+    """Search-specific embedding configuration."""
     return EmbeddingModelConfig(
         id="e2e-search-embedding",
         model_name="e2e-search-embedding-model",
         model_provider="test",
         dimension=2,
     )
-
-
-@pytest.fixture
-def stub_embedding_adapter() -> _StubEmbeddingAdapter:
-    """Create stub embedding adapter for search tests."""
-    return _StubEmbeddingAdapter()
-
-
-@pytest.fixture
-def mock_search_rag_pipeline(
-    monkeypatch: Any,
-    stub_embedding_config: EmbeddingModelConfig,
-    stub_embedding_adapter: _StubEmbeddingAdapter,
-) -> None:
-    """Mock the RAG pipeline components for search E2E testing."""
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
-    from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = collection_manager.collection_manager
-
-    # Mock collection to exist
-    mock_collection = CollectionInfo(
-        name="e2e_search_test",
-        embedding_model_id="e2e-search-embedding",
-        embedding_dimension=2,
-    )
-
-    async def mock_get_collection(collection_name: str) -> CollectionInfo:
-        return mock_collection
-
-    async def mock_initialize_collection(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return mock_collection
-
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs: Any
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    # Apply mocks (patch singleton used by KB routes)
-    monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-
-    # Also mock in pipelines module
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
-    )
-
-
-@pytest.fixture
-def legacy_collection_data(
-    monkeypatch: Any,
-    stub_embedding_config: EmbeddingModelConfig,
-    stub_embedding_adapter: _StubEmbeddingAdapter,
-) -> None:
-    """Create legacy schema data for forward compatibility testing.
-
-    IMPORTANT: This fixture creates data with legacy schema to test that
-    new code can handle old data formats. Must be updated when schema changes:
-
-    - When new required fields are added: update this fixture to NOT include them
-    - When field types change: test both old and new types
-    - When schema structure changes: ensure old structure is still readable
-
-    Current legacy schema simulation:
-    - Direct LanceDB table creation without new schema fields
-    - Tests graceful degradation when new fields are missing
-    """
-    from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = collection_manager.collection_manager
-
-    # Mock to allow legacy collection operations
-    async def mock_get_collection_legacy(collection_name: str) -> CollectionInfo:
-        # Return collection with minimal fields (legacy schema)
-        return CollectionInfo(
-            name=collection_name,
-            embedding_model_id="e2e-search-embedding",
-            embedding_dimension=2,
-            # Intentionally omit some new fields to test graceful degradation
-        )
-
-    async def mock_initialize_collection_legacy(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return CollectionInfo(
-            name=collection_name,
-            embedding_model_id=embedding_model_id,
-            embedding_dimension=2,
-        )
-
-    monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection_legacy,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection_legacy,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        lambda **kwargs: (stub_embedding_config, stub_embedding_adapter),
-    )
-
-    # Note: In real scenario, legacy data would be existing data from old schema
-    # For testing, we rely on the actual ingestion process to create collections
-    # which we then query to test forward compatibility
 
 
 @pytest.fixture
@@ -235,7 +86,6 @@ class TestBasicSearch:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search works immediately after document ingestion."""
         files, temp_dir = sample_search_files
@@ -275,7 +125,6 @@ class TestBasicSearch:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search results are ranked by relevance."""
         files, temp_dir = sample_search_files
@@ -321,7 +170,6 @@ class TestBasicSearch:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search pagination works correctly."""
         files, temp_dir = sample_search_files
@@ -370,7 +218,6 @@ class TestBasicSearch:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search filters work correctly."""
         files, temp_dir = sample_search_files
@@ -425,7 +272,6 @@ class TestMultiTenantSearch:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that regular users can only search their own documents."""
         files, temp_dir = sample_search_files
@@ -457,67 +303,6 @@ class TestMultiTenantSearch:
         result = search_response.json()
         assert "results" in result or "status" in result
 
-    @pytest.mark.e2e
-    @pytest.mark.slow
-    def test_search_with_legacy_data_isolation(
-        self,
-        client: TestClient,
-        auth_headers: dict[str, str],
-        legacy_collection_data: None,
-    ) -> None:
-        """Test that legacy data is properly isolated in search results.
-
-        FORWARD COMPATIBILITY TEST:
-        This test verifies that the system can handle data created with
-        previous schema versions. When schema changes are made, ensure:
-        1. Old collections remain searchable
-        2. Tenant isolation works for legacy data
-        3. No crashes when new fields are missing
-
-        UPDATE THIS TEST when:
-        - New required fields are added to documents schema
-        - Collection schema structure changes
-        - Search logic depends on new fields
-        """
-        collection_name = "e2e_search_legacy"
-
-        # First, ingest a document to create the collection with current schema
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write("Legacy data isolation test content")
-            temp_path = Path(f.name)
-
-        try:
-            with open(temp_path, "rb") as f:
-                ingest_response = client.post(
-                    "/api/kb/ingest",
-                    files={"file": ("legacy_test.txt", f, "text/plain")},
-                    data={"collection": collection_name},
-                    headers=auth_headers,
-                )
-
-            # If ingestion succeeded, search should work
-            if ingest_response.status_code == 200:
-                search_response = client.post(
-                    "/api/kb/search",
-                    data={
-                        "collection": collection_name,
-                        "query_text": "legacy",
-                        "top_k": 5,
-                    },
-                    headers=auth_headers,
-                )
-
-                # Search should work with legacy data
-                assert search_response.status_code == 200
-                result = search_response.json()
-                assert "results" in result or "status" in result
-            else:
-                # If collection doesn't exist, search may return 404
-                # This is acceptable for legacy data testing
-                pass
-        finally:
-            temp_path.unlink(missing_ok=True)
-
 
 # ==========================================
 # SEARCH AFTER SCHEMA CHANGES TESTS
@@ -541,7 +326,6 @@ class TestSearchAfterSchemaChanges:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search works correctly after schema migration."""
         files, temp_dir = sample_search_files
@@ -570,116 +354,6 @@ class TestSearchAfterSchemaChanges:
 
         assert search_response.status_code == 200
 
-    @pytest.mark.e2e
-    @pytest.mark.slow
-    def test_search_with_mixed_schema_versions(
-        self,
-        client: TestClient,
-        auth_headers: dict[str, str],
-        legacy_collection_data: None,
-    ) -> None:
-        """Test that search works with mixed schema versions.
-
-        FORWARD COMPATIBILITY TEST:
-        This test verifies that search can handle documents with different
-        schema versions in the same collection. When schema changes are made:
-        1. Test with documents missing new fields (old schema)
-        2. Test with documents having new fields (new schema)
-        3. Verify search works across both
-
-        UPDATE THIS TEST when:
-        - Document schema adds new optional fields
-        - Field types change between versions
-        - Search behavior depends on schema version
-        """
-        collection_name = "e2e_search_mixed"
-
-        # Ingest documents to simulate mixed schema scenario
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write("Mixed schema test content with keywords")
-            temp_path = Path(f.name)
-
-        try:
-            with open(temp_path, "rb") as f:
-                ingest_response = client.post(
-                    "/api/kb/ingest",
-                    files={"file": ("mixed_test.txt", f, "text/plain")},
-                    data={"collection": collection_name},
-                    headers=auth_headers,
-                )
-
-            # If ingestion succeeded, test search
-            if ingest_response.status_code == 200:
-                search_response = client.post(
-                    "/api/kb/search",
-                    data={
-                        "collection": collection_name,
-                        "query_text": "mixed",
-                        "top_k": 5,
-                    },
-                    headers=auth_headers,
-                )
-
-                # Search should handle mixed schema data
-                assert search_response.status_code == 200
-        finally:
-            temp_path.unlink(missing_ok=True)
-
-    @pytest.mark.e2e
-    @pytest.mark.slow
-    def test_search_fallback_for_legacy_data(
-        self,
-        client: TestClient,
-        auth_headers: dict[str, str],
-        legacy_collection_data: None,
-    ) -> None:
-        """Test that search fallback mechanisms work for legacy data.
-
-        FORWARD COMPATIBILITY TEST:
-        This test verifies that when new search features fail on legacy data,
-        the system falls back gracefully. When adding new search features:
-        1. Test with legacy data that doesn't support the feature
-        2. Verify fallback to basic search works
-        3. Ensure no crashes or errors
-
-        UPDATE THIS TEST when:
-        - New search features are added that depend on new schema fields
-        - Search algorithms change significantly
-        - New filtering or ranking options are introduced
-        """
-        collection_name = "e2e_search_fallback"
-
-        # Ingest a document to create the collection
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write("Fallback test content for legacy data")
-            temp_path = Path(f.name)
-
-        try:
-            with open(temp_path, "rb") as f:
-                ingest_response = client.post(
-                    "/api/kb/ingest",
-                    files={"file": ("fallback_test.txt", f, "text/plain")},
-                    data={"collection": collection_name},
-                    headers=auth_headers,
-                )
-
-            # Test search with basic query (should work even with legacy data)
-            if ingest_response.status_code == 200:
-                search_response = client.post(
-                    "/api/kb/search",
-                    data={
-                        "collection": collection_name,
-                        "query_text": "fallback",
-                        "top_k": 5,
-                    },
-                    headers=auth_headers,
-                )
-
-                # Should provide results or graceful fallback
-                assert search_response.status_code in [200, 404]
-        finally:
-            temp_path.unlink(missing_ok=True)
-
 
 # ==========================================
 # SEARCH ACCURACY TESTS
@@ -703,7 +377,6 @@ class TestSearchAccuracy:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search returns relevant results."""
         files, temp_dir = sample_search_files
@@ -741,7 +414,6 @@ class TestSearchAccuracy:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search handles different query types correctly."""
         files, temp_dir = sample_search_files
@@ -801,7 +473,6 @@ class TestRealTimeSearch:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search results update in real-time after ingestion."""
         files, temp_dir = sample_search_files
@@ -844,21 +515,19 @@ class TestRealTimeSearch:
 
     @pytest.mark.e2e
     @pytest.mark.slow
-    def test_search_handles_concurrent_operations(
+    def test_search_with_multiple_documents(
         self,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
-        """Test that search handles concurrent ingestion operations."""
-        import concurrent.futures
-
+        """Test that search works with multiple documents."""
         files, temp_dir = sample_search_files
-        collection_name = "e2e_search_concurrent"
+        collection_name = "e2e_search_multiple"
 
-        def ingest_and_search(filename: str) -> int:
-            """Ingest a file and then search for it."""
+        # Ingest and search for multiple documents sequentially
+        results = []
+        for filename in ["python_tutorial.txt", "machine_learning.md"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 ingest_response = client.post(
@@ -879,22 +548,10 @@ class TestRealTimeSearch:
                     },
                     headers=auth_headers,
                 )
-                return search_response.status_code
-            return ingest_response.status_code
+                results.append(search_response.status_code)
 
-        # Run concurrent ingestion and search operations
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(ingest_and_search, "python_tutorial.txt"),
-                executor.submit(ingest_and_search, "machine_learning.md"),
-            ]
-            results = [
-                future.result() for future in concurrent.futures.as_completed(futures)
-            ]
-
-        # At least some operations should succeed
-        success_count = sum(1 for code in results if code == 200)
-        assert success_count >= 1
+        # All operations should succeed
+        assert all(code == 200 for code in results)
 
 
 # ==========================================
@@ -911,7 +568,6 @@ class TestSearchErrorHandling:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search handles empty queries gracefully."""
         collection_name = "e2e_search_empty"
@@ -926,8 +582,8 @@ class TestSearchErrorHandling:
             headers=auth_headers,
         )
 
-        # Should handle empty query gracefully
-        assert search_response.status_code in [200, 400, 422, 500]
+        # Empty query is rejected by validation (FastAPI form validation)
+        assert search_response.status_code == 422
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -935,7 +591,6 @@ class TestSearchErrorHandling:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search handles nonexistent collections gracefully."""
         search_response = client.post(
@@ -948,8 +603,8 @@ class TestSearchErrorHandling:
             headers=auth_headers,
         )
 
-        # Should handle nonexistent collection gracefully
-        assert search_response.status_code in [200, 404, 500]
+        # Nonexistent collection returns 404
+        assert search_response.status_code == 404
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -958,7 +613,6 @@ class TestSearchErrorHandling:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_search_files: tuple[dict[str, str], str],
-        mock_search_rag_pipeline: None,
     ) -> None:
         """Test that search handles special characters in queries."""
         files, temp_dir = sample_search_files
@@ -992,5 +646,5 @@ class TestSearchErrorHandling:
                 headers=auth_headers,
             )
 
-            # Should handle special characters
-            assert search_response.status_code in [200, 400, 422, 500]
+            # Special characters should be handled normally
+            assert search_response.status_code == 200

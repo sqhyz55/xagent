@@ -125,7 +125,8 @@ schema evolution migration compatibility
                     assert result.get("status") in {"success", "partial"}
                     assert "doc_id" in result
                     assert "file_id" in result
-                    _ = any(f in result for f in optional_new_fields)
+                    # Verify that at least some optional new schema fields are present
+                    assert any(f in result for f in optional_new_fields)
                     first = False
                 doc_ids.append(result.get("doc_id"))
 
@@ -144,7 +145,7 @@ schema evolution migration compatibility
         assert "documents" in test_collection
 
     def test_field_absence_graceful_degradation(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
+        self, client, auth_headers: Dict[str, str]
     ):
         """Test graceful degradation when expected fields are missing.
 
@@ -177,9 +178,7 @@ schema evolution migration compatibility
         finally:
             temp_path.unlink(missing_ok=True)
 
-    def test_search_with_legacy_schema_data(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_search_with_legacy_schema_data(self, client, auth_headers: Dict[str, str]):
         """Test that search works with legacy schema data.
 
         This verifies that documents using the old schema can still be searched.
@@ -221,9 +220,7 @@ schema evolution migration compatibility
         finally:
             temp_path.unlink(missing_ok=True)
 
-    def test_mixed_schema_crud_operations(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_mixed_schema_crud_operations(self, client, auth_headers: Dict[str, str]):
         """Test CRUD operations work with mixed schema versions.
 
         This verifies Create, Read, Update, Delete operations work
@@ -289,7 +286,7 @@ class TestBehaviorConsistency:
     """
 
     def test_search_consistency_before_after_migration(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
+        self, client, auth_headers: Dict[str, str]
     ):
         """Test that search behavior is consistent after schema migration.
 
@@ -354,7 +351,7 @@ class TestBehaviorConsistency:
             assert "score" in result
 
     def test_ingestion_consistency_before_after_migration(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
+        self, client, auth_headers: Dict[str, str]
     ):
         """Test that ingestion behavior is consistent after schema migration.
 
@@ -400,7 +397,7 @@ class TestBehaviorConsistency:
             temp_path.unlink(missing_ok=True)
 
     def test_crud_consistency_before_after_migration(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
+        self, client, auth_headers: Dict[str, str]
     ):
         """Test that CRUD behavior is consistent after schema migration.
 
@@ -464,9 +461,7 @@ class TestBehaviorConsistency:
         finally:
             temp_path.unlink(missing_ok=True)
 
-    def test_frontend_display_consistency(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_frontend_display_consistency(self, client, auth_headers: Dict[str, str]):
         """Test that frontend display data is consistent after schema migration.
 
         This verifies that the frontend receives data in a consistent format
@@ -524,9 +519,7 @@ class TestLegacyDataAccessAfterMigration:
     remains accessible and functional after migrations.
     """
 
-    def test_legacy_collection_access(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_legacy_collection_access(self, client, auth_headers: Dict[str, str]):
         """Test that legacy collections can still be accessed.
 
         This verifies that collections created with old schema versions
@@ -555,9 +548,7 @@ class TestLegacyDataAccessAfterMigration:
         finally:
             temp_path.unlink(missing_ok=True)
 
-    def test_legacy_document_search(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_legacy_document_search(self, client, auth_headers: Dict[str, str]):
         """Test that legacy documents can still be searched.
 
         This verifies that documents created with old schema versions
@@ -603,9 +594,7 @@ class TestLegacyDataAccessAfterMigration:
         finally:
             temp_path.unlink(missing_ok=True)
 
-    def test_legacy_document_deletion(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_legacy_document_deletion(self, client, auth_headers: Dict[str, str]):
         """Test that legacy documents can still be deleted.
 
         This verifies that deletion operations work on old schema data.
@@ -638,9 +627,7 @@ class TestLegacyDataAccessAfterMigration:
         finally:
             temp_path.unlink(missing_ok=True)
 
-    def test_mixed_schema_coexistence(
-        self, client, auth_headers: Dict[str, str], clean_storage: None
-    ):
+    def test_mixed_schema_coexistence(self, client, auth_headers: Dict[str, str]):
         """Test that old and new schema versions can coexist.
 
         This simulates a gradual migration scenario where some data

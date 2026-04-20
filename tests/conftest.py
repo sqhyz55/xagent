@@ -68,6 +68,10 @@ def pytest_configure(config):
         "markers",
         "real_rag: tests that require real embedding API (DASHSCOPE_API_KEY or ZHIPU_API_KEY)",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_network: tests that require network access (run with --run-special or set XAGENT_TESTS_ALLOW_NETWORK=1)",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -77,6 +81,10 @@ def pytest_collection_modifyitems(config, items):
     Tests marked with `pytest.mark.real_rag` require embedding API keys
     (DASHSCOPE_API_KEY or ZHIPU_API_KEY). If these keys are not configured
     in the environment, the tests are automatically skipped rather than failing.
+
+    Tests marked with `pytest.mark.requires_network` require network access.
+    These tests are skipped unless --run-special is specified or
+    XAGENT_TESTS_ALLOW_NETWORK=1 is set.
     """
     # Skip Docker tests unless --run-special is specified
     if not config.getoption("--run-special", default=False):
@@ -118,6 +126,19 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "real_rag" in item.keywords:
                 item.add_marker(skip_real_rag)
+
+    # Skip requires_network tests unless --run-special or XAGENT_TESTS_ALLOW_NETWORK=1
+    run_special = config.getoption("--run-special", default=False)
+    allow_network = os.getenv("XAGENT_TESTS_ALLOW_NETWORK", "0").strip() == "1"
+    has_network_access = run_special or allow_network
+
+    if not has_network_access:
+        skip_network = pytest.mark.skip(
+            reason="Requires --run-special flag or XAGENT_TESTS_ALLOW_NETWORK=1 (network access needed)"
+        )
+        for item in items:
+            if "requires_network" in item.keywords:
+                item.add_marker(skip_network)
 
 
 # ==========================================

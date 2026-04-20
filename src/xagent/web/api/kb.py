@@ -1669,7 +1669,7 @@ async def search(
             detail="embedding_model_id is required",
         )
 
-    await _ensure_collection_access(collection, _user, hide_missing=False)
+    await _ensure_collection_access(safe_collection, _user, hide_missing=False)
 
     # Build configuration from individual parameters
     config = SearchConfig(

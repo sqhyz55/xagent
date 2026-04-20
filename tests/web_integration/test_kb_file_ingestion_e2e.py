@@ -11,60 +11,32 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
-from xagent.core.tools.core.RAG_tools.core.schemas import (
-    CollectionInfo,
-)
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
+
 # ==========================================
-# TEST FIXTURES
+# TEST-SPECIFIC FIXTURES
 # ==========================================
-
-
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding adapter for E2E tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
+# Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
+# are provided by conftest.py with autouse=True
 
 
 @pytest.fixture
-def stub_embedding_config():
-    """Create stub embedding configuration for testing."""
+def stub_embedding_config() -> EmbeddingModelConfig:
+    """File ingestion-specific embedding configuration."""
     return EmbeddingModelConfig(
-        id="e2e-test-embedding",
-        model_name="e2e-test-embedding-model",
+        id="e2e-file-ingestion-embedding",
+        model_name="e2e-file-ingestion-embedding-model",
         model_provider="test",
         dimension=2,
     )
-
-
-@pytest.fixture
-def stub_embedding_adapter():
-    """Create stub embedding adapter for testing."""
-    return _StubEmbeddingAdapter()
 
 
 @pytest.fixture
@@ -87,70 +59,6 @@ def sample_test_files():
             files[filename] = str(file_path)
 
         yield files, temp_dir
-
-
-@pytest.fixture
-def mock_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
-    """Mock the RAG pipeline components for E2E testing.
-
-    This fixture provides realistic mocks that simulate successful
-    RAG processing without requiring actual embedding models or
-    vector database operations.
-    """
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
-    from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = collection_manager.collection_manager
-
-    # Mock collection to exist
-    mock_collection = CollectionInfo(
-        name="e2e_test_collection",
-        embedding_model_id="e2e-test-embedding",
-        embedding_dimension=2,
-    )
-
-    async def mock_get_collection(collection_name: str) -> CollectionInfo:
-        return mock_collection
-
-    async def mock_initialize_collection(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return mock_collection
-
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    # Apply mocks (patch singleton used by KB routes)
-    monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-
-    # Also mock in pipelines module
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
-    )
-
-
-# ==========================================
-# E2E TEST CLASSES
-# ==========================================
 
 
 class TestKBFileIngestionE2E:
@@ -383,8 +291,8 @@ class TestKBFileIngestionE2E:
                 f"/api/kb/collections/{collection_name}/documents/test.txt",
                 headers=auth_headers,
             )
-            # Delete may succeed (200) or fail (404) - both are acceptable for E2E
-            assert delete_response.status_code in [200, 404, 500]
+            # Deleting a just-created document should succeed
+            assert delete_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -408,7 +316,7 @@ class TestKBFileIngestionE2E:
                     headers=auth_headers,
                 )
 
-            # Should handle error gracefully
-            assert response.status_code in [200, 400, 422, 500]
+            # Unsupported file types should return 422
+            assert response.status_code == 422
 
             os.unlink(tmp.name)

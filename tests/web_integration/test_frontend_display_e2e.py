@@ -10,117 +10,32 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any, Generator
+from typing import Generator
 
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
-from xagent.core.tools.core.RAG_tools.core.schemas import (
-    CollectionInfo,
-)
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
+# Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
+# are provided by conftest.py with autouse=True
+
+
 # ==========================================
-# TEST FIXTURES
+# TEST-SPECIFIC FIXTURES
 # ==========================================
-
-
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding adapter for display verification tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
 
 
 @pytest.fixture
 def stub_embedding_config() -> EmbeddingModelConfig:
-    """Create stub embedding configuration for display tests."""
+    """Display-specific embedding configuration."""
     return EmbeddingModelConfig(
         id="e2e-display-embedding",
         model_name="e2e-display-embedding-model",
         model_provider="test",
         dimension=2,
-    )
-
-
-@pytest.fixture
-def stub_embedding_adapter() -> _StubEmbeddingAdapter:
-    """Create stub embedding adapter for display tests."""
-    return _StubEmbeddingAdapter()
-
-
-@pytest.fixture
-def mock_display_rag_pipeline(
-    monkeypatch: Any,
-    stub_embedding_config: EmbeddingModelConfig,
-    stub_embedding_adapter: _StubEmbeddingAdapter,
-) -> None:
-    """Mock the RAG pipeline components for display verification E2E testing."""
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
-    from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = collection_manager.collection_manager
-
-    # Mock collection to exist
-    mock_collection = CollectionInfo(
-        name="e2e_display_test",
-        embedding_model_id="e2e-display-embedding",
-        embedding_dimension=2,
-    )
-
-    async def mock_get_collection(collection_name: str) -> CollectionInfo:
-        return mock_collection
-
-    async def mock_initialize_collection(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return mock_collection
-
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs: Any
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    # Apply mocks (patch singleton used by KB routes)
-    monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-
-    # Also mock in pipelines module
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
     )
 
 
@@ -171,7 +86,6 @@ class TestCollectionDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that collection list displays all collections."""
         files, temp_dir = sample_display_files
@@ -210,7 +124,6 @@ class TestCollectionDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that collection list shows accurate document counts."""
         files, temp_dir = sample_display_files
@@ -244,7 +157,6 @@ class TestCollectionDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that collection list shows document names correctly."""
         files, temp_dir = sample_display_files
@@ -274,7 +186,6 @@ class TestCollectionDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that collection details show complete metadata."""
         files, temp_dir = sample_display_files
@@ -304,7 +215,6 @@ class TestCollectionDisplay:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that legacy data is handled with fallback display."""
         # This test verifies that when documents table decoding fails,
@@ -340,7 +250,6 @@ class TestDocumentDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that document list shows all documents in a collection."""
         files, temp_dir = sample_display_files
@@ -377,7 +286,6 @@ class TestDocumentDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that document list shows correct metadata for each document."""
         files, temp_dir = sample_display_files
@@ -411,7 +319,6 @@ class TestDocumentDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that document list correctly handles different file types."""
         files, temp_dir = sample_display_files
@@ -456,7 +363,6 @@ class TestDocumentDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that document list pagination works correctly."""
         files, temp_dir = sample_display_files
@@ -502,7 +408,6 @@ class TestDocumentDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that document list can be filtered by search."""
         files, temp_dir = sample_display_files
@@ -551,7 +456,6 @@ class TestIngestionProgressDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that ingestion progress updates are displayed."""
         files, temp_dir = sample_display_files
@@ -579,7 +483,6 @@ class TestIngestionProgressDisplay:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that ingestion errors are displayed with clear messages."""
         collection_name = "e2e_display_errors"
@@ -592,8 +495,8 @@ class TestIngestionProgressDisplay:
             headers=auth_headers,
         )
 
-        # Should handle error with clear message
-        assert response.status_code in [200, 400, 422, 500]
+        # Empty files are accepted by the API
+        assert response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -602,7 +505,6 @@ class TestIngestionProgressDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that ingestion completion status is accurate."""
         files, temp_dir = sample_display_files
@@ -646,7 +548,6 @@ class TestFileIdDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that file_id is returned after successful ingestion."""
         files, temp_dir = sample_display_files
@@ -674,7 +575,6 @@ class TestFileIdDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that documents can be identified by file_id."""
         files, temp_dir = sample_display_files
@@ -713,7 +613,8 @@ class TestFileIdDisplay:
                     params={"page": 1, "page_size": 20},
                     headers=auth_headers,
                 )
-                assert parse_response.status_code in [200, 404, 500]
+                # Parse result should be available for successfully created document
+                assert parse_response.status_code == 200
 
 
 # ==========================================
@@ -739,7 +640,6 @@ class TestMetadataDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that file types are correctly displayed."""
         files, temp_dir = sample_display_files
@@ -772,7 +672,6 @@ class TestMetadataDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that document sizes are correctly displayed."""
         files, temp_dir = sample_display_files
@@ -802,7 +701,6 @@ class TestMetadataDisplay:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_display_files: tuple[dict[str, str], str],
-        mock_display_rag_pipeline: None,
     ) -> None:
         """Test that upload dates are correctly displayed."""
         files, temp_dir = sample_display_files

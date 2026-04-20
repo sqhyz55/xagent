@@ -10,119 +10,36 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any, Generator
+from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
-    CollectionInfo,
     IngestionResult,
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
+# Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
+# are provided by conftest.py with autouse=True
+
+
 # ==========================================
-# TEST FIXTURES
+# TEST-SPECIFIC FIXTURES
 # ==========================================
-
-
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding adapter for CRUD E2E tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
 
 
 @pytest.fixture
 def stub_embedding_config() -> EmbeddingModelConfig:
-    """Create stub embedding configuration for CRUD testing."""
+    """CRUD-specific embedding configuration."""
     return EmbeddingModelConfig(
         id="e2e-crud-embedding",
         model_name="e2e-crud-embedding-model",
         model_provider="test",
         dimension=2,
-    )
-
-
-@pytest.fixture
-def stub_embedding_adapter() -> _StubEmbeddingAdapter:
-    """Create stub embedding adapter for CRUD testing."""
-    return _StubEmbeddingAdapter()
-
-
-@pytest.fixture
-def mock_crud_rag_pipeline(
-    monkeypatch: Any,
-    stub_embedding_config: EmbeddingModelConfig,
-    stub_embedding_adapter: _StubEmbeddingAdapter,
-) -> None:
-    """Mock the RAG pipeline components for CRUD E2E testing."""
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
-    from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = collection_manager.collection_manager
-
-    # Mock collection to exist
-    mock_collection = CollectionInfo(
-        name="e2e_crud_test",
-        embedding_model_id="e2e-crud-embedding",
-        embedding_dimension=2,
-    )
-
-    async def mock_get_collection(collection_name: str) -> CollectionInfo:
-        return mock_collection
-
-    async def mock_initialize_collection(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return mock_collection
-
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs: Any
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    # Apply mocks (patch singleton used by KB routes)
-    monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-
-    # Also mock in pipelines module
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
     )
 
 
@@ -162,7 +79,6 @@ class TestKBCreateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test creating a collection by ingesting a single file."""
         files, temp_dir = sample_crud_files
@@ -190,7 +106,6 @@ class TestKBCreateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test creating a collection by ingesting multiple files."""
         files, temp_dir = sample_crud_files
@@ -219,7 +134,6 @@ class TestKBCreateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test creating documents with different file types."""
         files, temp_dir = sample_crud_files
@@ -255,7 +169,6 @@ class TestKBCreateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test creating documents with custom ingestion configuration."""
         files, temp_dir = sample_crud_files
@@ -287,7 +200,6 @@ class TestKBCreateOperations:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test creating a collection by ingesting from a web URL."""
         collection_name = "e2e_create_web"
@@ -362,7 +274,6 @@ class TestKBReadOperations:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test listing collections when none exist."""
         response = client.get("/api/kb/collections", headers=auth_headers)
@@ -379,7 +290,6 @@ class TestKBReadOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test listing collections after creating one."""
         files, temp_dir = sample_crud_files
@@ -409,7 +319,6 @@ class TestKBReadOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test getting detailed information about a collection."""
         files, temp_dir = sample_crud_files
@@ -438,7 +347,6 @@ class TestKBReadOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test listing documents within a collection."""
         files, temp_dir = sample_crud_files
@@ -470,7 +378,6 @@ class TestKBReadOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test getting statistics for a specific document."""
         files, temp_dir = sample_crud_files
@@ -497,7 +404,8 @@ class TestKBReadOperations:
                     params={"page": 1, "page_size": 20},
                     headers=auth_headers,
                 )
-                assert parse_response.status_code in [200, 404, 500]
+                # With successful ingest and valid doc_id, parse result should be available
+                assert parse_response.status_code == 200
 
 
 # ==========================================
@@ -514,7 +422,6 @@ class TestKBUpdateOperations:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test updating collection configuration."""
         collection_name = "e2e_update_config"
@@ -532,8 +439,8 @@ class TestKBUpdateOperations:
             headers=auth_headers,
         )
 
-        # Config save should succeed or fail gracefully
-        assert save_response.status_code in [200, 500]
+        # Config save endpoint should create/update config successfully
+        assert save_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -542,7 +449,6 @@ class TestKBUpdateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test re-ingesting a document to update its content."""
         files, temp_dir = sample_crud_files
@@ -578,7 +484,6 @@ class TestKBUpdateOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test updating document metadata."""
         files, temp_dir = sample_crud_files
@@ -596,14 +501,14 @@ class TestKBUpdateOperations:
 
         if create_response.status_code == 200:
             # Try to update document metadata
-            # Note: This API may not exist yet, so we expect it might fail
+            # Note: This endpoint does not exist yet - testing expected 405
             update_response = client.put(
                 f"/api/kb/collections/{collection_name}/documents/document1.txt",
                 json={"title": "Updated Title", "description": "Updated Description"},
                 headers=auth_headers,
             )
-            # May succeed or fail depending on implementation
-            assert update_response.status_code in [200, 404, 405, 500]
+            # Endpoint not implemented - should return 405 (Method Not Allowed)
+            assert update_response.status_code == 405
 
 
 # ==========================================
@@ -621,7 +526,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test deleting a single document by filename (legacy method)."""
         files, temp_dir = sample_crud_files
@@ -643,8 +547,8 @@ class TestKBDeleteOperations:
                 f"/api/kb/collections/{collection_name}/documents/document1.txt",
                 headers=auth_headers,
             )
-            # Delete may succeed or fail gracefully
-            assert delete_response.status_code in [200, 404, 500]
+            # Deleting a just-created document should succeed
+            assert delete_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -653,7 +557,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test deleting a single document by file_id (recommended method)."""
         files, temp_dir = sample_crud_files
@@ -682,15 +585,16 @@ class TestKBDeleteOperations:
                     f"/api/kb/collections/{collection_name}/documents/document1.txt?file_id={file_id}",
                     headers=auth_headers,
                 )
-                # Delete with file_id should succeed
-                assert delete_response.status_code in [200, 404, 500]
+                # Deleting a just-created document with file_id should succeed
+                assert delete_response.status_code == 200
             else:
                 # Fallback to filename deletion if file_id not available
                 delete_response = client.delete(
                     f"/api/kb/collections/{collection_name}/documents/document1.txt",
                     headers=auth_headers,
                 )
-                assert delete_response.status_code in [200, 404, 500]
+                # Deleting a just-created document should succeed
+                assert delete_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -699,7 +603,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test deleting a single document by doc_id."""
         files, temp_dir = sample_crud_files
@@ -728,15 +631,16 @@ class TestKBDeleteOperations:
                     f"/api/kb/collections/{collection_name}/documents/document1.txt?doc_id={doc_id}",
                     headers=auth_headers,
                 )
-                # Delete with doc_id should succeed
-                assert delete_response.status_code in [200, 404, 500]
+                # Deleting a just-created document with doc_id should succeed
+                assert delete_response.status_code == 200
             else:
                 # Fallback to filename deletion if doc_id not available
                 delete_response = client.delete(
                     f"/api/kb/collections/{collection_name}/documents/document1.txt",
                     headers=auth_headers,
                 )
-                assert delete_response.status_code in [200, 404, 500]
+                # Deleting a just-created document should succeed
+                assert delete_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -745,7 +649,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test that file_id takes precedence over filename when both are provided."""
         files, temp_dir = sample_crud_files
@@ -773,8 +676,8 @@ class TestKBDeleteOperations:
                     f"/api/kb/collections/{collection_name}/documents/some_different_name.txt?file_id={file_id}",
                     headers=auth_headers,
                 )
-                # Should delete the correct document by file_id, not the filename
-                assert delete_response.status_code in [200, 404, 500]
+                # Deleting by file_id should succeed regardless of filename
+                assert delete_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -783,7 +686,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test deleting multiple documents from a collection."""
         files, temp_dir = sample_crud_files
@@ -813,8 +715,8 @@ class TestKBDeleteOperations:
             if delete_response.status_code == 200:
                 deleted_count += 1
 
-        # At least verify deletion attempts were made
-        assert len(created_docs) >= 0
+        # Verify at least some documents were created and deletion attempts were made
+        assert len(created_docs) > 0
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -823,7 +725,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test deleting an entire collection with documents."""
         files, temp_dir = sample_crud_files
@@ -845,8 +746,8 @@ class TestKBDeleteOperations:
                 f"/api/kb/collections/{collection_name}",
                 headers=auth_headers,
             )
-            # Collection deletion should succeed
-            assert delete_response.status_code in [200, 404, 500]
+            # Deleting a collection that exists should succeed
+            assert delete_response.status_code == 200
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -855,7 +756,6 @@ class TestKBDeleteOperations:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_crud_files: tuple[dict[str, str], str],
-        mock_crud_rag_pipeline: None,
     ) -> None:
         """Test that collection deletion properly cleans up resources."""
         files, temp_dir = sample_crud_files

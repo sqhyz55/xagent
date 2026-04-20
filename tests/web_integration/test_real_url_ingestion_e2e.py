@@ -15,7 +15,7 @@ They are marked with @pytest.mark.requires_network and may be skipped in CI.
 """
 
 import time
-from typing import Dict
+from typing import Callable, Dict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -48,6 +48,36 @@ NONEXISTENT_PAGE_URL = "http://quotes.toscrape.com/page/99999/"
 # ============================================================================
 # TEST HELPER FUNCTIONS
 # ============================================================================
+
+
+def _poll_with_backoff(
+    condition: Callable[[], bool],
+    max_wait_seconds: int = 20,
+    initial_sleep: float = 0.5,
+    max_sleep: float = 3.0,
+) -> bool:
+    """Poll with exponential backoff until condition is met or timeout.
+
+    Args:
+        condition: Callable that returns True when polling should stop
+        max_wait_seconds: Maximum time to wait before giving up
+        initial_sleep: Initial sleep time in seconds
+        max_sleep: Maximum sleep time between polls (exponential backoff cap)
+
+    Returns:
+        True if condition was met, False if timeout reached
+    """
+    start_time = time.time()
+    sleep_time = initial_sleep
+
+    while time.time() - start_time < max_wait_seconds:
+        if condition():
+            return True
+        time.sleep(sleep_time)
+        # Exponential backoff: double sleep time, capped at max_sleep
+        sleep_time = min(sleep_time * 2, max_sleep)
+
+    return False
 
 
 def _extract_collection_id(result: dict) -> str | None:
@@ -104,33 +134,13 @@ class TestRealURLIngestion:
             headers=auth_headers,
         )
 
-        # Accept both success and async processing responses
-        assert response.status_code in [200, 202], (
-            f"GitHub URL ingestion failed: {response.text}"
-        )
+        # Should return 200 on success (no async 202 response)
+        assert response.status_code == 200, f"URL ingestion failed: {response.text}"
 
         result = response.json()
 
         # Should have collection info
-        assert (
-            "collection_id" in result or "collection" in result or "task_id" in result
-        )
-
-        # If async, wait for completion
-        if "task_id" in result:
-            task_id = result["task_id"]
-            max_wait = 60  # 60 seconds max wait
-            start_time = time.time()
-
-            while time.time() - start_time < max_wait:
-                status_response = client.get(
-                    f"/api/kb/tasks/{task_id}/", headers=auth_headers
-                )
-                if status_response.status_code == 200:
-                    status = status_response.json()
-                    if status.get("status") in ["completed", "failed"]:
-                        break
-                time.sleep(2)
+        assert "collection" in result, "Response should contain collection name"
 
         # Get collection ID/name
         collection_id = _extract_collection_id(result)
@@ -139,9 +149,6 @@ class TestRealURLIngestion:
         assert collection_id is not None, "Could not get collection_id"
 
         # Verify content is searchable
-        # Give it some time for indexing
-        time.sleep(5)
-
         response = client.post(
             "/api/kb/search",
             data={
@@ -173,18 +180,13 @@ class TestRealURLIngestion:
         )
 
         # Should succeed
-        assert response.status_code in [200, 202], (
-            f"Raw GitHub URL ingestion failed: {response.text}"
-        )
+        assert response.status_code == 200, f"URL ingestion failed: {response.text}"
 
         result = response.json()
         collection_id = _extract_collection_id(result)
 
-        assert collection_id is not None
-
-        # Verify collection was created (no endpoint to list documents)
-        # Just verify collection exists and response was successful
-        assert True, "Raw page URL ingestion completed"
+        # Verify collection exists in response
+        assert collection_id is not None, "Collection ID should be in response"
 
     @pytest.mark.slow
     @pytest.mark.requires_network
@@ -209,17 +211,14 @@ class TestRealURLIngestion:
             headers=auth_headers,
         )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
         result = response.json()
 
         collection_id = _extract_collection_id(result)
         assert collection_id is not None
 
-        # Wait for indexing (real URLs take time)
-        max_wait = 60
-        start_time = time.time()
-
-        while time.time() - start_time < max_wait:
+        # Wait for indexing with exponential backoff (max 20 seconds)
+        def has_search_results() -> bool:
             response = client.post(
                 "/api/kb/search",
                 data={
@@ -228,16 +227,15 @@ class TestRealURLIngestion:
                 },
                 headers=auth_headers,
             )
-
             if response.status_code == 200:
                 results = response.json().get("results", [])
-                if len(results) > 0:
-                    # Found results!
-                    break
+                return len(results) > 0
+            return False
 
-            time.sleep(5)
+        # Poll with exponential backoff - may timeout if indexing is slow
+        _poll_with_backoff(has_search_results, max_wait_seconds=20)
 
-        # Final search verification
+        # Final search verification (may be empty if indexing still pending)
         response = client.post(
             "/api/kb/search",
             data={
@@ -250,7 +248,7 @@ class TestRealURLIngestion:
         assert response.status_code == 200
         results = response.json().get("results", [])
 
-        # Verify results structure
+        # Verify results structure (if indexing completed)
         for result in results:
             assert "content" in result or "text" in result
             # Should have relevance info
@@ -274,7 +272,7 @@ class TestRealURLIngestion:
                 data={"start_url": url, "collection": collection_name},
                 headers=auth_headers,
             )
-            assert response.status_code in [200, 202], (
+            assert response.status_code == 200, (
                 f"Failed to ingest {url}: {response.text}"
             )
 
@@ -314,16 +312,13 @@ class TestRealURLParsing:
             headers=auth_headers,
         )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
         result = response.json()
 
         collection_id = _extract_collection_id(result)
-        assert collection_id is not None
-
-        # HTML parsing completed successfully
-        # Note: Cannot directly check document content without listing endpoint
-        # The successful response indicates parsing was handled
-        assert True, "HTML parsing completed"
+        assert collection_id is not None, (
+            "Collection should be created after HTML parsing"
+        )
 
     @pytest.mark.slow
     @pytest.mark.requires_network
@@ -344,7 +339,7 @@ class TestRealURLParsing:
             headers=auth_headers,
         )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
         result = response.json()
 
         collection_id = _extract_collection_id(result)
@@ -377,8 +372,8 @@ class TestRealURLErrors:
             headers=auth_headers,
         )
 
-        # Should fail gracefully
-        assert response.status_code in [400, 404, 500], (
+        # Invalid URL should result in error status (500)
+        assert response.status_code == 500, (
             "Invalid URL should be handled with appropriate error"
         )
 
@@ -401,9 +396,10 @@ class TestRealURLErrors:
             headers=auth_headers,
         )
 
-        # Should fail gracefully (404 or error)
-        assert response.status_code in [200, 400, 404, 500], (
-            "Non-existent page should be handled with appropriate error"
+        # Non-existent page on existing site returns 200 (site serves content)
+        # The test verifies the system handles non-existent pages gracefully
+        assert response.status_code == 200, (
+            "Non-existent page should be handled gracefully"
         )
 
     @pytest.mark.slow
@@ -430,8 +426,8 @@ class TestRealURLErrors:
                 headers=auth_headers,
             )
 
-            # Should handle gracefully - either reject upfront or process with errors
-            assert response.status_code in [200, 400, 422], (
+            # Malformed URLs are handled gracefully - returns 200 with 0 documents
+            assert response.status_code == 200, (
                 f"Malformed URL should be handled gracefully: {malformed_url}"
             )
 
@@ -462,7 +458,7 @@ class TestRealURLDisplay:
             headers=auth_headers,
         )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
         result = response.json()
 
         collection_id = _extract_collection_id(result)
@@ -491,7 +487,7 @@ class TestRealURLDisplay:
             headers=auth_headers,
         )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
 
         # List collections
         response = client.get("/api/kb/collections", headers=auth_headers)
@@ -545,7 +541,7 @@ class TestRealURLReingestion:
             data={"start_url": TEST_BASE_URL, "collection": collection_name},
             headers=auth_headers,
         )
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
 
         # Get collection info
         collections_response = client.get("/api/kb/collections", headers=auth_headers)
@@ -564,7 +560,7 @@ class TestRealURLReingestion:
             data={"start_url": TEST_BASE_URL, "collection": collection_name},
             headers=auth_headers,
         )
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
 
         # Re-ingestion completed successfully
         # Note: Cannot directly compare document counts without listing endpoint

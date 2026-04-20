@@ -338,7 +338,7 @@ class TestMultiTenantSearchIsolation:
         return data
 
     def test_search_isolation_own_collection_and_cross_tenant_forbidden(
-        self, client, tenant_search_data: Dict[str, Dict[str, Any]], clean_storage: None
+        self, client, tenant_search_data: Dict[str, Dict[str, Any]]
     ):
         """Own-collection search succeeds; tenant-scoped results; cross-tenant search is 403."""
         users = {
@@ -421,7 +421,7 @@ class TestMultiTenantAfterMigration:
     database migrations do not break tenant isolation.
     """
 
-    def test_isolation_after_user_id_field_change(self, client, clean_storage: None):
+    def test_isolation_after_user_id_field_change(self, client):
         """Test that isolation remains after user_id field changes.
 
         This simulates a scenario where the user_id field type or
@@ -471,7 +471,7 @@ class TestMultiTenantAfterMigration:
         # Cross-tenant delete must be explicitly forbidden.
         assert response.status_code == 403
 
-    def test_legacy_orphan_data_isolation(self, client, clean_storage: None):
+    def test_legacy_orphan_data_isolation(self, client):
         """Test that legacy data without proper user_id is properly isolated.
 
         This test simulates legacy data that might not have user_id set
@@ -516,7 +516,7 @@ class TestMultiTenantAfterMigration:
         # If there were legacy orphan collections, they should not appear
         # (unless the system has specific logic to handle them)
 
-    def test_isolation_with_mixed_schema_versions(self, client, clean_storage: None):
+    def test_isolation_with_mixed_schema_versions(self, client):
         """Test isolation works with mixed schema versions.
 
         This simulates a scenario where some collections use the old schema
@@ -579,7 +579,7 @@ class TestMultiTenantDeleteIsolation:
     and documents, not other tenants'.
     """
 
-    def test_users_can_only_delete_own_collections(self, client, clean_storage: None):
+    def test_users_can_only_delete_own_collections(self, client):
         """Test that users can only delete their own collections."""
         # Create two users
         users = [
@@ -637,7 +637,7 @@ class TestMultiTenantDeleteIsolation:
         response = client.get("/api/kb/collections", headers=headers2)
         assert response.status_code == 200, http_detail(response)
 
-    def test_users_can_only_delete_own_documents(self, client, clean_storage: None):
+    def test_users_can_only_delete_own_documents(self, client):
         """Test that users can only delete their own documents."""
         # Create two users in same collection scenario
         # (if system supports shared collections)

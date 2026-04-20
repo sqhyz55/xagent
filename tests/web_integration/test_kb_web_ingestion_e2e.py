@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
@@ -23,35 +22,16 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
+
 # ==========================================
-# TEST FIXTURES
+# TEST-SPECIFIC FIXTURES
 # ==========================================
-
-
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding adapter for web ingestion E2E tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
+# Note: _StubEmbeddingAdapter, stub_embedding_adapter are provided by conftest.py
 
 
 @pytest.fixture
-def stub_embedding_config():
-    """Create stub embedding configuration for web ingestion testing."""
+def stub_embedding_config() -> EmbeddingModelConfig:
+    """Override with web ingestion-specific embedding config."""
     return EmbeddingModelConfig(
         id="e2e-web-test-embedding",
         model_name="e2e-web-test-embedding-model",
@@ -61,25 +41,20 @@ def stub_embedding_config():
 
 
 @pytest.fixture
-def stub_embedding_adapter():
-    """Create stub embedding adapter for web ingestion testing."""
-    return _StubEmbeddingAdapter()
-
-
-@pytest.fixture
-def mock_web_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_adapter):
+def mock_web_rag_pipeline(
+    monkeypatch: Any,
+    stub_embedding_config: EmbeddingModelConfig,
+    stub_embedding_adapter,
+) -> None:
     """Mock the RAG pipeline components for web ingestion E2E testing.
 
-    This fixture provides realistic mocks that simulate successful
-    web crawling and RAG processing.
+    This extends the base mock_rag_pipeline from conftest with
+    web ingestion-specific collection configuration.
     """
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
     from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
 
     mgr = collection_manager.collection_manager
 
-    # Mock collection to exist
     mock_collection = CollectionInfo(
         name="e2e_web_test_collection",
         embedding_model_id="e2e-web-test-embedding",
@@ -94,33 +69,9 @@ def mock_web_rag_pipeline(monkeypatch, stub_embedding_config, stub_embedding_ada
     ) -> CollectionInfo:
         return mock_collection
 
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    # Apply mocks (patch singleton used by KB routes)
+    monkeypatch.setattr(mgr, "get_collection", mock_get_collection)
     monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-
-    # Also mock in pipelines module
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
+        mgr, "initialize_collection_embedding", mock_initialize_collection
     )
 
 
@@ -313,8 +264,8 @@ class TestKBWebIngestionE2E:
                 headers=auth_headers,
             )
 
-            # Should handle error gracefully
-            assert response.status_code in [200, 500]
+            # Crawler failure should result in error status with 500
+            assert response.status_code == 500
             result = response.json()
             assert "status" in result
 
@@ -348,8 +299,8 @@ class TestKBWebIngestionE2E:
                 headers=auth_headers,
             )
 
-            # Should handle timeout gracefully
-            assert response.status_code in [200, 500]
+            # Timeout error should result in error status with 500
+            assert response.status_code == 500
             result = response.json()
             assert "status" in result
 

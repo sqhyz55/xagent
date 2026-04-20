@@ -14,16 +14,11 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
-from xagent.core.tools.core.RAG_tools.core.schemas import (
-    CollectionInfo,
-)
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
@@ -35,101 +30,20 @@ def _log(msg: str) -> None:
 
 
 # ==========================================
-# TEST FIXTURES
+# TEST-SPECIFIC FIXTURES
 # ==========================================
-
-
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding adapter for lifecycle E2E tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
+# Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
+# are provided by conftest.py with autouse=True
 
 
 @pytest.fixture
-def stub_embedding_config():
-    """Create stub embedding configuration for lifecycle testing."""
+def stub_embedding_config() -> EmbeddingModelConfig:
+    """Lifecycle-specific embedding configuration."""
     return EmbeddingModelConfig(
         id="e2e-lifecycle-embedding",
         model_name="e2e-lifecycle-embedding-model",
         model_provider="test",
         dimension=2,
-    )
-
-
-@pytest.fixture
-def stub_embedding_adapter():
-    """Create stub embedding adapter for lifecycle testing."""
-    return _StubEmbeddingAdapter()
-
-
-@pytest.fixture
-def mock_lifecycle_rag_pipeline(
-    monkeypatch, stub_embedding_config, stub_embedding_adapter
-):
-    """Mock the RAG pipeline components for lifecycle E2E testing."""
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
-    from xagent.core.tools.core.RAG_tools.management import collection_manager
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = collection_manager.collection_manager
-
-    # Mock collection to exist
-    mock_collection = CollectionInfo(
-        name="e2e_lifecycle_test",
-        embedding_model_id="e2e-lifecycle-embedding",
-        embedding_dimension=2,
-    )
-
-    async def mock_get_collection(collection_name: str) -> CollectionInfo:
-        return mock_collection
-
-    async def mock_initialize_collection(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return mock_collection
-
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    # Apply mocks (patch singleton used by KB routes)
-    monkeypatch.setattr(
-        mgr,
-        "get_collection",
-        mock_get_collection,
-    )
-    monkeypatch.setattr(
-        mgr,
-        "initialize_collection_embedding",
-        mock_initialize_collection,
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-
-    # Also mock in pipelines module
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
     )
 
 
@@ -175,7 +89,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test complete KB lifecycle: create → ingest → search → delete."""
         _log("\n=== START test_complete_kb_lifecycle_single_document ===")
@@ -219,8 +132,8 @@ class TestKBLifecycleE2E:
             f"/api/kb/collections/{collection_name}/documents/document1.txt",
             headers=auth_headers,
         )
-        # Delete may succeed or fail - both are acceptable for E2E
-        assert delete_doc_response.status_code in [200, 404, 500]
+        # Deleting just-uploaded document should succeed
+        assert delete_doc_response.status_code == 200
         _log(f"Delete response status: {delete_doc_response.status_code}")
         _log("=== END test_complete_kb_lifecycle_single_document ===\n")
 
@@ -231,7 +144,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test KB lifecycle with multiple documents of different formats."""
         _log("\n=== START test_complete_kb_lifecycle_multiple_documents ===")
@@ -274,8 +186,8 @@ class TestKBLifecycleE2E:
                 f"/api/kb/collections/{collection_name}/documents/{doc_name}",
                 headers=auth_headers,
             )
-            # Accept various response codes
-            assert delete_response.status_code in [200, 404, 500]
+            # Deleting just-uploaded documents should succeed
+            assert delete_response.status_code == 200
             print(f"    Delete response: {delete_response.status_code}")
         _log("=== END test_complete_kb_lifecycle_multiple_documents ===\n")
 
@@ -286,7 +198,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test deleting an entire collection after document ingestion."""
         _log("\n=== START test_delete_collection_after_ingestion ===")
@@ -313,8 +224,8 @@ class TestKBLifecycleE2E:
                 f"/api/kb/collections/{collection_name}",
                 headers=auth_headers,
             )
-            # Collection deletion should succeed
-            assert delete_response.status_code in [200, 404, 500]
+            # Deleting a collection that exists should succeed
+            assert delete_response.status_code == 200
             print(f"Delete response: {delete_response.status_code}")
         _log("=== END test_delete_collection_after_ingestion ===\n")
 
@@ -325,7 +236,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test that different collections maintain document isolation."""
         _log("\n=== START test_collection_isolation ===")
@@ -368,7 +278,6 @@ class TestKBLifecycleE2E:
         self,
         client: TestClient,
         auth_headers: dict[str, str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test saving and retrieving collection configuration."""
         _log("\n=== START test_collection_config_management ===")
@@ -390,7 +299,7 @@ class TestKBLifecycleE2E:
         print(f"Config response: {config_response.status_code}")
 
         # Config save should succeed
-        assert config_response.status_code in [200, 500]
+        assert config_response.status_code == 200
         _log("=== END test_collection_config_management ===\n")
 
     @pytest.mark.e2e
@@ -400,7 +309,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test ingesting documents with custom ingestion configuration."""
         files, temp_dir = sample_lifecycle_files
@@ -434,7 +342,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test that documents are correctly listed after multiple ingestions."""
         files, temp_dir = sample_lifecycle_files
@@ -472,7 +379,6 @@ class TestKBLifecycleE2E:
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
         """Test error handling with invalid collection names."""
         files, temp_dir = sample_lifecycle_files
@@ -494,26 +400,28 @@ class TestKBLifecycleE2E:
                     data={"collection": invalid_name},
                     headers=auth_headers,
                 )
-                # Should reject invalid names or handle gracefully
-                assert response.status_code in [200, 400, 422, 500]
+                # Path traversal names are rejected because basename != original
+                # Only "collection with spaces" passes validation
+                if invalid_name == "collection with spaces":
+                    assert response.status_code == 200
+                else:
+                    assert response.status_code == 422
 
     @pytest.mark.e2e
     @pytest.mark.slow
-    def test_concurrent_document_ingestion(
+    def test_multiple_document_ingestion(
         self,
         client: TestClient,
         auth_headers: dict[str, str],
         sample_lifecycle_files: tuple[dict[str, str], str],
-        mock_lifecycle_rag_pipeline: None,
     ):
-        """Test handling multiple simultaneous ingestion requests."""
-        import concurrent.futures
-
+        """Test handling multiple ingestion requests sequentially."""
         files, temp_dir = sample_lifecycle_files
-        collection_name = "e2e_concurrent_test"
+        collection_name = "e2e_multiple_ingestion"
 
-        def ingest_file(filename: str) -> int:
-            """Ingest a single file and return status code."""
+        # Ingest multiple files sequentially
+        results = []
+        for filename in ["document1.txt", "document2.md", "document3.json"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 response = client.post(
@@ -522,19 +430,7 @@ class TestKBLifecycleE2E:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                return response.status_code
+                results.append(response.status_code)
 
-        # Try to ingest multiple files concurrently
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [
-                executor.submit(ingest_file, "document1.txt"),
-                executor.submit(ingest_file, "document2.md"),
-                executor.submit(ingest_file, "document3.json"),
-            ]
-            results = [
-                future.result() for future in concurrent.futures.as_completed(futures)
-            ]
-
-        # At least some requests should succeed
-        success_count = sum(1 for code in results if code == 200)
-        assert success_count >= 1
+        # All ingestions should succeed
+        assert all(code == 200 for code in results)

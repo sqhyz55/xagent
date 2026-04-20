@@ -158,8 +158,8 @@ class TestFileUpload:
                 headers=auth_headers,
             )
 
-        # File upload should work (may return 200 or 201 for success)
-        assert response.status_code in [200, 201]
+        # File upload returns 200 on success
+        assert response.status_code == 200
 
     def test_upload_python_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -176,7 +176,7 @@ class TestFileUpload:
                 headers=auth_headers,
             )
 
-        assert response.status_code in [200, 201]
+        assert response.status_code == 200
 
     def test_upload_json_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -193,7 +193,7 @@ class TestFileUpload:
                 headers=auth_headers,
             )
 
-        assert response.status_code in [200, 201]
+        assert response.status_code == 200
 
     def test_upload_csv_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -210,7 +210,7 @@ class TestFileUpload:
                 headers=auth_headers,
             )
 
-        assert response.status_code in [200, 201]
+        assert response.status_code == 200
 
     def test_upload_png_file_success(
         self, client, test_db, temp_uploads_dir, auth_headers
@@ -237,7 +237,7 @@ class TestFileUpload:
                 )
 
         os.unlink(tmp.name)
-        assert response.status_code in [200, 201]
+        assert response.status_code == 200
 
     def test_upload_jpg_file_success(
         self, client, test_db, temp_uploads_dir, auth_headers
@@ -269,7 +269,7 @@ class TestFileUpload:
                 )
 
         os.unlink(tmp.name)
-        assert response.status_code in [200, 201]
+        assert response.status_code == 200
 
     def test_upload_no_filename_error(self, client, test_db, auth_headers):
         """Test upload with no filename"""
@@ -285,8 +285,8 @@ class TestFileUpload:
                     headers=auth_headers,
                 )
 
-        # Should return 400 for bad request or 422 for validation error
-        assert response.status_code in [400, 422]
+        # Empty filename returns 422 validation error
+        assert response.status_code == 422
         os.unlink(tmp.name)
 
     def test_upload_unsupported_file_type(self, client, test_db, auth_headers):
@@ -324,7 +324,7 @@ class TestFileUpload:
 
         # Test passes if upload is successful (200/201) - we don't need to check file system
         # as the API response will indicate success/failure
-        assert response.status_code in [200, 201]
+        assert response.status_code == 200
 
     def test_upload_file_returns_413_when_size_exceeds_limit(
         self, client, test_db, temp_uploads_dir, auth_headers, monkeypatch
@@ -432,7 +432,7 @@ class TestFileManagement:
             )
 
         # If upload was successful, try to download
-        if upload_response.status_code in [200, 201]:
+        if upload_response.status_code == 200:
             upload_data = upload_response.json()
             file_id = upload_data.get("file_id")
             assert file_id, "upload response should include file_id"
@@ -440,8 +440,8 @@ class TestFileManagement:
             response = client.get(
                 f"/api/files/download/{file_id}", headers=auth_headers
             )
-            # Should return 200 for success or 404 if file not found
-            assert response.status_code in [200, 404]
+            # Download of existing file should succeed
+            assert response.status_code == 200
         else:
             # If upload failed, skip download test
             pytest.skip("Upload failed, skipping download test")
@@ -451,8 +451,8 @@ class TestFileManagement:
         response = client.get(
             "/api/files/download/nonexistent.txt", headers=auth_headers
         )
-        # API returns 500 when file not found due to exception handling
-        assert response.status_code in [404, 500]
+        # Non-existent file returns 404
+        assert response.status_code == 404
 
     def test_delete_file_success(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -471,14 +471,14 @@ class TestFileManagement:
             )
 
         # If upload was successful, try to delete
-        if upload_response.status_code in [200, 201]:
+        if upload_response.status_code == 200:
             upload_data = upload_response.json()
             file_id = upload_data.get("file_id")
             assert file_id, "upload response should include file_id"
             # Try to delete the file
             response = client.delete(f"/api/files/{file_id}", headers=auth_headers)
-            # Should return 200 for success or 404 if file not found/endpoint doesn't exist
-            assert response.status_code in [200, 404]
+            # Delete existing file should succeed
+            assert response.status_code == 200
         else:
             # If upload failed, skip delete test
             pytest.skip("Upload failed, skipping delete test")
@@ -486,8 +486,8 @@ class TestFileManagement:
     def test_delete_file_not_found(self, client, test_db, auth_headers):
         """Test deleting non-existent file"""
         response = client.delete("/api/files/nonexistent.txt", headers=auth_headers)
-        # API returns 500 when file not found due to exception handling
-        assert response.status_code in [404, 500]
+        # Non-existent file returns 404
+        assert response.status_code == 404
 
     def test_list_files_after_deletion(
         self, client, test_db, sample_files, temp_uploads_dir, auth_headers
@@ -506,7 +506,7 @@ class TestFileManagement:
             )
 
         # If upload was successful, try to delete then list
-        if upload_response.status_code in [200, 201]:
+        if upload_response.status_code == 200:
             # Delete the file
             client.delete("/api/files/test.txt", headers=auth_headers)
 
@@ -539,7 +539,7 @@ class TestFileUploadIntegration:
             )
 
         # If upload was successful, continue with workflow
-        if upload_response.status_code in [200, 201]:
+        if upload_response.status_code == 200:
             upload_data = upload_response.json()
             file_id = upload_data.get("file_id")
             assert file_id, "upload response should include file_id"
@@ -551,13 +551,15 @@ class TestFileUploadIntegration:
             download_response = client.get(
                 f"/api/files/download/{file_id}", headers=auth_headers
             )
-            assert download_response.status_code in [200, 404]
+            # Download existing file should succeed
+            assert download_response.status_code == 200
 
             # Delete file
             delete_response = client.delete(
                 f"/api/files/{file_id}", headers=auth_headers
             )
-            assert delete_response.status_code in [200, 404]
+            # Delete existing file should succeed
+            assert delete_response.status_code == 200
         else:
             # If upload failed, test passes as we verified the behavior
             pytest.skip("Upload failed, integration workflow test not applicable")
@@ -579,7 +581,7 @@ class TestFileUploadIntegration:
                     data={"task_type": "general"},
                     headers=auth_headers,
                 )
-                if response.status_code in [200, 201]:
+                if response.status_code == 200:
                     uploaded_files.append(filename)
 
         # If some files were uploaded, test listing
@@ -708,13 +710,8 @@ class TestFileUploadSecurity:
             response = client.get(
                 f"/api/files/download/{encoded_path}", headers=auth_headers
             )
-            assert response.status_code in [400, 403, 404]
-            if response.status_code != 404:
-                detail = response.json().get("detail", "").lower()
-                assert any(
-                    keyword in detail
-                    for keyword in ["path traversal", "invalid", "security"]
-                )
+            # Path traversal attempts return 404 (route not found)
+            assert response.status_code == 404
 
     def test_preview_file_rejects_path_traversal(
         self, client, test_db, temp_uploads_dir, auth_headers
@@ -735,19 +732,8 @@ class TestFileUploadSecurity:
             response = client.get(
                 f"/api/files/preview/{task_id}/{encoded_path}", headers=auth_headers
             )
-            assert response.status_code in [400, 403, 404]
-            if response.status_code != 404:
-                detail = response.json().get("detail", "").lower()
-                assert any(
-                    keyword in detail
-                    for keyword in [
-                        "path traversal",
-                        "invalid",
-                        "security",
-                        "access denied",
-                        "task not found",
-                    ]
-                )
+            # Path traversal attempts return 404 (route not found)
+            assert response.status_code == 404
 
     def test_list_files_handles_nested_paths_correctly(
         self, client, test_db, temp_uploads_dir, auth_headers

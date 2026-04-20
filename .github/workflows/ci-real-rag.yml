@@ -16,7 +16,10 @@ jobs:
   real_rag_tests:
     name: Real RAG E2E Tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Skip job if not a PR/ready PR, OR if both embedding API keys are missing
+    if: |
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false) &&
+      (secrets.DASHSCOPE_API_KEY != '' || secrets.ZHIPU_API_KEY != '')
 
     steps:
       - name: Checkout code
@@ -67,12 +70,6 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Skip if embedding API keys are not available
-          if [ -z "${{ secrets.DASHSCOPE_API_KEY }}" ] && [ -z "${{ secrets.ZHIPU_API_KEY }}" ]; then
-            echo "⚠️  No embedding API keys configured, skipping real_rag tests"
-            echo "To enable these tests, add DASHSCOPE_API_KEY or ZHIPU_API_KEY to repository secrets"
-            exit 0
-          fi
 
           # Export API keys for the tests
           if [ -n "${{ secrets.DASHSCOPE_API_KEY }}" ]; then
@@ -96,6 +93,8 @@ jobs:
         run: |
           echo "## Real RAG Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "These tests require real embedding API keys to run." >> $GITHUB_STEP_SUMMARY
+          echo "These tests require real embedding API keys (DASHSCOPE_API_KEY or ZHIPU_API_KEY)." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "To enable locally, set DASHSCOPE_API_KEY or ZHIPU_API_KEY." >> $GITHUB_STEP_SUMMARY
+          echo "To enable locally, set one of these environment variables before running tests." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To enable in CI, add the API key to repository secrets." >> $GITHUB_STEP_SUMMARY
