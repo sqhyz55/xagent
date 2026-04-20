@@ -1085,13 +1085,6 @@ async def ingest_cloud(
     except ValueError:
         collection_existed_before = False
 
-    try:
-        safe_collection = sanitize_path_component(request.collection, "collection")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=422, detail=f"Invalid collection name: {str(e)}"
-        ) from e
-
     await _ensure_collection_access(safe_collection, _user, allow_create=True)
 
     # Concurrency limit for cloud ingestion to avoid overloading
@@ -3342,23 +3335,22 @@ async def rename_collection_api(
     await _ensure_collection_access(safe_old_collection, _user, hide_missing=False)
 
     # Validate that target collection doesn't exist or user has access
-    if safe_new_collection != safe_old_collection:
-        visible_for_user = await _list_collections_with_retry(
-            user_id=int(_user.id),
-            is_admin=False,
-            stage="rename_list_visible_collections",
+    visible_for_user = await _list_collections_with_retry(
+        user_id=int(_user.id),
+        is_admin=False,
+        stage="rename_list_visible_collections",
+    )
+    if not any(c.name == safe_new_collection for c in visible_for_user.collections):
+        all_named = await _list_collections_with_retry(
+            user_id=None,
+            is_admin=True,
+            stage="rename_list_all_collections",
         )
-        if not any(c.name == safe_new_collection for c in visible_for_user.collections):
-            all_named = await _list_collections_with_retry(
-                user_id=None,
-                is_admin=True,
-                stage="rename_list_all_collections",
+        if any(c.name == safe_new_collection for c in all_named.collections):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied for collection: {safe_new_collection}",
             )
-            if any(c.name == safe_new_collection for c in all_named.collections):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Access denied for collection: {safe_new_collection}",
-                )
 
     physical_rename_status = "not_found"
     physical_rename_error: Optional[str] = None

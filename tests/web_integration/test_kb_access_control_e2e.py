@@ -12,103 +12,24 @@ Real embedding coverage lives in ``real_rag`` suites (e.g. multitenancy E2E).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.web_integration.http_helpers import http_detail
-from xagent.core.model.embedding.base import BaseEmbedding
 from xagent.core.model.model import EmbeddingModelConfig
-from xagent.core.tools.core.RAG_tools.core.schemas import CollectionInfo
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 
-class _StubEmbeddingAdapter(BaseEmbedding):
-    """Deterministic embedding for access-control contract tests."""
-
-    def encode(
-        self,
-        text: Any,
-        dimension: int | None = None,
-        instruct: str | None = None,
-    ) -> Any:
-        if isinstance(text, str):
-            return [float(len(text)), 0.0]
-        return [[float(len(item)), float(index)] for index, item in enumerate(text)]
-
-    def get_dimension(self) -> int:
-        return 2
-
-    @property
-    def abilities(self) -> list[str]:
-        return ["embedding"]
-
-
 @pytest.fixture
 def stub_embedding_config() -> EmbeddingModelConfig:
-    """Stub embedding configuration."""
+    """Override shared contract_stub config for this suite."""
     return EmbeddingModelConfig(
         id="e2e-ac-embedding",
         model_name="e2e-ac-embedding-model",
         model_provider="test",
         dimension=2,
-    )
-
-
-@pytest.fixture
-def stub_embedding_adapter() -> _StubEmbeddingAdapter:
-    return _StubEmbeddingAdapter()
-
-
-@pytest.fixture(autouse=True)
-def mock_access_control_rag_pipeline(
-    monkeypatch: pytest.MonkeyPatch,
-    stub_embedding_config: EmbeddingModelConfig,
-    stub_embedding_adapter: _StubEmbeddingAdapter,
-) -> None:
-    """Stub RAG embedding resolution so ingest succeeds without external APIs."""
-    from xagent.core.tools.core.RAG_tools import pipelines as pipelines_module
-    from xagent.core.tools.core.RAG_tools.management import collection_manager as cm_mod
-    from xagent.core.tools.core.RAG_tools.utils import model_resolver
-
-    mgr = cm_mod.collection_manager
-
-    async def mock_get_collection(collection_name: str) -> CollectionInfo:
-        return CollectionInfo(
-            name=collection_name,
-            embedding_model_id="e2e-ac-embedding",
-            embedding_dimension=2,
-        )
-
-    async def mock_initialize_collection(
-        collection_name: str, embedding_model_id: str
-    ) -> CollectionInfo:
-        return CollectionInfo(
-            name=collection_name,
-            embedding_model_id=embedding_model_id,
-            embedding_dimension=2,
-        )
-
-    def mock_resolve_embedding_adapter(
-        model_id: str | None = None, **kwargs: Any
-    ) -> tuple[EmbeddingModelConfig, BaseEmbedding]:
-        return (stub_embedding_config, stub_embedding_adapter)
-
-    monkeypatch.setattr(mgr, "get_collection", mock_get_collection)
-    monkeypatch.setattr(
-        mgr, "initialize_collection_embedding", mock_initialize_collection
-    )
-    monkeypatch.setattr(
-        model_resolver,
-        "resolve_embedding_adapter",
-        mock_resolve_embedding_adapter,
-    )
-    monkeypatch.setattr(
-        pipelines_module.document_ingestion,
-        "_resolve_embedding_adapter",
-        lambda cfg: (stub_embedding_config, stub_embedding_adapter),
     )
 
 

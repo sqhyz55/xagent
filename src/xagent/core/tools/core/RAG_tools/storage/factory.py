@@ -273,13 +273,8 @@ def reset_rag_storage_for_tests() -> None:
     # Clear global collection locks to prevent test-to-test lock contamination
     from xagent.core.tools.core.RAG_tools.management import collection_manager
 
-    locks_before = len(collection_manager._collection_locks)
-    if locks_before > 0:
-        logger.debug(
-            f"[TEST_RESET] Clearing {locks_before} global collection locks: {list(collection_manager._collection_locks.keys())}"
-        )
-    collection_manager._collection_locks.clear()
-    logger.debug("[TEST_RESET] Global collection locks cleared")
+    collection_manager.reset_locks_for_testing()
+    logger.debug("[TEST_RESET] Global collection locks reset via public helper")
 
 
 def get_kb_write_coordinator() -> KBWriteCoordinator:

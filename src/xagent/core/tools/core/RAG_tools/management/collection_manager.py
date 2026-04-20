@@ -33,6 +33,12 @@ _collection_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _collection_locks_lock = threading.Lock()
 
 
+def reset_locks_for_testing() -> None:
+    """Clear in-memory collection locks for test isolation."""
+    with _collection_locks_lock:
+        _collection_locks.clear()
+
+
 def _run_in_separate_loop(coro: Awaitable[T]) -> T:
     """Safely run an async coroutine synchronously, even if an event loop is already running.
 

@@ -1,11 +1,12 @@
-"""Tests for _handle_web_file function in kb.py.
+"""Tests for web-ingestion uploaded-file persistence helpers.
 
-This module tests the file handler callback used in web ingestion, which handles:
-- URL-based deduplication (in-memory cache + database)
-- File persistence (copying temp files to permanent storage)
+This module focuses on storage-level behavior around
+``xagent.web.api.kb._upsert_uploaded_file_record`` and related URL-hash
+dedup semantics used by web ingestion:
 - UploadedFile record creation/update
-- Cross-collection isolation
-- Error handling and cleanup
+- URL-hash based dedup behavior
+- Cross-collection isolation at persistence level
+- Failure cleanup expectations
 """
 
 import tempfile
@@ -60,8 +61,8 @@ def mock_user():
     return mock
 
 
-class TestHandleWebFile:
-    """Test _handle_web_file function for web ingestion file handling."""
+class TestWebIngestionUploadedFilePersistence:
+    """Test uploaded-file persistence behavior used by web ingestion."""
 
     def test_new_file_creation(
         self, db_session: Session, test_user: User, mock_user: MagicMock
@@ -79,7 +80,7 @@ class TestHandleWebFile:
             with patch("xagent.web.api.kb.get_upload_path") as mock_get_path:
                 mock_get_path.return_value = persistent_path / "file.md"
 
-                # Simulate the function setup inside ingest_web
+                # Simulate ingest-web persistence context
                 _processed_urls = {}
 
                 # Mock sanitize_path_component
@@ -88,7 +89,7 @@ class TestHandleWebFile:
                 ) as mock_sanitize:
                     mock_sanitize.return_value = "test_page"
 
-                    # Call the file handler logic (simplified from actual implementation)
+                    # Simulate storage-layer steps used by the ingest-web handler
                     url = "https://example.com/test"
                     collection = "test_collection"
 
