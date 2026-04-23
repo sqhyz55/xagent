@@ -21,14 +21,14 @@ class UserPermissions:
 
     @staticmethod
     def get_user_filter(
-        user_id: Optional[int], is_admin: bool = False
+        user_id: Optional[int], is_admin: Optional[bool] = None
     ) -> Optional[str]:
         """
         Generate user filter expression for LanceDB queries.
 
         Args:
             user_id: Current user ID, None for unauthenticated
-            is_admin: Whether user is admin
+            is_admin: Whether user is admin (None to fallback to context)
 
         Returns:
             LanceDB filter expression string, or None for no filtering
@@ -52,7 +52,9 @@ class UserPermissions:
 
     @staticmethod
     def can_access_data(
-        user_id: Optional[int], data_user_id: Optional[int], is_admin: bool = False
+        user_id: Optional[int],
+        data_user_id: Optional[int],
+        is_admin: Optional[bool] = None,
     ) -> bool:
         """
         Check if user can access specific data.
@@ -60,7 +62,7 @@ class UserPermissions:
         Args:
             user_id: Current user ID
             data_user_id: Data owner's user ID
-            is_admin: Whether current user is admin
+            is_admin: Whether current user is admin (None to fallback to context)
 
         Returns:
             True if access allowed
@@ -92,4 +94,4 @@ class UserPermissions:
         Returns:
             user_id to use for new data, None for legacy compatibility
         """
-        return resolve_user_scope(user_id=user_id, is_admin=False).user_id
+        return resolve_user_scope(user_id=user_id, is_admin=None).user_id

@@ -26,7 +26,8 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 # In-memory locks for collection operations to prevent concurrent initialization conflicts
-_collection_locks: dict[str, asyncio.Lock] = {}
+# Lock key is (loop_id, collection_name) to prevent cross-thread deadlock
+_collection_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _collection_locks_lock = threading.Lock()
 
 
@@ -116,16 +117,42 @@ def _get_collection_lock(collection_name: str) -> asyncio.Lock:
 
     This function implements double-checked locking to safely handle concurrent access
     to the global collection locks dictionary without unnecessary lock contention.
+
+    Lock key includes event loop ID to prevent cross-thread deadlock when locks are
+    shared across event loops (e.g., thread pool execution).
+
+    Returns:
+        asyncio.Lock for the specific (loop_id, collection_name) combination
     """
+    # Get current event loop ID for lock key
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        # No running event loop (e.g., in sync context), use 0 as default
+        loop_id = 0
+
+    lock_key = (loop_id, collection_name)
+
     # First check (lock-free) - for performance on hot path
-    if collection_name in _collection_locks:
-        return _collection_locks[collection_name]
+    if lock_key in _collection_locks:
+        return _collection_locks[lock_key]
 
     # Second check (with lock) - for safety on cold path
     with _collection_locks_lock:
-        if collection_name not in _collection_locks:
-            _collection_locks[collection_name] = asyncio.Lock()
-        return _collection_locks[collection_name]
+        if lock_key not in _collection_locks:
+            _collection_locks[lock_key] = asyncio.Lock()
+        return _collection_locks[lock_key]
+
+
+def reset_locks_for_testing() -> None:
+    """Clear all collection locks for test isolation.
+
+    This function should only be called in test contexts to ensure
+    clean state between tests.
+    """
+    with _collection_locks_lock:
+        _collection_locks.clear()
 
 
 class CollectionManager:

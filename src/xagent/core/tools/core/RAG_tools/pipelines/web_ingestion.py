@@ -144,6 +144,12 @@ async def run_web_ingestion(
         total_chunks = 0
         total_embeddings = 0
 
+        # Copy context once before the loop to avoid repeated ContextVar copying.
+        # The request-scoped user context remains constant throughout the request.
+        # NOTE: This copies ALL ContextVars (tracing IDs, request IDs, etc.).
+        loop = asyncio.get_event_loop()
+        request_context = copy_context()
+
         for i, crawl_result in enumerate(crawl_results):
             if crawl_result.status != "success":
                 continue
@@ -219,11 +225,13 @@ async def run_web_ingestion(
                         )
 
                     # Run ingestion in thread pool while preserving ContextVar user scope
-                    loop = asyncio.get_event_loop()
-                    context = copy_context()
+                    # NOTE: request_context was copied before the loop to avoid repeated copying.
+                    # Modifications made in the thread pool won't propagate back to the main request context.
+                    # This is acceptable for user scope (read-only) but observability systems should
+                    # be aware that child span updates may be lost.
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         ingest_result: IngestionResult = await loop.run_in_executor(
-                            executor, lambda: context.run(_ingest_file)
+                            executor, lambda: request_context.run(_ingest_file)
                         )
 
                     # Track statistics

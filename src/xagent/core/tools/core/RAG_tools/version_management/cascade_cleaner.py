@@ -350,7 +350,7 @@ def cascade_delete(
     collection: str,
     doc_id: Optional[str] = None,
     user_id: Optional[int] = None,
-    is_admin: bool = False,
+    is_admin: Optional[bool] = None,
     model_tag: Optional[str] = None,
     preview_only: bool = True,
     confirm: bool = False,
@@ -365,7 +365,7 @@ def cascade_delete(
         collection: Collection name.
         doc_id: Required when target == "document".
         user_id: Optional user ID for multi-tenancy filtering.
-        is_admin: Whether the caller is an admin (no user_id filtering).
+        is_admin: Whether the caller is an admin (None to fallback to context).
         model_tag: Optional embeddings model tag limiter.
         preview_only: If True, only plan counts.
         confirm: If True, execute deletions.
@@ -376,6 +376,13 @@ def cascade_delete(
     user_scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
     user_id = user_scope.user_id
     is_admin = user_scope.is_admin
+
+    # Check if both explicit params and context are missing (truly anonymous)
+    if user_id is None and not is_admin:
+        # This means no user_id in context AND no explicit is_admin=True
+        raise CascadeCleanupError(
+            "Anonymous users cannot perform cascade delete operations"
+        )
 
     if target == "document" and not doc_id:
         raise CascadeCleanupError("doc_id is required for document cascade delete")
@@ -451,7 +458,7 @@ def cleanup_cascade(
     old_parse_hash: Optional[str] = None,
     model_tag: Optional[str] = None,
     user_id: Optional[int] = None,
-    is_admin: bool = True,
+    is_admin: Optional[bool] = None,
     preview_only: bool = True,
     confirm: bool = False,
 ) -> Dict[str, int]:
@@ -465,13 +472,17 @@ def cleanup_cascade(
         old_parse_hash: Optional old main parse hash (auto-filled from pointers if None)
         model_tag: Optional embed model tag limiter
         user_id: Optional user ID for tenant scoping
-        is_admin: Whether caller is admin (no user_id filter)
+        is_admin: Whether caller is admin (None to fallback to context, defaults to True
+                   for system-level version promotion operations)
         preview_only: If True, only plan counts
         confirm: If True, execute deletions
 
     Returns:
         Deleted (or planned) counts per table scope
     """
+    # Default to admin=True for system-level version promotion operations
+    if is_admin is None:
+        is_admin = True
     user_scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
     user_id = user_scope.user_id
     is_admin = user_scope.is_admin

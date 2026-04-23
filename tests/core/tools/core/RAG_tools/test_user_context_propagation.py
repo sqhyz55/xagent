@@ -19,6 +19,22 @@ def test_resolve_user_scope_prefers_explicit_values() -> None:
     assert resolved.is_admin is True
 
 
+def test_resolve_user_scope_none_falls_back_to_context() -> None:
+    """When user_id and is_admin are both None, should fall back to context."""
+    with user_scope_context(user_id=42, is_admin=True):
+        resolved = resolve_user_scope(user_id=None, is_admin=None)
+    assert resolved.user_id == 42
+    assert resolved.is_admin is True
+
+
+def test_resolve_user_scope_explicit_false_is_admin() -> None:
+    """Explicit is_admin=False should not fall back to context even if context has True."""
+    with user_scope_context(user_id=10, is_admin=True):
+        resolved = resolve_user_scope(user_id=None, is_admin=False)
+    assert resolved.user_id is None
+    assert resolved.is_admin is False
+
+
 def test_user_scope_context_resets_after_exit() -> None:
     """Context should be restored after exiting scope manager."""
     before = get_user_scope()

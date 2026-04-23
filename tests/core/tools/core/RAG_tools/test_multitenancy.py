@@ -90,7 +90,7 @@ class TestUserPermissions:
     def test_context_user_filter_without_explicit_args(self):
         """Context user scope should apply when explicit args are absent."""
         with user_scope_context(user_id=42, is_admin=False):
-            filter_str = UserPermissions.get_user_filter(user_id=None, is_admin=False)
+            filter_str = UserPermissions.get_user_filter(user_id=None, is_admin=None)
         assert filter_str == "user_id == 42"
 
     def test_can_access_data_admin(self):
