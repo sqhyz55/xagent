@@ -59,26 +59,24 @@ def _build_collection_filter(
     Adds user_id filtering only when the target table contains a user_id column.
     """
     base: Dict[str, str] = {"collection": collection}
-    base_expr = build_lancedb_filter_expression(base, skip_user_filter=True)
     table = None
     try:
         table = conn.open_table(table_name)
         if not is_admin and user_id is not None:
             if _table_has_column(table, "user_id"):
+                base_expr = build_lancedb_filter_expression(
+                    base, user_id=user_id, is_admin=is_admin, skip_user_filter=True
+                )
                 user_expr = build_user_id_filter_for_table(table, int(user_id))
                 return f"{base_expr} AND {user_expr}"
-    except Exception:
-        # If schema probing fails, keep explicit tenant scope when available.
-        # For unauthenticated non-admin users, preserve deny-all fallback behavior.
-        if not is_admin and user_id is not None:
-            user_expr = build_user_id_filter_for_table(None, int(user_id))
-            return f"{base_expr} AND {user_expr}"
-        if not is_admin and user_id is None:
+            # Legacy schemas without user_id must remain compatible.
             return build_lancedb_filter_expression(base)
-        return base_expr
+        return build_lancedb_filter_expression(base, user_id=user_id, is_admin=is_admin)
+    except Exception:
+        # If table introspection fails, keep tenant-safe fallback.
+        return build_lancedb_filter_expression(base, user_id=user_id, is_admin=is_admin)
     finally:
         _safe_close_table(table)
-    return base_expr
 
 
 def _build_document_filter(
@@ -92,24 +90,24 @@ def _build_document_filter(
 ) -> str:
     """Build a safe filter for document-scoped deletion."""
     base: Dict[str, str] = {"collection": collection, "doc_id": doc_id}
-    base_expr = build_lancedb_filter_expression(base, skip_user_filter=True)
     table = None
     try:
         table = conn.open_table(table_name)
         if not is_admin and user_id is not None:
             if _table_has_column(table, "user_id"):
+                base_expr = build_lancedb_filter_expression(
+                    base, user_id=user_id, is_admin=is_admin, skip_user_filter=True
+                )
                 user_expr = build_user_id_filter_for_table(table, int(user_id))
                 return f"{base_expr} AND {user_expr}"
-    except Exception:
-        if not is_admin and user_id is not None:
-            user_expr = build_user_id_filter_for_table(None, int(user_id))
-            return f"{base_expr} AND {user_expr}"
-        if not is_admin and user_id is None:
+            # Legacy schemas without user_id must remain compatible.
             return build_lancedb_filter_expression(base)
-        return base_expr
+        return build_lancedb_filter_expression(base, user_id=user_id, is_admin=is_admin)
+    except Exception:
+        # If table introspection fails, keep tenant-safe fallback.
+        return build_lancedb_filter_expression(base, user_id=user_id, is_admin=is_admin)
     finally:
         _safe_close_table(table)
-    return base_expr
 
 
 def _append_user_filter_if_needed(
@@ -334,6 +332,9 @@ def _delete_by_predicates(
             "documents",
         ) or name.startswith("embeddings_"):
             continue
+        if name.startswith("embeddings_"):
+            # Already handled in the explicit embeddings pass above.
+            continue
         if name not in table_names:
             deleted[name] = 0
             continue
@@ -531,7 +532,9 @@ def cleanup_cascade(
                 "doc_id": doc_id,
                 "parse_hash": old_parse_hash,
             }
-            base = build_lancedb_filter_expression(base_filters)
+            base = build_lancedb_filter_expression(
+                base_filters, user_id=user_id, is_admin=is_admin, skip_user_filter=True
+            )
             predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
                 conn=conn,
                 base_expr=base,
@@ -584,7 +587,9 @@ def cleanup_cascade(
                 "doc_id": doc_id,
                 "parse_hash": old_parse_hash,
             }
-            base = build_lancedb_filter_expression(base_filters)
+            base = build_lancedb_filter_expression(
+                base_filters, user_id=user_id, is_admin=is_admin, skip_user_filter=True
+            )
             predicates["__embeddings__"] = _append_user_filter_for_embeddings_if_needed(
                 conn=conn,
                 base_expr=base,
