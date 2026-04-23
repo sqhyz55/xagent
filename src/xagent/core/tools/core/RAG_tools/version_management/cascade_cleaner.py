@@ -377,13 +377,6 @@ def cascade_delete(
     user_id = user_scope.user_id
     is_admin = user_scope.is_admin
 
-    # Check if both explicit params and context are missing (truly anonymous)
-    if user_id is None and not is_admin:
-        # This means no user_id in context AND no explicit is_admin=True
-        raise CascadeCleanupError(
-            "Anonymous users cannot perform cascade delete operations"
-        )
-
     if target == "document" and not doc_id:
         raise CascadeCleanupError("doc_id is required for document cascade delete")
 
