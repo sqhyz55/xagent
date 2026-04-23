@@ -66,6 +66,7 @@ from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     generate_deterministic_doc_id,
 )
+from ...core.tools.core.RAG_tools.utils.user_scope import user_scope_context
 from ..auth_dependencies import get_current_user
 from ..config import (
     MAX_FILE_SIZE,
@@ -137,6 +138,30 @@ def handle_kb_exceptions(func: T) -> T:
                 status_code=500,
                 detail=f"服务器内部错误: {str(e)}",
             )
+
+    return cast(T, wrapper)
+
+
+def with_kb_user_scope(func: T) -> T:
+    """Wrap route handlers with request user scope context."""
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        user = kwargs.get("_user")
+        if user is None:
+            for arg in args:
+                if hasattr(arg, "id") and hasattr(arg, "is_admin"):
+                    user = arg
+                    break
+
+        if user is None:
+            return await func(*args, **kwargs)
+
+        with user_scope_context(
+            user_id=int(getattr(user, "id")),
+            is_admin=bool(getattr(user, "is_admin", False)),
+        ):
+            return await func(*args, **kwargs)
 
     return cast(T, wrapper)
 
@@ -228,6 +253,7 @@ async def save_collection_config(
     "/ingest",
     response_model=IngestionResult,
 )
+@with_kb_user_scope
 @handle_kb_exceptions
 async def ingest(
     collection: str = Form(None),
@@ -616,6 +642,7 @@ async def ingest_cloud(
     "/collections",
     response_model=ListCollectionsResult,
 )
+@with_kb_user_scope
 @handle_kb_exceptions
 async def list_collections_api(
     _user: User = Depends(get_current_user),
@@ -875,6 +902,7 @@ async def list_collections_api(
     "/search",
     response_model=SearchPipelineResult,
 )
+@with_kb_user_scope
 @handle_kb_exceptions
 async def search(
     collection: str = Form(..., description="Target collection to search within"),
@@ -1007,6 +1035,7 @@ async def search(
     "/ingest-web",
     response_model=WebIngestionResult,
 )
+@with_kb_user_scope
 @handle_kb_exceptions
 async def ingest_web(
     collection: str = Form(..., description="Target collection name"),
@@ -1725,6 +1754,7 @@ def _perform_kb_collection_delete(
 @kb_router.delete(
     "/collections/{collection_name}",
 )
+@with_kb_user_scope
 @handle_kb_exceptions
 async def delete_collection_api(
     collection_name: str,
@@ -1767,6 +1797,7 @@ async def delete_collection_api(
     "/collections/batch-delete",
     response_model=BatchDeleteCollectionsResponse,
 )
+@with_kb_user_scope
 async def batch_delete_collections_api(
     body: BatchDeleteCollectionsRequest,
     _user: User = Depends(get_current_user),

@@ -3,6 +3,7 @@
 from typing import Optional
 
 from ..core.config import UNAUTHENTICATED_NO_ACCESS_FILTER
+from .user_scope import resolve_user_scope
 
 
 class UserPermissions:
@@ -36,13 +37,15 @@ class UserPermissions:
             Legacy data (user_id = NULL) is only accessible to admin users.
             Regular users can only see data they explicitly own (user_id == their ID).
         """
-        if is_admin:
+        scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+
+        if scope.is_admin:
             # Admins can see all data (including NULL user_id legacy data)
             return None
-        elif user_id is not None:
+        elif scope.user_id is not None:
             # Regular users can ONLY see their own data
             # Legacy data (NULL user_id) is NOT visible to regular users
-            return f"user_id == {int(user_id)}"
+            return f"user_id == {int(scope.user_id)}"
         else:
             # Unauthenticated users cannot see any data
             return UserPermissions.get_no_access_filter()
@@ -66,15 +69,17 @@ class UserPermissions:
             Legacy data (data_user_id = NULL) is only accessible to admin users.
             Regular users can only access data they explicitly own.
         """
-        if is_admin:
+        scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+
+        if scope.is_admin:
             # Admins can access all data including legacy (NULL) data
             return True
-        if user_id is None:
+        if scope.user_id is None:
             # Unauthenticated users cannot access any data
             return False
         # Users can ONLY access their own data
         # Legacy data (NULL data_user_id) is NOT accessible to regular users
-        return data_user_id == user_id
+        return data_user_id == scope.user_id
 
     @staticmethod
     def get_write_user_id(user_id: Optional[int]) -> Optional[int]:
@@ -87,4 +92,4 @@ class UserPermissions:
         Returns:
             user_id to use for new data, None for legacy compatibility
         """
-        return user_id  # Always use current user_id for new data
+        return resolve_user_scope(user_id=user_id, is_admin=False).user_id

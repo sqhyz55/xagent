@@ -32,6 +32,7 @@ from ..retrieval.search_hybrid import _rrf_fusion, search_hybrid
 from ..retrieval.search_sparse import search_sparse
 from ..utils.config_utils import coerce_search_config
 from ..utils.model_resolver import resolve_embedding_adapter, resolve_rerank_adapter
+from ..utils.user_scope import resolve_user_scope
 
 logger = logging.getLogger(__name__)
 
@@ -509,6 +510,10 @@ def search_documents(
         EmbeddingAdapterError: Embedding model cannot be loaded.
         VectorValidationError: Query embedding fails and fallback is disabled.
     """
+
+    scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+    user_id = scope.user_id
+    is_admin = scope.is_admin
 
     cfg = (
         config

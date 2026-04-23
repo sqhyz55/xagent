@@ -51,6 +51,7 @@ from ..utils.embedding_utils import (
     normalize_single_embedding,
 )
 from ..utils.model_resolver import resolve_embedding_adapter
+from ..utils.user_scope import resolve_user_scope
 from ..vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
@@ -88,6 +89,10 @@ def run_document_ingestion(
     Returns:
         IngestionResult: Same contract as :func:`process_document`.
     """
+    scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+    user_id = scope.user_id
+    is_admin = scope.is_admin
+
     cfg = coerce_ingestion_config(ingestion_config)
     return process_document(
         collection,

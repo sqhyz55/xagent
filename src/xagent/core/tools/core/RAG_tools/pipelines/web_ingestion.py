@@ -7,6 +7,7 @@ import asyncio
 import concurrent.futures
 import logging
 import tempfile
+from contextvars import copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, TypedDict
@@ -21,6 +22,7 @@ from ..core.schemas import (
 from ..progress import get_progress_manager
 from ..utils.config_utils import coerce_ingestion_config
 from ..utils.string_utils import sanitize_for_doc_id
+from ..utils.user_scope import resolve_user_scope
 from ..web_crawler import WebCrawler
 from .document_ingestion import run_document_ingestion
 
@@ -77,6 +79,10 @@ async def run_web_ingestion(
         ValueError: If configuration is invalid
         RuntimeError: If ingestion fails critically
     """
+    scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+    user_id = scope.user_id
+    is_admin = scope.is_admin
+
     start_time = datetime.now(timezone.utc)
     warnings: list[str] = []
     failed_urls: dict[str, str] = {}
@@ -212,11 +218,12 @@ async def run_web_ingestion(
                             is_admin=is_admin,
                         )
 
-                    # Run ingestion in thread pool to avoid event loop conflicts
+                    # Run ingestion in thread pool while preserving ContextVar user scope
                     loop = asyncio.get_event_loop()
+                    context = copy_context()
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         ingest_result: IngestionResult = await loop.run_in_executor(
-                            executor, _ingest_file
+                            executor, lambda: context.run(_ingest_file)
                         )
 
                     # Track statistics

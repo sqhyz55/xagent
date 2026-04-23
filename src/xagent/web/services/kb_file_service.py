@@ -20,6 +20,7 @@ from ...core.tools.core.RAG_tools.utils.string_utils import (
     build_lancedb_filter_expression,
 )
 from ...core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
+from ...core.tools.core.RAG_tools.utils.user_scope import resolve_user_scope
 from ...providers.vector_store.lancedb import get_connection_from_env
 from ..models.uploaded_file import UploadedFile
 
@@ -29,13 +30,17 @@ logger = logging.getLogger(__name__)
 def upsert_uploaded_file_record(
     db: Session,
     *,
-    user_id: int,
+    user_id: Optional[int],
     filename: str,
     storage_path: Path,
     mime_type: Optional[str],
     file_size: int,
 ) -> UploadedFile:
     """Create or refresh an ``UploadedFile`` row for a stored file."""
+    scope = resolve_user_scope(user_id=user_id, is_admin=False)
+    if scope.user_id is None:
+        raise ValueError("user_id is required for UploadedFile upsert")
+
     storage_path_str = str(storage_path)
     existing = (
         db.query(UploadedFile)
@@ -51,7 +56,7 @@ def upsert_uploaded_file_record(
         file_record = existing
     else:
         file_record = UploadedFile(
-            user_id=user_id,
+            user_id=scope.user_id,
             filename=filename,
             storage_path=storage_path_str,
             mime_type=mime_type,
@@ -66,7 +71,7 @@ def upsert_uploaded_file_record(
 
 def list_documents_for_user(
     *,
-    user_id: int,
+    user_id: Optional[int] = None,
     is_admin: bool,
     collection_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
@@ -82,7 +87,10 @@ def list_documents_for_user(
             base_filter = build_lancedb_filter_expression(
                 {"collection": collection_name}
             )
-        user_filter = UserPermissions.get_user_filter(user_id, is_admin=is_admin)
+        scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+        user_filter = UserPermissions.get_user_filter(
+            scope.user_id, is_admin=scope.is_admin
+        )
         combined_filter = (
             f"({base_filter}) and ({user_filter})"
             if user_filter and base_filter
@@ -97,16 +105,20 @@ def list_documents_for_user(
 
 
 def build_uploaded_filename_map(
-    db: Session, *, user_id: int, file_ids: List[str]
+    db: Session, *, user_id: Optional[int], file_ids: List[str]
 ) -> Dict[str, str]:
     """Resolve ``file_id`` values to current uploaded filenames."""
+    scope = resolve_user_scope(user_id=user_id, is_admin=False)
+    if scope.user_id is None:
+        return {}
+
     normalized_file_ids = sorted({file_id for file_id in file_ids if file_id})
     if not normalized_file_ids:
         return {}
     records = (
         db.query(UploadedFile)
         .filter(
-            UploadedFile.user_id == user_id,
+            UploadedFile.user_id == scope.user_id,
             UploadedFile.file_id.in_(normalized_file_ids),
         )
         .all()
@@ -170,9 +182,13 @@ def delete_uploaded_file_if_orphaned(
     db: Session,
     *,
     file_id: str,
-    user_id: int,
+    user_id: Optional[int],
     remaining_file_ids: set[str],
 ) -> bool:
+    scope = resolve_user_scope(user_id=user_id, is_admin=False)
+    if scope.user_id is None:
+        return False
+
     """Delete uploaded file row and local file when no documents still reference it.
 
     Args:
@@ -190,7 +206,7 @@ def delete_uploaded_file_if_orphaned(
     file_record = (
         db.query(UploadedFile)
         .filter(
-            UploadedFile.user_id == user_id,
+            UploadedFile.user_id == scope.user_id,
             UploadedFile.file_id == file_id,
         )
         .first()

@@ -39,6 +39,7 @@ from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_store_raw_connection,
 )
 from xagent.core.tools.core.RAG_tools.utils.user_permissions import UserPermissions
+from xagent.core.tools.core.RAG_tools.utils.user_scope import user_scope_context
 from xagent.core.tools.core.RAG_tools.vector_storage.vector_manager import (
     read_chunks_for_embedding,
     write_vectors_to_db,
@@ -85,6 +86,12 @@ class TestUserPermissions:
         """Unauthenticated users cannot see any data."""
         filter_str = UserPermissions.get_user_filter(user_id=None, is_admin=False)
         assert filter_str == UserPermissions.get_no_access_filter()
+
+    def test_context_user_filter_without_explicit_args(self):
+        """Context user scope should apply when explicit args are absent."""
+        with user_scope_context(user_id=42, is_admin=False):
+            filter_str = UserPermissions.get_user_filter(user_id=None, is_admin=False)
+        assert filter_str == "user_id == 42"
 
     def test_can_access_data_admin(self):
         """Admin can access all data."""
@@ -208,6 +215,21 @@ class TestMultiTenancyCollections:
         assert total_docs == 5
         # Owners should only contain the current user
         assert all(c.owners == [2] for c in result.collections)
+
+    @pytest.mark.asyncio
+    async def test_list_collections_resolves_user_scope_from_context(
+        self, temp_lancedb_dir: str
+    ) -> None:
+        """list_collections should work without explicit user_id when context is set."""
+        self._insert_test_documents(user_id=9)
+        self._insert_test_documents(user_id=10)
+
+        with user_scope_context(user_id=9, is_admin=False):
+            result = await list_collections()
+
+        assert result.status == "success"
+        total_docs = sum(c.documents for c in result.collections)
+        assert total_docs == 5
 
 
 class TestMultiTenancySearch:

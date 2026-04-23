@@ -27,6 +27,7 @@ from ..utils.string_utils import (
     build_user_id_filter_for_table,
     escape_lancedb_string,
 )
+from ..utils.user_scope import resolve_user_scope
 from .main_pointer_manager import get_main_pointer
 
 logger = logging.getLogger(__name__)
@@ -372,6 +373,10 @@ def cascade_delete(
     Returns:
         Mapping of table name -> deleted (or planned) row count.
     """
+    user_scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+    user_id = user_scope.user_id
+    is_admin = user_scope.is_admin
+
     if target == "document" and not doc_id:
         raise CascadeCleanupError("doc_id is required for document cascade delete")
 
@@ -467,6 +472,10 @@ def cleanup_cascade(
     Returns:
         Deleted (or planned) counts per table scope
     """
+    user_scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
+    user_id = user_scope.user_id
+    is_admin = user_scope.is_admin
+
     conn = get_vector_store_raw_connection()
     ensure_documents_table(conn)
     ensure_parses_table(conn)
