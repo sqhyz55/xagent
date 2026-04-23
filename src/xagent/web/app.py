@@ -545,6 +545,29 @@ async def startup_event() -> None:
         asyncio.create_task(run_uploaded_file_reconcile_background())
         logger.info("Started background uploaded files reconcile task")
 
+        # Start background task without awaiting
+        asyncio.create_task(run_uploaded_file_reconcile_background())
+        logger.info("Started background uploaded files reconcile task")
+
+        # Clean up orphaned temporary files from interrupted atomic replacements
+        try:
+            from .api.kb import cleanup_orphaned_temp_files
+
+            def _run_temp_file_cleanup() -> int:
+                return cleanup_orphaned_temp_files()
+
+            cleaned_count = await asyncio.to_thread(_run_temp_file_cleanup)
+            if cleaned_count > 0:
+                logger.info(
+                    "Startup cleanup: removed %d orphaned temporary file(s)",
+                    cleaned_count,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Temporary file cleanup skipped due to error: %s",
+                e,
+            )
+
     # Warmup sandbox manager
     from .sandbox_manager import get_sandbox_manager
 
