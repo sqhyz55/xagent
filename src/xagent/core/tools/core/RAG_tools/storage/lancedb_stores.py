@@ -717,6 +717,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             confirm=True,
             conn=conn,
         )
+        # Ensure subsequent reads don't observe stale cached table handles.
         self.invalidate_table_cache()
         return counts
 
@@ -741,6 +742,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             confirm=True,
             conn=conn,
         )
+        # Ensure subsequent reads don't observe stale cached table handles.
         self.invalidate_table_cache()
         return counts
 

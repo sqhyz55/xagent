@@ -542,9 +542,6 @@ async def startup_event() -> None:
             except Exception as e:  # noqa: BLE001
                 logger.warning("Uploaded files reconcile failed: %s", e)
 
-        asyncio.create_task(run_uploaded_file_reconcile_background())
-        logger.info("Started background uploaded files reconcile task")
-
         # Start background task without awaiting
         asyncio.create_task(run_uploaded_file_reconcile_background())
         logger.info("Started background uploaded files reconcile task")
