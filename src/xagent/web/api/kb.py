@@ -2678,27 +2678,9 @@ def _perform_kb_collection_delete(
 
         _check_can_delete_collection(safe_collection, user_id, is_admin)
 
-        physical_cleanup = delete_collection_physical_dir(
-            user_id=user_id,
-            collection_name=safe_collection,
+        collection_dir = get_upload_path(
+            "", user_id=user_id, collection=safe_collection
         )
-        physical_cleanup_status = physical_cleanup.status
-        physical_cleanup_error = physical_cleanup.error
-        collection_dir = physical_cleanup.collection_dir
-        if physical_cleanup_status == "failed":
-            if (
-                physical_cleanup_error
-                == "Another operation is in progress; please try again later."
-            ):
-                raise HTTPException(status_code=409, detail=physical_cleanup_error)
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Failed to delete collection: cannot move physical files. "
-                    f"Error: {physical_cleanup_error}. "
-                    "Please ensure the directory is not in use and you have proper permissions."
-                ),
-            )
 
         vector_store = get_vector_index_store()
         collection_records = vector_store.list_document_records(
@@ -2717,6 +2699,15 @@ def _perform_kb_collection_delete(
         # Re-check right before vector deletion to reduce TOCTTOU window.
         _check_can_delete_collection(safe_collection, user_id, is_admin)
         result = delete_collection(safe_collection, user_id, is_admin)
+
+        physical_cleanup = delete_collection_physical_dir(
+            user_id=user_id,
+            collection_name=safe_collection,
+        )
+        physical_cleanup_status = physical_cleanup.status
+        physical_cleanup_error = physical_cleanup.error
+        if physical_cleanup.collection_dir is not None:
+            collection_dir = physical_cleanup.collection_dir
 
         if result.status == "error":
             cleanup_warnings = list(result.warnings) if result.warnings else []
@@ -2751,13 +2742,21 @@ def _perform_kb_collection_delete(
             )
             if file_id
         }
-        deleted_uploaded_files = delete_collection_uploaded_files(
-            db,
-            user_id=user_id,
-            collection_file_ids=collection_file_ids,
-            remaining_file_ids=remaining_file_ids,
-            collection_dir=collection_dir,
-        )
+        deleted_uploaded_files = 0
+        if physical_cleanup_status in {"success", "not_found"}:
+            deleted_uploaded_files = delete_collection_uploaded_files(
+                db,
+                user_id=user_id,
+                collection_file_ids=collection_file_ids,
+                remaining_file_ids=remaining_file_ids,
+                collection_dir=collection_dir,
+            )
+        else:
+            logger.warning(
+                "Preserving UploadedFile records for collection %s because physical cleanup status is %s",
+                safe_collection,
+                physical_cleanup_status,
+            )
         if deleted_uploaded_files:
             logger.info(
                 "Deleted %s UploadedFile record(s) for collection %s",

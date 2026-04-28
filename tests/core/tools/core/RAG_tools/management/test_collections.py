@@ -39,6 +39,7 @@ from src.xagent.core.tools.core.RAG_tools.management import (
 )
 from src.xagent.core.tools.core.RAG_tools.management.status import load_ingestion_status
 from src.xagent.core.tools.core.RAG_tools.storage import get_vector_index_store
+from src.xagent.core.tools.core.RAG_tools.storage.contracts import DocumentRecord
 from src.xagent.core.tools.core.RAG_tools.storage.factory import get_metadata_store
 from src.xagent.providers.vector_store.lancedb import get_connection_from_env
 from xagent.core.tools.core.RAG_tools.file.register_document import register_document
@@ -548,11 +549,83 @@ def test_delete_collection_preserves_partial_vector_cleanup(
         lambda **kwargs: {},
     )
 
-    result = delete_collection("demo", user_id=1, is_admin=False)
+    result = delete_collection("demo", user_id=1, is_admin=True)
 
     assert result.status == "partial_success"
     assert result.deleted_counts == {"documents": 1}
     assert result.warnings == [warnings_from_store]
+
+
+def test_delete_collection_non_admin_uses_document_scoped_deletes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-admin collection delete should avoid collection-wide legacy cleanup."""
+
+    class FakeVectorStore:
+        def __init__(self) -> None:
+            self.document_delete_calls: list[tuple[str, str, int | None, bool]] = []
+
+        def list_document_records(self, **_kwargs: object) -> list[DocumentRecord]:
+            return [
+                DocumentRecord(doc_id="doc-1", file_id=None, source_path=None),
+                DocumentRecord(doc_id="doc-2", file_id=None, source_path=None),
+            ]
+
+        def delete_collection_data(self, **_kwargs: object) -> dict[str, int]:
+            raise AssertionError(
+                "non-admin delete must not use collection-wide cleanup"
+            )
+
+        def delete_document_data(
+            self,
+            *,
+            collection_name: str,
+            doc_id: str,
+            user_id: int | None,
+            is_admin: bool,
+        ) -> dict[str, int]:
+            self.document_delete_calls.append(
+                (collection_name, doc_id, user_id, is_admin)
+            )
+            return {"chunks": 1}
+
+    store = FakeVectorStore()
+    monkeypatch.setattr(collections_module, "get_vector_index_store", lambda: store)
+    monkeypatch.setattr(
+        collections_module,
+        "clear_ingestion_status",
+        lambda *args, **kwargs: None,
+    )
+
+    result = delete_collection("shared", user_id=7, is_admin=False)
+
+    assert result.status == "success"
+    assert store.document_delete_calls == [
+        ("shared", "doc-1", 7, False),
+        ("shared", "doc-2", 7, False),
+    ]
+
+
+def test_delete_collection_reports_success_when_only_orphan_artifacts_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting orphan vector artifacts without documents is still success."""
+
+    class FakeVectorStore:
+        def list_document_records(self, **_kwargs: object) -> list[DocumentRecord]:
+            return []
+
+        def delete_collection_data(self, **_kwargs: object) -> dict[str, int]:
+            return {"documents": 0, "chunks": 2, "embeddings_m1": 3}
+
+    monkeypatch.setattr(
+        collections_module, "get_vector_index_store", lambda: FakeVectorStore()
+    )
+
+    result = delete_collection("orphaned", user_id=None, is_admin=True)
+
+    assert result.status == "success"
+    assert result.deleted_counts == {"chunks": 2, "embeddings_m1": 3}
 
 
 def test_e2e_register_and_list_documents_with_legacy_empty_string_file_id(

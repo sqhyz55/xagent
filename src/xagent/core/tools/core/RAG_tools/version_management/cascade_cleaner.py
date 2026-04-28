@@ -70,7 +70,7 @@ def _build_collection_filter(
                 user_expr = build_user_id_filter_for_table(table, int(user_id))
                 return f"{base_expr} AND {user_expr}"
             # Legacy schemas without user_id must remain compatible.
-            return build_lancedb_filter_expression(base)
+            return build_lancedb_filter_expression(base, skip_user_filter=True)
         return build_lancedb_filter_expression(base, user_id=user_id, is_admin=is_admin)
     except Exception:
         # If table introspection fails, keep tenant-safe fallback.
@@ -101,7 +101,7 @@ def _build_document_filter(
                 user_expr = build_user_id_filter_for_table(table, int(user_id))
                 return f"{base_expr} AND {user_expr}"
             # Legacy schemas without user_id must remain compatible.
-            return build_lancedb_filter_expression(base)
+            return build_lancedb_filter_expression(base, skip_user_filter=True)
         return build_lancedb_filter_expression(base, user_id=user_id, is_admin=is_admin)
     except Exception:
         # If table introspection fails, keep tenant-safe fallback.
@@ -362,6 +362,7 @@ def cascade_delete(
     model_tag: Optional[str] = None,
     preview_only: bool = True,
     confirm: bool = False,
+    conn: Any | None = None,
 ) -> Dict[str, int]:
     """Unified cascade delete for collection or document targets.
 
@@ -388,7 +389,8 @@ def cascade_delete(
     if target == "document" and not doc_id:
         raise CascadeCleanupError("doc_id is required for document cascade delete")
 
-    conn = get_vector_store_raw_connection()
+    if conn is None:
+        conn = get_vector_store_raw_connection()
     ensure_documents_table(conn)
     ensure_parses_table(conn)
     ensure_chunks_table(conn)

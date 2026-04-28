@@ -11,7 +11,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import xagent.web.services.kb_file_service as kb_file_service
 from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+    ensure_chunks_table,
     ensure_documents_table,
 )
 from xagent.core.tools.core.RAG_tools.management.status import write_ingestion_status
@@ -107,7 +109,128 @@ def test_aggregate_uploaded_file_statuses_returns_expected_priority(reconcile_en
     db.close()
 
 
-def test_reconcile_uploaded_files_deletes_stale_failed_and_unknown(reconcile_env):
+def test_aggregate_uploaded_file_statuses_treats_legacy_indexed_file_as_success(
+    reconcile_env,
+):
+    docs_table, session_local, uploads_dir = reconcile_env
+    ensure_chunks_table(get_connection_from_env())
+    chunks_table = get_connection_from_env().open_table("chunks")
+    _create_user(session_local, user_id=1)
+
+    file_path = uploads_dir / "user_1" / "kb" / "legacy.md"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text("legacy searchable content", encoding="utf-8")
+
+    db = session_local()
+    file_record = UploadedFile(
+        user_id=1,
+        filename="legacy.md",
+        storage_path=str(file_path),
+        mime_type="text/markdown",
+        file_size=file_path.stat().st_size,
+    )
+    db.add(file_record)
+    db.commit()
+    db.refresh(file_record)
+
+    docs_table.add(
+        [
+            {
+                "collection": "kb",
+                "doc_id": "doc-legacy",
+                "file_id": file_record.file_id,
+                "source_path": str(file_path),
+                "user_id": 1,
+            }
+        ]
+    )
+    chunks_table.add(
+        [
+            {
+                "collection": "kb",
+                "doc_id": "doc-legacy",
+                "parse_hash": "parse-legacy",
+                "chunk_id": "chunk-1",
+                "index": 0,
+                "text": "legacy searchable content",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "chunk-hash",
+                "config_hash": "config-hash",
+                "created_at": datetime.now(timezone.utc),
+                "metadata": "{}",
+                "user_id": 1,
+            }
+        ]
+    )
+
+    status_map = aggregate_uploaded_file_statuses(
+        file_ids=[file_record.file_id],
+        user_id=1,
+        is_admin=False,
+        use_cache=False,
+    )
+
+    assert status_map[file_record.file_id] == "SUCCESS"
+    db.close()
+
+
+def test_indexed_status_fallback_skips_embeddings_after_chunks_cover_candidates(
+    reconcile_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Chunks are sufficient to prove legacy documents are searchable."""
+    _docs_table, _session_local, _uploads_dir = reconcile_env
+    conn = get_connection_from_env()
+    ensure_chunks_table(conn)
+    chunks_table = conn.open_table("chunks")
+    chunks_table.add(
+        [
+            {
+                "collection": "kb",
+                "doc_id": "doc-legacy",
+                "parse_hash": "parse-legacy",
+                "chunk_id": "chunk-1",
+                "index": 0,
+                "text": "legacy searchable content",
+                "page_number": 1,
+                "section": "",
+                "anchor": "",
+                "json_path": "",
+                "chunk_hash": "chunk-hash",
+                "config_hash": "config-hash",
+                "created_at": datetime.now(timezone.utc),
+                "metadata": "{}",
+                "user_id": 1,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        kb_file_service,
+        "list_embeddings_table_names",
+        lambda _conn: ["embeddings_should_not_open"],
+    )
+
+    opened_tables: list[str] = []
+
+    class RecordingConnection:
+        def open_table(self, table_name: str):
+            opened_tables.append(table_name)
+            return conn.open_table(table_name)
+
+    refs = kb_file_service._load_indexed_doc_refs(
+        RecordingConnection(),
+        collections=["kb"],
+        doc_refs_by_file_id={"file-1": [("kb", "doc-legacy")]},
+        user_filter="user_id == 1",
+    )
+
+    assert refs == {("kb", "doc-legacy")}
+    assert opened_tables == ["chunks"]
+
+
+def test_reconcile_uploaded_files_deletes_only_stale_failed_by_default(reconcile_env):
     docs_table, session_local, uploads_dir = reconcile_env
     _create_user(session_local, user_id=1)
     db = session_local()
@@ -198,15 +321,15 @@ def test_reconcile_uploaded_files_deletes_stale_failed_and_unknown(reconcile_env
     )
 
     assert result["stale_candidates"] == 2
-    assert result["deleted"] == 2
+    assert result["deleted"] == 1
     assert result["cleanup_errors"] == 0
     assert not failed_path.exists()
-    assert not unknown_path.exists()
+    assert unknown_path.exists()
     assert success_path.exists()
 
     remaining = db.query(UploadedFile).all()
-    assert len(remaining) == 1
-    assert remaining[0].file_id == success_file.file_id
+    remaining_file_ids = {record.file_id for record in remaining}
+    assert remaining_file_ids == {unknown_file.file_id, success_file.file_id}
 
     refreshed_docs_table = get_connection_from_env().open_table("documents")
     rows = refreshed_docs_table.search().where("collection == 'kb'").to_list()

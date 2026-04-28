@@ -18,7 +18,10 @@ from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
 )
 from ...core.tools.core.RAG_tools.management.status import load_ingestion_status
 from ...core.tools.core.RAG_tools.storage.contracts import DocumentRecord
-from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
+from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+    list_embeddings_table_names,
+    query_to_list,
+)
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     build_lancedb_filter_expression,
     escape_lancedb_string,
@@ -34,6 +37,8 @@ from ..models.uploaded_file import UploadedFile
 logger = logging.getLogger(__name__)
 
 _FILE_STATUS_BATCH_SIZE = 200
+_STALE_FILE_STATUSES = {"FAILED", "UNKNOWN", "RUNNING"}
+_DEFAULT_DELETABLE_STALE_STATUSES = {"FAILED"}
 
 
 class _FileStatusCache:
@@ -298,12 +303,94 @@ def _build_file_id_in_filter(file_ids: List[str]) -> str:
     return f"file_id IN ({', '.join(escaped_ids)})"
 
 
+def _build_doc_id_in_filter(doc_ids: List[str]) -> str:
+    escaped_ids = [f"'{escape_lancedb_string(doc_id)}'" for doc_id in doc_ids]
+    return f"doc_id IN ({', '.join(escaped_ids)})"
+
+
 def _combine_lancedb_filters(
     base_filter: Optional[str], user_filter: Optional[str]
 ) -> Optional[str]:
     if base_filter and user_filter:
         return f"({base_filter}) and ({user_filter})"
     return base_filter or user_filter
+
+
+def _load_indexed_doc_refs(
+    conn: Any,
+    *,
+    collections: List[str],
+    doc_refs_by_file_id: Dict[str, List[tuple[str, str]]],
+    user_filter: Optional[str],
+) -> set[tuple[str, str]]:
+    """Return document refs that have searchable artifacts in LanceDB.
+
+    Legacy deployments may not have ingestion status rows. If chunks or
+    embeddings exist for a document, the file was already indexed enough to be
+    user-visible and should be treated as successful for file-list status.
+    """
+    indexed_refs: set[tuple[str, str]] = set()
+    doc_ids_by_collection: Dict[str, set[str]] = {
+        collection: set() for collection in collections
+    }
+    for doc_refs in doc_refs_by_file_id.values():
+        for collection, doc_id in doc_refs:
+            if collection in doc_ids_by_collection:
+                doc_ids_by_collection[collection].add(doc_id)
+
+    candidate_refs = {
+        (collection, doc_id)
+        for collection, doc_ids in doc_ids_by_collection.items()
+        for doc_id in doc_ids
+    }
+    if not candidate_refs:
+        return indexed_refs
+
+    candidate_tables = ["chunks", *list_embeddings_table_names(conn)]
+    for table_name in candidate_tables:
+        if indexed_refs.issuperset(candidate_refs):
+            return indexed_refs
+        try:
+            table = conn.open_table(table_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Skipping indexed status fallback table '%s': %s", table_name, exc
+            )
+            continue
+
+        for collection, doc_ids in doc_ids_by_collection.items():
+            pending_doc_ids = {
+                doc_id for doc_id in doc_ids if (collection, doc_id) not in indexed_refs
+            }
+            if not pending_doc_ids:
+                continue
+            collection_filter = build_lancedb_filter_expression(
+                {"collection": collection},
+                skip_user_filter=True,
+            )
+            doc_filter = _build_doc_id_in_filter(sorted(pending_doc_ids))
+            combined_filter = _combine_lancedb_filters(
+                f"({collection_filter}) and ({doc_filter})", user_filter
+            )
+            try:
+                query = table.search().where(combined_filter)
+                rows = query_to_list(query.select(["collection", "doc_id"]).limit(-1))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Failed indexed status fallback query on '%s' for collection '%s': %s",
+                    table_name,
+                    collection,
+                    exc,
+                )
+                continue
+
+            for row in rows:
+                row_collection = str(row.get("collection") or "").strip()
+                row_doc_id = str(row.get("doc_id") or "").strip()
+                if row_collection and row_doc_id:
+                    indexed_refs.add((row_collection, row_doc_id))
+
+    return indexed_refs
 
 
 def aggregate_uploaded_file_statuses(
@@ -380,6 +467,13 @@ def aggregate_uploaded_file_statuses(
             if doc_id and status:
                 status_by_doc[(collection, doc_id)] = status
 
+    indexed_doc_refs = _load_indexed_doc_refs(
+        conn,
+        collections=collections,
+        doc_refs_by_file_id=doc_refs_by_file_id,
+        user_filter=user_filter,
+    )
+
     status_map: Dict[str, str] = {}
     for file_id, doc_refs in doc_refs_by_file_id.items():
         if not doc_refs:
@@ -402,6 +496,11 @@ def aggregate_uploaded_file_statuses(
         if has_success:
             status_map[file_id] = "SUCCESS"
             continue
+        if any(
+            (collection, doc_id) in indexed_doc_refs for collection, doc_id in doc_refs
+        ):
+            status_map[file_id] = "SUCCESS"
+            continue
         status_map[file_id] = "UNKNOWN"
 
     # Store in cache for future requests
@@ -418,8 +517,15 @@ def reconcile_uploaded_files(
     is_admin: bool,
     stale_ttl_hours: int = 24 * 7,
     delete_stale: bool = True,
+    deletable_statuses: Optional[set[str]] = None,
 ) -> Dict[str, int]:
-    """Reconcile uploaded files with document + ingestion status state."""
+    """Reconcile uploaded files with document + ingestion status state.
+
+    Unknown and running statuses are intentionally report-only by default.
+    Historical deployments may lack complete ``documents.file_id`` or
+    ``ingestion_runs`` rows, so treating UNKNOWN/RUNNING as deletable would
+    turn migration gaps into user data loss.
+    """
     query = db.query(UploadedFile)
     if not is_admin:
         query = query.filter(UploadedFile.user_id == user_id)
@@ -437,14 +543,22 @@ def reconcile_uploaded_files(
     deleted = 0
     stale_candidates = 0
     cleanup_errors = 0
+    effective_deletable_statuses = {
+        status.upper()
+        for status in (
+            deletable_statuses
+            if deletable_statuses is not None
+            else _DEFAULT_DELETABLE_STALE_STATUSES
+        )
+    }
     conn = get_connection_from_env()
     ensure_documents_table(conn)
     documents_table = conn.open_table("documents")
     for record in uploaded_files:
         scanned += 1
         file_id = str(record.file_id)
-        status = status_map.get(file_id, "UNKNOWN")
-        if status not in {"FAILED", "UNKNOWN", "RUNNING"}:
+        status = status_map.get(file_id, "UNKNOWN").upper()
+        if status not in _STALE_FILE_STATUSES:
             continue
 
         created_at = getattr(record, "created_at", None)
@@ -463,6 +577,15 @@ def reconcile_uploaded_files(
 
         stale_candidates += 1
         if not delete_stale:
+            continue
+        if status not in effective_deletable_statuses:
+            logger.warning(
+                "Preserving stale UploadedFile with non-deletable status: "
+                "file_id=%s, status=%s, created_at=%s",
+                file_id,
+                status,
+                created_at,
+            )
             continue
 
         safe_file_id = escape_lancedb_string(file_id)
