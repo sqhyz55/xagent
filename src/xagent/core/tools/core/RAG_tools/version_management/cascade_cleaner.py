@@ -59,20 +59,26 @@ def _build_collection_filter(
     Adds user_id filtering only when the target table contains a user_id column.
     """
     base: Dict[str, str] = {"collection": collection}
+    base_expr = build_lancedb_filter_expression(base, skip_user_filter=True)
     table = None
     try:
         table = conn.open_table(table_name)
         if not is_admin and user_id is not None:
             if _table_has_column(table, "user_id"):
-                base_expr = build_lancedb_filter_expression(base)
                 user_expr = build_user_id_filter_for_table(table, int(user_id))
                 return f"{base_expr} AND {user_expr}"
     except Exception:
-        # If we cannot open the table here, fall back to base filter.
-        return build_lancedb_filter_expression(base)
+        # If schema probing fails, keep explicit tenant scope when available.
+        # For unauthenticated non-admin users, preserve deny-all fallback behavior.
+        if not is_admin and user_id is not None:
+            user_expr = build_user_id_filter_for_table(None, int(user_id))
+            return f"{base_expr} AND {user_expr}"
+        if not is_admin and user_id is None:
+            return build_lancedb_filter_expression(base)
+        return base_expr
     finally:
         _safe_close_table(table)
-    return build_lancedb_filter_expression(base)
+    return base_expr
 
 
 def _build_document_filter(
@@ -86,19 +92,24 @@ def _build_document_filter(
 ) -> str:
     """Build a safe filter for document-scoped deletion."""
     base: Dict[str, str] = {"collection": collection, "doc_id": doc_id}
+    base_expr = build_lancedb_filter_expression(base, skip_user_filter=True)
     table = None
     try:
         table = conn.open_table(table_name)
         if not is_admin and user_id is not None:
             if _table_has_column(table, "user_id"):
-                base_expr = build_lancedb_filter_expression(base)
                 user_expr = build_user_id_filter_for_table(table, int(user_id))
                 return f"{base_expr} AND {user_expr}"
     except Exception:
-        return build_lancedb_filter_expression(base)
+        if not is_admin and user_id is not None:
+            user_expr = build_user_id_filter_for_table(None, int(user_id))
+            return f"{base_expr} AND {user_expr}"
+        if not is_admin and user_id is None:
+            return build_lancedb_filter_expression(base)
+        return base_expr
     finally:
         _safe_close_table(table)
-    return build_lancedb_filter_expression(base)
+    return base_expr
 
 
 def _append_user_filter_if_needed(
@@ -325,7 +336,7 @@ def _delete_by_predicates(
             "main_pointers",
             "ingestion_runs",
             "documents",
-        ):
+        ) or name.startswith("embeddings_"):
             continue
         if name not in table_names:
             deleted[name] = 0
