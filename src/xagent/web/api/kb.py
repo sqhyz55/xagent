@@ -580,6 +580,7 @@ def _mark_uploaded_file_for_reindex(file_id: str) -> bool:
     """Clear ingestion run markers so changed file can be re-indexed."""
     try:
         from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
+            _safe_close_table,
             ensure_documents_table,
             ensure_ingestion_runs_table,
         )
@@ -592,26 +593,32 @@ def _mark_uploaded_file_for_reindex(file_id: str) -> bool:
         conn = get_connection_from_env()
         ensure_documents_table(conn)
         ensure_ingestion_runs_table(conn)
-        documents_table = conn.open_table("documents")
-        ingestion_runs_table = conn.open_table("ingestion_runs")
+        documents_table = None
+        ingestion_runs_table = None
+        try:
+            documents_table = conn.open_table("documents")
+            ingestion_runs_table = conn.open_table("ingestion_runs")
 
-        safe_file_id = escape_lancedb_string(file_id)
-        rows = query_to_list(
-            documents_table.search()
-            .where(f"file_id = '{safe_file_id}'")
-            .select(["collection", "doc_id"])
-            .limit(-1)
-        )
-        for row in rows:
-            collection = str(row.get("collection") or "").strip()
-            doc_id = str(row.get("doc_id") or "").strip()
-            if not collection or not doc_id:
-                continue
-            safe_collection = escape_lancedb_string(collection)
-            safe_doc_id = escape_lancedb_string(doc_id)
-            ingestion_runs_table.delete(
-                f"collection = '{safe_collection}' and doc_id = '{safe_doc_id}'"
+            safe_file_id = escape_lancedb_string(file_id)
+            rows = query_to_list(
+                documents_table.search()
+                .where(f"file_id = '{safe_file_id}'")
+                .select(["collection", "doc_id"])
+                .limit(-1)
             )
+            for row in rows:
+                collection = str(row.get("collection") or "").strip()
+                doc_id = str(row.get("doc_id") or "").strip()
+                if not collection or not doc_id:
+                    continue
+                safe_collection = escape_lancedb_string(collection)
+                safe_doc_id = escape_lancedb_string(doc_id)
+                ingestion_runs_table.delete(
+                    f"collection = '{safe_collection}' and doc_id = '{safe_doc_id}'"
+                )
+        finally:
+            _safe_close_table(documents_table)
+            _safe_close_table(ingestion_runs_table)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -654,8 +661,9 @@ def _refresh_existing_file_if_changed(
         context: Context string for logging (e.g., "in-memory cache", "cross-session")
 
     Returns:
-        FileHandlerResult if operation completed (success or skipped),
-        None if file content is unchanged and caller should continue processing.
+        FileHandlerResult when the existing file remains usable or was refreshed.
+        Returns None only when the existing file path no longer exists and the
+        caller should continue with normal new-file handling.
     """
     existing_path = Path(str(existing_record.storage_path))
     if not existing_path.exists():
@@ -2854,14 +2862,6 @@ async def delete_collection_api(
         bool(_user.is_admin),
         db,
     )
-    if result.status in ("success", "partial_success"):
-        try:
-            from ...core.tools.core.RAG_tools.storage.factory import get_metadata_store
-
-            metadata_store = get_metadata_store()
-            await metadata_store.delete_collection(collection_name)
-        except Exception as exc:
-            logger.debug("Failed to delete collection metadata: %s", exc)
     return result
 
 
@@ -2908,15 +2908,6 @@ async def batch_delete_collections_api(
                 result = _perform_kb_collection_delete(name, user_id, is_admin, db)
                 if result.status in ("success", "partial_success"):
                     deleted.append(name)
-                    try:
-                        from ...core.tools.core.RAG_tools.storage.factory import (
-                            get_metadata_store,
-                        )
-
-                        metadata_store = get_metadata_store()
-                        await metadata_store.delete_collection(name)
-                    except Exception as exc:
-                        logger.debug("Failed to delete collection metadata: %s", exc)
                 else:
                     failed.append(
                         BatchDeleteFailureItem(

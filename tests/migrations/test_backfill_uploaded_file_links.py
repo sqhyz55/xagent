@@ -49,6 +49,53 @@ def _create_user(db: Session, user_id: int = 1) -> None:
     db.commit()
 
 
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"collection": "", "doc_id": "doc-1"},
+        {"collection": None, "doc_id": "doc-1"},
+        {"collection": "kb", "doc_id": ""},
+        {"collection": "kb", "doc_id": None},
+    ],
+)
+def test_build_update_filter_rejects_missing_document_identity(row):
+    with pytest.raises(ValueError, match="collection and doc_id must be non-empty"):
+        backfill_uploaded_file_links._build_update_filter(row)
+
+
+def test_backfill_documents_file_links_skips_rows_with_missing_document_identity(
+    migration_env,
+):
+    conn, docs_table, SessionLocal, base_dir = migration_env
+    source_file = base_dir / "user_1" / "kb" / "missing_identity.md"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("content", encoding="utf-8")
+    docs_table.add(
+        [
+            {
+                "collection": "",
+                "doc_id": "",
+                "file_id": None,
+                "source_path": str(source_file),
+                "user_id": 1,
+            }
+        ]
+    )
+
+    db = SessionLocal()
+    _create_user(db, user_id=1)
+    db.close()
+
+    result = backfill_uploaded_file_links.backfill_documents_file_links(
+        dry_run=False,
+        conn=conn,
+    )
+
+    assert result["unbackfillable"] == 1
+    assert result["unbackfillable_samples"][0]["reason"] == "missing_document_identity"
+    assert result["failures"] == 0
+
+
 def test_backfill_documents_file_links_matches_existing_uploaded_file(migration_env):
     conn, docs_table, SessionLocal, base_dir = migration_env
     source_file = base_dir / "user_1" / "kb" / "page.md"

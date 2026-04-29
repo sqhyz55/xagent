@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from lancedb.db import DBConnection
 
 from xagent.core.tools.core.RAG_tools.LanceDB.schema_manager import (
+    _safe_close_table,
     ensure_documents_table,
 )
 from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
@@ -97,9 +98,18 @@ def _extract_user_id_from_source_path(source_path: str) -> Optional[int]:
         return None
 
 
+def _get_document_identity(row: dict[str, Any]) -> tuple[str, str]:
+    collection = str(row.get("collection") or "").strip()
+    doc_id = str(row.get("doc_id") or "").strip()
+    if not collection or not doc_id:
+        raise ValueError("collection and doc_id must be non-empty")
+    return collection, doc_id
+
+
 def _build_update_filter(row: dict[str, Any]) -> str:
-    collection = escape_lancedb_string(str(row.get("collection") or ""))
-    doc_id = escape_lancedb_string(str(row.get("doc_id") or ""))
+    collection_raw, doc_id_raw = _get_document_identity(row)
+    collection = escape_lancedb_string(collection_raw)
+    doc_id = escape_lancedb_string(doc_id_raw)
     return f"collection == '{collection}' and doc_id == '{doc_id}' and file_id IS NULL"
 
 
@@ -178,12 +188,6 @@ def backfill_documents_file_links(
     if conn is None:
         conn = get_connection_from_env()
 
-    ensure_documents_table(conn)
-    docs_table = conn.open_table("documents")
-
-    SessionLocal = get_session_local()
-    db = SessionLocal()
-
     stats: dict[str, Any] = {
         "dry_run": dry_run,
         "scanned": 0,
@@ -195,7 +199,15 @@ def backfill_documents_file_links(
         "iterations": 0,
     }
 
+    docs_table = None
+    db = None
     try:
+        ensure_documents_table(conn)
+        docs_table = conn.open_table("documents")
+
+        SessionLocal = get_session_local()
+        db = SessionLocal()
+
         while stats["iterations"] < _MAX_BACKFILL_ITERATIONS:
             stats["iterations"] += 1
             rows = query_to_list(
@@ -207,6 +219,25 @@ def backfill_documents_file_links(
             updated_in_batch = 0
             for row in rows:
                 stats["scanned"] += 1
+                try:
+                    _get_document_identity(row)
+                except ValueError as exc:
+                    stats["unbackfillable"] += 1
+                    if len(stats["unbackfillable_samples"]) < 20:
+                        stats["unbackfillable_samples"].append(
+                            {
+                                "collection": row.get("collection"),
+                                "doc_id": row.get("doc_id"),
+                                "source_path": row.get("source_path"),
+                                "reason": "missing_document_identity",
+                            }
+                        )
+                    logger.warning(
+                        "Skipping documents.file_id backfill for row with invalid identity: %s",
+                        exc,
+                    )
+                    continue
+
                 file_id, reason = _resolve_or_create_uploaded_file(db, row, dry_run)
                 if file_id is None:
                     stats["unbackfillable"] += 1
@@ -256,7 +287,9 @@ def backfill_documents_file_links(
             )
             stats["hit_iteration_limit"] = True
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+        _safe_close_table(docs_table)
 
     return stats
 

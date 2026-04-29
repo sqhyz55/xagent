@@ -820,7 +820,7 @@ def test_delete_document_authorizes_before_cascade() -> None:
         patch.object(
             collections_module, "get_vector_index_store", return_value=vector_store
         ),
-        patch.object(collections_module, "cleanup_document_cascade") as mock_cleanup,
+        patch.object(vector_store, "delete_document_data") as mock_delete_data,
         patch.object(collections_module, "clear_ingestion_status") as mock_clear,
     ):
         result = delete_document("demo", "doc-1", user_id=7, is_admin=False)
@@ -833,7 +833,7 @@ def test_delete_document_authorizes_before_cascade() -> None:
         user_id=7,
         is_admin=False,
     )
-    mock_cleanup.assert_not_called()
+    mock_delete_data.assert_not_called()
     mock_clear.assert_not_called()
 
 
@@ -858,22 +858,20 @@ def test_delete_document_allows_legacy_owner_recovered_from_source_path() -> Non
             collections_module, "get_vector_index_store", return_value=vector_store
         ),
         patch.object(
-            collections_module,
-            "cleanup_document_cascade",
+            vector_store,
+            "delete_document_data",
             return_value={"documents": 1, "main_pointers": 1},
-        ) as mock_cleanup,
+        ) as mock_delete_data,
         patch.object(collections_module, "clear_ingestion_status") as mock_clear,
     ):
         result = delete_document("demo", "doc-legacy", user_id=7, is_admin=False)
 
     assert result.status == "success"
-    mock_cleanup.assert_called_once_with(
-        collection="demo",
+    mock_delete_data.assert_called_once_with(
+        collection_name="demo",
         doc_id="doc-legacy",
         user_id=7,
         is_admin=False,
-        preview_only=False,
-        confirm=True,
     )
     mock_clear.assert_called_once_with(
         "demo",
@@ -911,14 +909,14 @@ def test_delete_document_rejects_legacy_row_owned_by_another_user() -> None:
         patch.object(
             collections_module, "get_vector_index_store", return_value=vector_store
         ),
-        patch.object(collections_module, "cleanup_document_cascade") as mock_cleanup,
+        patch.object(vector_store, "delete_document_data") as mock_delete_data,
         patch.object(collections_module, "clear_ingestion_status") as mock_clear,
     ):
         result = delete_document("demo", "doc-foreign", user_id=7, is_admin=False)
 
     assert result.status == "error"
     assert result.message == "Document not found or not accessible."
-    mock_cleanup.assert_not_called()
+    mock_delete_data.assert_not_called()
     mock_clear.assert_not_called()
 
 
@@ -931,23 +929,21 @@ def test_delete_document_clears_status_with_caller_scope() -> None:
             collections_module, "get_vector_index_store", return_value=vector_store
         ),
         patch.object(
-            collections_module,
-            "cleanup_document_cascade",
+            vector_store,
+            "delete_document_data",
             return_value={"documents": 1, "main_pointers": 1},
-        ) as mock_cleanup,
+        ) as mock_delete_data,
         patch.object(collections_module, "clear_ingestion_status") as mock_clear,
     ):
         result = delete_document("demo", "doc-1", user_id=9, is_admin=True)
 
     assert result.status == "success"
     assert result.details == {"documents": 1, "main_pointers": 1}
-    mock_cleanup.assert_called_once_with(
-        collection="demo",
+    mock_delete_data.assert_called_once_with(
+        collection_name="demo",
         doc_id="doc-1",
         user_id=9,
         is_admin=True,
-        preview_only=False,
-        confirm=True,
     )
     mock_clear.assert_called_once_with(
         "demo",
@@ -955,3 +951,41 @@ def test_delete_document_clears_status_with_caller_scope() -> None:
         user_id=9,
         is_admin=True,
     )
+
+
+def test_delete_collection_removes_metadata_table_entry(temp_lancedb_dir: str) -> None:
+    """Management delete should remove collection_metadata row directly."""
+    now = datetime.now(timezone.utc)
+    collection = "to_delete_metadata_row"
+
+    _insert_documents(
+        [
+            {
+                "collection": collection,
+                "doc_id": "doc-1",
+                "source_path": "/path/doc.pdf",
+                "file_type": "pdf",
+                "content_hash": "hash-1",
+                "uploaded_at": now,
+                "title": "Doc",
+                "language": "en",
+            }
+        ]
+    )
+
+    # Prime metadata cache/table with current collection stats.
+    import asyncio
+
+    asyncio.run(list_collections(user_id=None, is_admin=True, force_realtime=True))
+
+    conn = get_connection_from_env()
+    before_table = conn.open_table("collection_metadata")
+    before = before_table.search().where(f"name = '{collection}'").to_list()
+    assert len(before) == 1
+
+    del_result = delete_collection(collection, user_id=None, is_admin=True)
+    assert del_result.status == "success"
+
+    after_table = conn.open_table("collection_metadata")
+    after = after_table.search().where(f"name = '{collection}'").to_list()
+    assert after == []

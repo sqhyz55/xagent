@@ -60,6 +60,20 @@ def _create_user(session_local: sessionmaker, user_id: int = 1) -> None:
     db.close()
 
 
+def test_file_status_cache_evicts_lru_entry_when_maxsize_exceeded():
+    cache = kb_file_service._FileStatusCache(ttl_seconds=60, maxsize=2)
+
+    cache.put(1, ["file-a"], {"file-a": "SUCCESS"})
+    cache.put(1, ["file-b"], {"file-b": "FAILED"})
+    assert cache.get(1, ["file-a"]) == {"file-a": "SUCCESS"}
+
+    cache.put(1, ["file-c"], {"file-c": "UNKNOWN"})
+
+    assert cache.get(1, ["file-a"]) == {"file-a": "SUCCESS"}
+    assert cache.get(1, ["file-b"]) is None
+    assert cache.get(1, ["file-c"]) == {"file-c": "UNKNOWN"}
+
+
 def test_aggregate_uploaded_file_statuses_returns_expected_priority(reconcile_env):
     docs_table, session_local, uploads_dir = reconcile_env
     _create_user(session_local, user_id=1)
@@ -336,6 +350,72 @@ def test_reconcile_uploaded_files_deletes_only_stale_failed_by_default(reconcile
     row_by_doc_id = {str(row.get("doc_id")): row for row in rows}
     assert "doc-failed" not in row_by_doc_id
     assert "doc-success" in row_by_doc_id
+    db.close()
+
+
+def test_reconcile_uploaded_files_does_not_commit_caller_session(
+    reconcile_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    docs_table, session_local, uploads_dir = reconcile_env
+    _create_user(session_local, user_id=1)
+    db = session_local()
+
+    failed_path = uploads_dir / "user_1" / "kb" / "failed-no-commit.md"
+    failed_path.parent.mkdir(parents=True, exist_ok=True)
+    failed_path.write_text("failed", encoding="utf-8")
+    old_time = datetime.now(timezone.utc) - timedelta(days=10)
+    failed_file = UploadedFile(
+        user_id=1,
+        filename="failed-no-commit.md",
+        storage_path=str(failed_path),
+        mime_type="text/markdown",
+        file_size=failed_path.stat().st_size,
+        created_at=old_time,
+    )
+    db.add(failed_file)
+    db.commit()
+    db.refresh(failed_file)
+
+    docs_table.add(
+        [
+            {
+                "collection": "kb",
+                "doc_id": "doc-no-commit",
+                "file_id": failed_file.file_id,
+                "source_path": str(failed_path),
+                "user_id": 1,
+            }
+        ]
+    )
+    write_ingestion_status(
+        "kb",
+        "doc-no-commit",
+        status="failed",
+        message="failed",
+        parse_hash="",
+        user_id=1,
+    )
+
+    commit_calls: list[bool] = []
+    monkeypatch.setattr(db, "commit", lambda: commit_calls.append(True))
+
+    result = reconcile_uploaded_files(
+        db,
+        user_id=1,
+        is_admin=False,
+        stale_ttl_hours=24,
+        delete_stale=True,
+    )
+
+    assert result["deleted"] == 1
+    assert commit_calls == []
+    assert (
+        db.query(UploadedFile)
+        .filter(UploadedFile.file_id == failed_file.file_id)
+        .first()
+        is None
+    )
     db.close()
 
 
