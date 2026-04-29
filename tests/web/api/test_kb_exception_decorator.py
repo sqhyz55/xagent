@@ -8,7 +8,8 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from xagent.web.api.kb import handle_kb_exceptions
+from xagent.core.tools.core.RAG_tools.utils.user_scope import get_user_scope
+from xagent.web.api.kb import handle_kb_exceptions, with_kb_user_scope
 
 
 @pytest.mark.asyncio
@@ -245,3 +246,22 @@ async def test_delete_collection_api_failed_no_metadata_cleanup() -> None:
         )
 
     mock_metadata_store.delete_collection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_with_kb_user_scope_ignores_positional_duck_typed_objects() -> None:
+    """Decorator should not infer user scope from arbitrary positional objects."""
+
+    class _Imposter:
+        id = 99
+        is_admin = True
+
+    @with_kb_user_scope
+    async def _fn(_arg: object) -> tuple[int | None, bool]:
+        scope = get_user_scope()
+        return scope.user_id, scope.is_admin
+
+    user_id, is_admin = await _fn(_Imposter())
+
+    assert user_id is None
+    assert is_admin is False

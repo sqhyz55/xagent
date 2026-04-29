@@ -48,7 +48,7 @@ async def run_web_ingestion(
     ingestion_config: Optional[IngestionConfig] = None,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     user_id: Optional[int] = None,
-    is_admin: bool = False,
+    is_admin: Optional[bool] = None,
     file_handler: Optional[Callable[[Path, str, str, str], FileHandlerResult]] = None,
 ) -> WebIngestionResult:
     """Crawl a website and ingest all pages into the knowledge base.
@@ -66,7 +66,7 @@ async def run_web_ingestion(
         progress_callback: Optional callback for progress updates
             Args: (message, completed, total)
         user_id: Optional user ID for ownership tracking
-        is_admin: Whether the user has admin privileges
+        is_admin: Optional admin override; when omitted, falls back to request scope
         file_handler: Optional callback to handle file persistence and UploadedFile
             record creation. Signature: (temp_file_path, title, collection, url)
             Returns FileHandlerResult with file_path and optional file_id.

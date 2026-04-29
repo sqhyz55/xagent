@@ -14,6 +14,7 @@ from xagent.core.tools.core.RAG_tools.core.schemas import (
 )
 from xagent.core.tools.core.RAG_tools.pipelines.web_ingestion import run_web_ingestion
 from xagent.core.tools.core.RAG_tools.utils.string_utils import sanitize_for_doc_id
+from xagent.core.tools.core.RAG_tools.utils.user_scope import user_scope_context
 
 
 class TestWebIngestionPipeline:
@@ -581,6 +582,61 @@ class TestWebIngestionFileHandler:
                 assert call_kwargs["file_id"] is None
                 # source_path should be the temporary file path
                 assert "xagent_web_ingest" in call_kwargs["source_path"]
+
+    @pytest.mark.asyncio
+    async def test_omitted_scope_falls_back_to_context(
+        self, crawl_config, ingestion_config
+    ):
+        """Web ingestion should pass request-scoped user context to document ingestion."""
+        mock_crawl_results = [
+            MagicMock(
+                url="https://example.com/page1",
+                title="Page 1",
+                content_markdown="# Page 1\n\nContent.",
+                status="success",
+                depth=0,
+                timestamp=datetime(2025, 1, 1, 12, 0, 0),
+                content_length=20,
+            )
+        ]
+        mock_ingestion_result = IngestionResult(
+            status="success",
+            doc_id="test_doc_id",
+            parse_hash="test_hash",
+            chunk_count=1,
+            embedding_count=1,
+            vector_count=1,
+            completed_steps=[],
+            failed_step=None,
+            message="Success",
+            warnings=[],
+        )
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion.WebCrawler"
+        ) as mock_crawler_class:
+            mock_crawler = MagicMock()
+            mock_crawler.crawl = AsyncMock(return_value=mock_crawl_results)
+            mock_crawler.total_urls_found = 1
+            mock_crawler.failed_urls = {}
+            mock_crawler_class.return_value = mock_crawler
+
+            with patch(
+                "xagent.core.tools.core.RAG_tools.pipelines.web_ingestion."
+                "run_document_ingestion",
+                return_value=mock_ingestion_result,
+            ) as mock_ingest:
+                with user_scope_context(user_id=47, is_admin=True):
+                    result = await run_web_ingestion(
+                        collection="test_collection",
+                        crawl_config=crawl_config,
+                        ingestion_config=ingestion_config,
+                    )
+
+        assert result.status == "success"
+        call_kwargs = mock_ingest.call_args[1]
+        assert call_kwargs["user_id"] == 47
+        assert call_kwargs["is_admin"] is True
 
     @pytest.mark.asyncio
     async def test_no_file_handler_uses_temp_files(

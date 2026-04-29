@@ -482,7 +482,7 @@ def search_documents(
     config: Optional[SearchConfig] = None,
     progress_manager: Optional[ProgressManager] = None,
     user_id: Optional[int] = None,
-    is_admin: bool = False,
+    is_admin: Optional[bool] = None,
 ) -> SearchPipelineResult:
     """Execute the document search pipeline end-to-end.
 
@@ -499,7 +499,7 @@ def search_documents(
             will be overridden by collection's bound model if available.
         progress_manager: Optional progress manager for tracking.
         user_id: Optional user ID for ownership tracking.
-        is_admin: Whether the user has admin privileges for accessing any documents.
+        is_admin: Optional admin override; when omitted, falls back to request scope.
 
     Returns:
         SearchPipelineResult: Structured result containing status, selected search
@@ -607,7 +607,12 @@ def search_documents(
                         "Hybrid search embedding failed; fallback to sparse."
                     )
                     results, status, sparse_warnings, message = _execute_sparse_search(
-                        collection, query_text, cfg, embedding_model_id
+                        collection,
+                        query_text,
+                        cfg,
+                        embedding_model_id,
+                        user_id,
+                        is_admin,
                     )
                     warnings.extend(sparse_warnings)
                     actual_type = SearchType.SPARSE
@@ -665,7 +670,12 @@ def search_documents(
                             )
                             results, status, sparse_warnings, message = (
                                 _execute_sparse_search(
-                                    collection, query_text, cfg, embedding_model_id
+                                    collection,
+                                    query_text,
+                                    cfg,
+                                    embedding_model_id,
+                                    user_id,
+                                    is_admin,
                                 )
                             )
                             warnings.extend(sparse_warnings)
@@ -716,7 +726,7 @@ def run_document_search(
     config: Optional[SearchConfigInput] = None,
     progress_manager: Optional[ProgressManager] = None,
     user_id: Optional[int] = None,
-    is_admin: bool = False,
+    is_admin: Optional[bool] = None,
 ) -> SearchPipelineResult:
     """Public entrypoint for LangGraph-compatible tooling.
 
@@ -730,7 +740,7 @@ def run_document_search(
         config: Optional search configuration instance or JSON-like mapping.
         progress_manager: Optional progress manager for tracking.
         user_id: Optional user ID for ownership tracking.
-        is_admin: Whether the user has admin privileges.
+        is_admin: Optional admin override; when omitted, falls back to request scope.
 
     Returns:
         SearchPipelineResult: Same contract as :func:`search_documents`.

@@ -185,10 +185,6 @@ def delete_uploaded_file_if_orphaned(
     user_id: Optional[int],
     remaining_file_ids: set[str],
 ) -> bool:
-    scope = resolve_user_scope(user_id=user_id, is_admin=False)
-    if scope.user_id is None:
-        return False
-
     """Delete uploaded file row and local file when no documents still reference it.
 
     Args:
@@ -200,6 +196,10 @@ def delete_uploaded_file_if_orphaned(
     Returns:
         True if the file was deleted, False otherwise.
     """
+    scope = resolve_user_scope(user_id=user_id, is_admin=False)
+    if scope.user_id is None:
+        return False
+
     if not file_id or file_id in remaining_file_ids:
         return False
 

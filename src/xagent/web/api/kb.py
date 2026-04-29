@@ -148,11 +148,6 @@ def with_kb_user_scope(func: T) -> T:
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         user = kwargs.get("_user")
-        if user is None:
-            for arg in args:
-                if hasattr(arg, "id") and hasattr(arg, "is_admin"):
-                    user = arg
-                    break
 
         if user is None:
             return await func(*args, **kwargs)

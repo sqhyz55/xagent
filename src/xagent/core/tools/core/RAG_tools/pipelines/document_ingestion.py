@@ -67,7 +67,7 @@ def run_document_ingestion(
     ingestion_config: Optional[IngestionConfigInput] = None,
     progress_manager: Optional[Any] = None,
     user_id: Optional[int] = None,
-    is_admin: bool = False,
+    is_admin: Optional[bool] = None,
     file_id: Optional[str] = None,
 ) -> IngestionResult:
     """Public entrypoint for LangGraph-compatible ingestion tooling.
@@ -83,7 +83,7 @@ def run_document_ingestion(
             by external callers.
         progress_manager: Optional progress manager for tracking.
         user_id: Optional user ID for ownership tracking.
-        is_admin: Whether the user has admin privileges for accessing any documents.
+        is_admin: Optional admin override; when omitted, falls back to request scope.
         file_id: Optional UploadedFile file_id for stable file association.
 
     Returns:

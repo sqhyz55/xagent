@@ -742,7 +742,7 @@ class TestDocumentSearchMultiTenancy:
     """Test multi-tenancy in document search operations."""
 
     def test_search_accepts_user_parameters(self):
-        """Test that run_document_search accepts user_id and is_admin parameters."""
+        """Test that run_document_search accepts user_id and tri-state is_admin."""
         import inspect
 
         from xagent.core.tools.core.RAG_tools.pipelines.document_search import (
@@ -753,7 +753,8 @@ class TestDocumentSearchMultiTenancy:
         assert "user_id" in sig.parameters
         assert "is_admin" in sig.parameters
         assert sig.parameters["user_id"].default is None
-        assert sig.parameters["is_admin"].default is False
+        # None means "fall back to request-scoped context", False/True are explicit.
+        assert sig.parameters["is_admin"].default is None
 
 
 class TestLanceDBConnectionMultiTenancy:
@@ -1037,7 +1038,7 @@ class TestEndToEndMultiTenancy:
 
         assert ingest_sig.parameters["user_id"].default is None
         assert search_sig.parameters["user_id"].default is None
-        assert search_sig.parameters["is_admin"].default is False
+        assert search_sig.parameters["is_admin"].default is None
 
         integration_test_complete = True
         assert integration_test_complete, (
