@@ -402,7 +402,9 @@ class CollectionManager:
             await self._save_collection_with_retry(updated_collection)
 
             logger.info(
-                f"Initialized collection '{collection_name}' with embedding model '{embedding_model_id}'"
+                "Initialized collection '%s' with embedding model '%s'",
+                collection_name,
+                embedding_model_id,
             )
             logger.debug("[COLLECTION_INIT] Releasing lock for '%s'", collection_name)
             return updated_collection

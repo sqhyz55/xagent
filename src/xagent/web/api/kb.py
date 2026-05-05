@@ -701,7 +701,7 @@ async def save_collection_config(
             message=f"Configuration saved for collection '{safe_collection}'",
         )
     except Exception as e:
-        logger.error(f"Failed to save collection config: {e}", exc_info=True)
+        logger.error("Failed to save collection config: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2433,12 +2433,12 @@ def _perform_kb_collection_delete(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Failed to delete collection '%s': %s", collection_name, e)
+    except Exception as exc:
+        logger.exception("Failed to delete collection '%s'", collection_name)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to delete collection: {str(e)}",
-        ) from e
+            detail=f"Failed to delete collection: {exc}",
+        ) from exc
 
 
 @kb_router.delete(
