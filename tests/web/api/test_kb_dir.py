@@ -79,6 +79,7 @@ def test_env():
     yield app, headers, user, TestingSessionLocal
 
     session.close()
+    test_engine.dispose()
     StorageFactory.get_factory().reset_all()
     if previous_lancedb_dir is None:
         os.environ.pop("LANCEDB_DIR", None)

@@ -207,7 +207,7 @@ class CollectionManager:
 
         except Exception as e:
             # Table might not exist yet, or other backend errors
-            logger.debug(f"Error reading collection {collection_name}: {e}")
+            logger.debug("Error reading collection %s: %s", collection_name, e)
             raise ValueError(f"Collection '{collection_name}' not found")
 
     async def save_collection(self, collection: CollectionInfo) -> None:
@@ -313,13 +313,13 @@ class CollectionManager:
                 existing_tables = table_names_fn()
                 table_exists = "collection_metadata" in existing_tables
             except Exception as e:
-                logger.debug(f"Table names check failed: {e}")
+                logger.debug("Table names check failed: %s", e)
 
         if not table_exists:
             try:
                 conn.create_table("collection_metadata", schema=schema)
             except Exception as e:
-                logger.debug(f"Table creation failed (may already exist): {e}")
+                logger.debug("Table creation failed (may already exist): %s", e)
                 # Table might already exist, continue
         else:
             # Table exists: ensure it has the "owners" column (schema compat; column is not maintained)
@@ -360,13 +360,15 @@ class CollectionManager:
             ValueError: If collection already initialized with different model
         """
         logger.debug(
-            f"[COLLECTION_INIT] Initializing '{collection_name}' with model '{embedding_model_id}'"
+            "[COLLECTION_INIT] Initializing '%s' with model '%s'",
+            collection_name,
+            embedding_model_id,
         )
         lock = _get_collection_lock(collection_name)
-        logger.debug(f"[COLLECTION_INIT] Acquiring lock for '{collection_name}'...")
+        logger.debug("[COLLECTION_INIT] Acquiring lock for '%s'...", collection_name)
 
         async with lock:
-            logger.debug(f"[COLLECTION_INIT] Lock acquired for '{collection_name}'")
+            logger.debug("[COLLECTION_INIT] Lock acquired for '%s'", collection_name)
             # Get current state
             try:
                 collection = await self.get_collection(collection_name)
@@ -402,7 +404,7 @@ class CollectionManager:
             logger.info(
                 f"Initialized collection '{collection_name}' with embedding model '{embedding_model_id}'"
             )
-            logger.debug(f"[COLLECTION_INIT] Releasing lock for '{collection_name}'")
+            logger.debug("[COLLECTION_INIT] Releasing lock for '%s'", collection_name)
             return updated_collection
 
     async def update_collection_stats(

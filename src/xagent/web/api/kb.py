@@ -666,6 +666,7 @@ def _parse_separators(separators: Optional[str]) -> Optional[List[str]]:
     "/collections/{collection}/config",
     response_model=CollectionOperationResult,
 )
+@handle_kb_exceptions
 async def save_collection_config(
     collection: str,
     config: IngestionConfig = Body(...),
@@ -1039,6 +1040,7 @@ async def ingest(
 
 
 @kb_router.post("/ingest-cloud", response_model=List[IngestionResult])
+@handle_kb_exceptions
 async def ingest_cloud(
     request: CloudIngestRequest,
     db: Session = Depends(get_db),
@@ -2568,6 +2570,7 @@ async def batch_delete_collections_api(
 @kb_router.post(
     "/collections/{collection_name}/documents/check",
 )
+@handle_kb_exceptions
 async def check_documents_exist_api(
     collection_name: str,
     body: Dict[str, Any] = Body(
