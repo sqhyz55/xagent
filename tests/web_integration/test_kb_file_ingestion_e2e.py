@@ -16,8 +16,6 @@ from typing import Dict
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.model import EmbeddingModelConfig
-
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 
@@ -26,17 +24,6 @@ pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 # ==========================================
 # Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
 # are provided by conftest.py with autouse=True
-
-
-@pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """File ingestion-specific embedding configuration."""
-    return EmbeddingModelConfig(
-        id="e2e-file-ingestion-embedding",
-        model_name="e2e-file-ingestion-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
 
 
 @pytest.fixture

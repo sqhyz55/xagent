@@ -14,26 +14,8 @@ from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.model import EmbeddingModelConfig
-
 # Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
 # are provided by conftest.py with autouse=True
-
-
-# ==========================================
-# TEST-SPECIFIC FIXTURES
-# ==========================================
-
-
-@pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """Parsing-specific embedding configuration."""
-    return EmbeddingModelConfig(
-        id="e2e-parsing-embedding",
-        model_name="e2e-parsing-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
 
 
 @pytest.fixture

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.model import EmbeddingModelConfig
+from tests.web_integration.http_helpers import http_detail
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     IngestionResult,
 )
@@ -25,22 +25,6 @@ pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 # Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
 # are provided by conftest.py with autouse=True
-
-
-# ==========================================
-# TEST-SPECIFIC FIXTURES
-# ==========================================
-
-
-@pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """CRUD-specific embedding configuration."""
-    return EmbeddingModelConfig(
-        id="e2e-crud-embedding",
-        model_name="e2e-crud-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
 
 
 @pytest.fixture
@@ -121,8 +105,8 @@ class TestKBCreateOperations:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    created_count += 1
+                assert response.status_code == 200, http_detail(response)
+                created_count += 1
 
         # Verify at least some files were created
         assert created_count >= 1
@@ -156,8 +140,8 @@ class TestKBCreateOperations:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    created_count += 1
+                assert response.status_code == 200, http_detail(response)
+                created_count += 1
 
         # Verify different file types can be created
         assert created_count >= 1
@@ -305,12 +289,13 @@ class TestKBReadOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Then list collections
-            list_response = client.get("/api/kb/collections", headers=auth_headers)
-            assert list_response.status_code == 200
-            result = list_response.json()
-            assert "collections" in result
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        # Then list collections
+        list_response = client.get("/api/kb/collections", headers=auth_headers)
+        assert list_response.status_code == 200, http_detail(list_response)
+        result = list_response.json()
+        assert "collections" in result
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -334,11 +319,12 @@ class TestKBReadOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            list_response = client.get("/api/kb/collections", headers=auth_headers)
-            assert list_response.status_code == 200
-            names = {c.get("name") for c in list_response.json().get("collections", [])}
-            assert collection_name in names
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        list_response = client.get("/api/kb/collections", headers=auth_headers)
+        assert list_response.status_code == 200, http_detail(list_response)
+        names = {c.get("name") for c in list_response.json().get("collections", [])}
+        assert collection_name in names
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -362,14 +348,15 @@ class TestKBReadOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            list_response = client.post(
-                f"/api/kb/collections/{collection_name}/documents/check",
-                json={"filenames": ["document1.txt"]},
-                headers=auth_headers,
-            )
-            assert list_response.status_code == 200
-            assert "document1.txt" in list_response.json().get("existing_filenames", [])
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        list_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": ["document1.txt"]},
+            headers=auth_headers,
+        )
+        assert list_response.status_code == 200, http_detail(list_response)
+        assert "document1.txt" in list_response.json().get("existing_filenames", [])
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -393,19 +380,19 @@ class TestKBReadOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            body = create_response.json()
-            assert "chunk_count" in body
-            assert int(body["chunk_count"]) >= 0
-            doc_id = body.get("doc_id")
-            if doc_id:
-                parse_response = client.get(
-                    f"/api/kb/collections/{collection_name}/parses/{doc_id}/parse_result",
-                    params={"page": 1, "page_size": 20},
-                    headers=auth_headers,
-                )
-                # With successful ingest and valid doc_id, parse result should be available
-                assert parse_response.status_code == 200
+        assert create_response.status_code == 200, http_detail(create_response)
+        body = create_response.json()
+        assert "chunk_count" in body
+        assert int(body["chunk_count"]) >= 0
+        doc_id = body.get("doc_id")
+        if doc_id:
+            parse_response = client.get(
+                f"/api/kb/collections/{collection_name}/parses/{doc_id}/parse_result",
+                params={"page": 1, "page_size": 20},
+                headers=auth_headers,
+            )
+            # With successful ingest and valid doc_id, parse result should be available
+            assert parse_response.status_code == 200, http_detail(parse_response)
 
 
 # ==========================================
@@ -464,18 +451,19 @@ class TestKBUpdateOperations:
                 headers=auth_headers,
             )
 
-        if first_response.status_code == 200:
-            # Re-ingest the same document
-            with open(file_path, "rb") as f:
-                second_response = client.post(
-                    "/api/kb/ingest",
-                    files={"file": ("document1.txt", f, "text/plain")},
-                    data={"collection": collection_name},
-                    headers=auth_headers,
-                )
+        assert first_response.status_code == 200, http_detail(first_response)
 
-            # Re-ingestion should succeed
-            assert second_response.status_code == 200
+        # Re-ingest the same document
+        with open(file_path, "rb") as f:
+            second_response = client.post(
+                "/api/kb/ingest",
+                files={"file": ("document1.txt", f, "text/plain")},
+                data={"collection": collection_name},
+                headers=auth_headers,
+            )
+
+        # Re-ingestion should succeed
+        assert second_response.status_code == 200, http_detail(second_response)
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -499,16 +487,17 @@ class TestKBUpdateOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Try to update document metadata
-            # Note: This endpoint does not exist yet - testing expected 405
-            update_response = client.put(
-                f"/api/kb/collections/{collection_name}/documents/document1.txt",
-                json={"title": "Updated Title", "description": "Updated Description"},
-                headers=auth_headers,
-            )
-            # Endpoint not implemented - should return 405 (Method Not Allowed)
-            assert update_response.status_code == 405
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        # Try to update document metadata
+        # Note: This endpoint does not exist yet - testing expected 405
+        update_response = client.put(
+            f"/api/kb/collections/{collection_name}/documents/document1.txt",
+            json={"title": "Updated Title", "description": "Updated Description"},
+            headers=auth_headers,
+        )
+        # Endpoint not implemented - should return 405 (Method Not Allowed)
+        assert update_response.status_code == 405, http_detail(update_response)
 
 
 # ==========================================
@@ -541,14 +530,15 @@ class TestKBDeleteOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Delete the document by filename (legacy method)
-            delete_response = client.delete(
-                f"/api/kb/collections/{collection_name}/documents/document1.txt",
-                headers=auth_headers,
-            )
-            # Deleting a just-created document should succeed
-            assert delete_response.status_code == 200
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        # Delete the document by filename (legacy method)
+        delete_response = client.delete(
+            f"/api/kb/collections/{collection_name}/documents/document1.txt",
+            headers=auth_headers,
+        )
+        # Deleting a just-created document should succeed
+        assert delete_response.status_code == 200, http_detail(delete_response)
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -572,29 +562,28 @@ class TestKBDeleteOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Try to get file_id from creation response
-            create_result = create_response.json()
-            file_id = None
-            if "file_id" in create_result:
-                file_id = create_result["file_id"]
+        assert create_response.status_code == 200, http_detail(create_response)
 
-            # Delete the document by file_id if available
-            if file_id:
-                delete_response = client.delete(
-                    f"/api/kb/collections/{collection_name}/documents/document1.txt?file_id={file_id}",
-                    headers=auth_headers,
-                )
-                # Deleting a just-created document with file_id should succeed
-                assert delete_response.status_code == 200
-            else:
-                # Fallback to filename deletion if file_id not available
-                delete_response = client.delete(
-                    f"/api/kb/collections/{collection_name}/documents/document1.txt",
-                    headers=auth_headers,
-                )
-                # Deleting a just-created document should succeed
-                assert delete_response.status_code == 200
+        # Try to get file_id from creation response
+        create_result = create_response.json()
+        file_id = create_result.get("file_id")
+
+        # Delete the document by file_id if available
+        if file_id:
+            delete_response = client.delete(
+                f"/api/kb/collections/{collection_name}/documents/document1.txt?file_id={file_id}",
+                headers=auth_headers,
+            )
+            # Deleting a just-created document with file_id should succeed
+            assert delete_response.status_code == 200, http_detail(delete_response)
+        else:
+            # Fallback to filename deletion if file_id not available
+            delete_response = client.delete(
+                f"/api/kb/collections/{collection_name}/documents/document1.txt",
+                headers=auth_headers,
+            )
+            # Deleting a just-created document should succeed
+            assert delete_response.status_code == 200, http_detail(delete_response)
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -618,29 +607,28 @@ class TestKBDeleteOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Try to get doc_id from creation response
-            create_result = create_response.json()
-            doc_id = None
-            if "doc_id" in create_result:
-                doc_id = create_result["doc_id"]
+        assert create_response.status_code == 200, http_detail(create_response)
 
-            # Delete the document by doc_id if available
-            if doc_id:
-                delete_response = client.delete(
-                    f"/api/kb/collections/{collection_name}/documents/document1.txt?doc_id={doc_id}",
-                    headers=auth_headers,
-                )
-                # Deleting a just-created document with doc_id should succeed
-                assert delete_response.status_code == 200
-            else:
-                # Fallback to filename deletion if doc_id not available
-                delete_response = client.delete(
-                    f"/api/kb/collections/{collection_name}/documents/document1.txt",
-                    headers=auth_headers,
-                )
-                # Deleting a just-created document should succeed
-                assert delete_response.status_code == 200
+        # Try to get doc_id from creation response
+        create_result = create_response.json()
+        doc_id = create_result.get("doc_id")
+
+        # Delete the document by doc_id if available
+        if doc_id:
+            delete_response = client.delete(
+                f"/api/kb/collections/{collection_name}/documents/document1.txt?doc_id={doc_id}",
+                headers=auth_headers,
+            )
+            # Deleting a just-created document with doc_id should succeed
+            assert delete_response.status_code == 200, http_detail(delete_response)
+        else:
+            # Fallback to filename deletion if doc_id not available
+            delete_response = client.delete(
+                f"/api/kb/collections/{collection_name}/documents/document1.txt",
+                headers=auth_headers,
+            )
+            # Deleting a just-created document should succeed
+            assert delete_response.status_code == 200, http_detail(delete_response)
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -664,20 +652,19 @@ class TestKBDeleteOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            create_result = create_response.json()
-            file_id = None
-            if "file_id" in create_result:
-                file_id = create_result["file_id"]
+        assert create_response.status_code == 200, http_detail(create_response)
+        create_result = create_response.json()
+        file_id = create_result.get("file_id")
 
-            if file_id:
-                # Delete with both file_id and filename - file_id should take precedence
-                delete_response = client.delete(
-                    f"/api/kb/collections/{collection_name}/documents/some_different_name.txt?file_id={file_id}",
-                    headers=auth_headers,
-                )
-                # Deleting by file_id should succeed regardless of filename
-                assert delete_response.status_code == 200
+        assert isinstance(file_id, str) and file_id, "Expected ingest to return file_id"
+
+        # Delete with both file_id and filename - file_id should take precedence
+        delete_response = client.delete(
+            f"/api/kb/collections/{collection_name}/documents/some_different_name.txt?file_id={file_id}",
+            headers=auth_headers,
+        )
+        # Deleting by file_id should succeed regardless of filename
+        assert delete_response.status_code == 200, http_detail(delete_response)
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -702,8 +689,8 @@ class TestKBDeleteOperations:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    created_docs.append(filename)
+                assert response.status_code == 200, http_detail(response)
+                created_docs.append(filename)
 
         # Delete documents one by one
         deleted_count = 0
@@ -712,8 +699,8 @@ class TestKBDeleteOperations:
                 f"/api/kb/collections/{collection_name}/documents/{doc_name}",
                 headers=auth_headers,
             )
-            if delete_response.status_code == 200:
-                deleted_count += 1
+            assert delete_response.status_code == 200, http_detail(delete_response)
+            deleted_count += 1
 
         # Verify at least some documents were created and deletion attempts were made
         assert len(created_docs) > 0
@@ -740,14 +727,15 @@ class TestKBDeleteOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Delete the entire collection
-            delete_response = client.delete(
-                f"/api/kb/collections/{collection_name}",
-                headers=auth_headers,
-            )
-            # Deleting a collection that exists should succeed
-            assert delete_response.status_code == 200
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        # Delete the entire collection
+        delete_response = client.delete(
+            f"/api/kb/collections/{collection_name}",
+            headers=auth_headers,
+        )
+        # Deleting a collection that exists should succeed
+        assert delete_response.status_code == 200, http_detail(delete_response)
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -771,17 +759,16 @@ class TestKBDeleteOperations:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # Delete collection
-            delete_response = client.delete(
-                f"/api/kb/collections/{collection_name}",
-                headers=auth_headers,
-            )
+        assert create_response.status_code == 200, http_detail(create_response)
 
-            if delete_response.status_code == 200:
-                list_after = client.get("/api/kb/collections", headers=auth_headers)
-                assert list_after.status_code == 200
-                names = {
-                    c.get("name") for c in list_after.json().get("collections", [])
-                }
-                assert collection_name not in names
+        # Delete collection
+        delete_response = client.delete(
+            f"/api/kb/collections/{collection_name}",
+            headers=auth_headers,
+        )
+        assert delete_response.status_code == 200, http_detail(delete_response)
+
+        list_after = client.get("/api/kb/collections", headers=auth_headers)
+        assert list_after.status_code == 200, http_detail(list_after)
+        names = {c.get("name") for c in list_after.json().get("collections", [])}
+        assert collection_name not in names

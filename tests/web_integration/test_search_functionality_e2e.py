@@ -17,28 +17,7 @@ from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.model import EmbeddingModelConfig
-
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
-
-
-# ==========================================
-# TEST-SPECIFIC FIXTURES
-# ==========================================
-# Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
-# are provided by conftest.py with autouse=True
-# Each test file only needs to define its own stub_embedding_config
-
-
-@pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """Search-specific embedding configuration."""
-    return EmbeddingModelConfig(
-        id="e2e-search-embedding",
-        model_name="e2e-search-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
 
 
 @pytest.fixture

@@ -15,28 +15,12 @@ from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.model import EmbeddingModelConfig
+from tests.web_integration.http_helpers import http_detail
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 # Note: _StubEmbeddingAdapter, stub_embedding_adapter, and mock_rag_pipeline
 # are provided by conftest.py with autouse=True
-
-
-# ==========================================
-# TEST-SPECIFIC FIXTURES
-# ==========================================
-
-
-@pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """Display-specific embedding configuration."""
-    return EmbeddingModelConfig(
-        id="e2e-display-embedding",
-        model_name="e2e-display-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
 
 
 @pytest.fixture
@@ -47,7 +31,9 @@ def sample_display_files() -> Generator[tuple[dict[str, str], str], None, None]:
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create test files with descriptive names
         test_files = {
-            "report_2024.pdf": "Annual Report 2024\nFinancial results and analysis.",
+            # NOTE: Use a .txt fixture here; fake PDF bytes trigger deepdoc/pdf parsing failures
+            # and make these UI-display tests flaky and environment-dependent.
+            "report_2024.txt": "Annual Report 2024\nFinancial results and analysis.",
             "user_guide.md": "# User Guide\n\nThis is a comprehensive user guide.",
             "data_export.csv": "id,name,value\n1,Alice,100\n2,Bob,200",
             "config.json": '{"setting1": "value1", "setting2": "value2"}',
@@ -107,15 +93,16 @@ class TestCollectionDisplay:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    created_count += 1
+                assert response.status_code == 200, http_detail(response)
+                created_count += 1
 
-        if created_count > 0:
-            # List collections
-            list_response = client.get("/api/kb/collections", headers=auth_headers)
-            assert list_response.status_code == 200
-            result = list_response.json()
-            assert "collections" in result
+        assert created_count == len(collection_names)
+
+        # List collections
+        list_response = client.get("/api/kb/collections", headers=auth_headers)
+        assert list_response.status_code == 200, http_detail(list_response)
+        result = list_response.json()
+        assert "collections" in result
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -131,7 +118,7 @@ class TestCollectionDisplay:
 
         # Create multiple documents in the same collection
         doc_count = 0
-        for filename in ["report_2024.pdf", "user_guide.md", "data_export.csv"]:
+        for filename in ["report_2024.txt", "user_guide.md", "data_export.csv"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 response = client.post(
@@ -140,15 +127,16 @@ class TestCollectionDisplay:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    doc_count += 1
+                assert response.status_code == 200, http_detail(response)
+                doc_count += 1
 
-        if doc_count > 0:
-            # List collections and check document count
-            list_response = client.get("/api/kb/collections", headers=auth_headers)
-            assert list_response.status_code == 200
-            result = list_response.json()
-            assert "collections" in result
+        assert doc_count == 3
+
+        # List collections and check document count
+        list_response = client.get("/api/kb/collections", headers=auth_headers)
+        assert list_response.status_code == 200, http_detail(list_response)
+        result = list_response.json()
+        assert "collections" in result
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -163,7 +151,7 @@ class TestCollectionDisplay:
         collection_name = "e2e_display_names"
 
         # Create documents with specific names
-        for filename in ["report_2024.pdf", "user_guide.md"]:
+        for filename in ["report_2024.txt", "user_guide.md"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 client.post(
@@ -201,13 +189,14 @@ class TestCollectionDisplay:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            # No per-collection GET on kb_router; metadata is in list_collections.
-            list_response = client.get("/api/kb/collections", headers=auth_headers)
-            assert list_response.status_code == 200
-            payload = list_response.json()
-            names = {c.get("name") for c in payload.get("collections", [])}
-            assert collection_name in names
+        assert create_response.status_code == 200, http_detail(create_response)
+
+        # No per-collection GET on kb_router; metadata is in list_collections.
+        list_response = client.get("/api/kb/collections", headers=auth_headers)
+        assert list_response.status_code == 200, http_detail(list_response)
+        payload = list_response.json()
+        names = {c.get("name") for c in payload.get("collections", [])}
+        assert collection_name in names
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -257,7 +246,7 @@ class TestDocumentDisplay:
 
         # Create multiple documents
         created_docs = []
-        for filename in ["report_2024.pdf", "user_guide.md", "config.json"]:
+        for filename in ["report_2024.txt", "user_guide.md", "config.json"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 response = client.post(
@@ -266,18 +255,17 @@ class TestDocumentDisplay:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    created_docs.append(filename)
+                assert response.status_code == 200, http_detail(response)
+                created_docs.append(filename)
 
-        if len(created_docs) > 0:
-            check_response = client.post(
-                f"/api/kb/collections/{collection_name}/documents/check",
-                json={"filenames": created_docs},
-                headers=auth_headers,
-            )
-            assert check_response.status_code == 200
-            existing = set(check_response.json().get("existing_filenames", []))
-            assert existing.issuperset(set(created_docs))
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": created_docs},
+            headers=auth_headers,
+        )
+        assert check_response.status_code == 200, http_detail(check_response)
+        existing = set(check_response.json().get("existing_filenames", []))
+        assert existing.issuperset(set(created_docs))
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -292,25 +280,23 @@ class TestDocumentDisplay:
         collection_name = "e2e_display_metadata"
 
         # Create a document
-        file_path = files["report_2024.pdf"]
+        file_path = files["report_2024.txt"]
         with open(file_path, "rb") as f:
             response = client.post(
                 "/api/kb/ingest",
-                files={"file": ("report_2024.pdf", f, "application/pdf")},
+                files={"file": ("report_2024.txt", f, "text/plain")},
                 data={"collection": collection_name},
                 headers=auth_headers,
             )
 
-        if response.status_code == 200:
-            check_response = client.post(
-                f"/api/kb/collections/{collection_name}/documents/check",
-                json={"filenames": ["report_2024.pdf"]},
-                headers=auth_headers,
-            )
-            assert check_response.status_code == 200
-            assert "report_2024.pdf" in check_response.json().get(
-                "existing_filenames", []
-            )
+        assert response.status_code == 200, http_detail(response)
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": ["report_2024.txt"]},
+            headers=auth_headers,
+        )
+        assert check_response.status_code == 200, http_detail(check_response)
+        assert "report_2024.txt" in check_response.json().get("existing_filenames", [])
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -326,7 +312,7 @@ class TestDocumentDisplay:
 
         # Create documents of different types
         file_types = [
-            ("report_2024.pdf", "application/pdf"),
+            ("report_2024.txt", "text/plain"),
             ("user_guide.md", "text/markdown"),
             ("data_export.csv", "text/csv"),
             ("config.json", "application/json"),
@@ -342,19 +328,19 @@ class TestDocumentDisplay:
                     data={"collection": collection_name},
                     headers=auth_headers,
                 )
-                if response.status_code == 200:
-                    created_count += 1
+                assert response.status_code == 200, http_detail(response)
+                created_count += 1
 
-        if created_count > 0:
-            names = [fn for fn, _ in file_types]
-            check_response = client.post(
-                f"/api/kb/collections/{collection_name}/documents/check",
-                json={"filenames": names},
-                headers=auth_headers,
-            )
-            assert check_response.status_code == 200
-            existing = set(check_response.json().get("existing_filenames", []))
-            assert len(existing & set(names)) >= 1
+        assert created_count == len(file_types)
+        names = [fn for fn, _ in file_types]
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": names},
+            headers=auth_headers,
+        )
+        assert check_response.status_code == 200, http_detail(check_response)
+        existing = set(check_response.json().get("existing_filenames", []))
+        assert existing.issuperset(set(names))
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -414,7 +400,7 @@ class TestDocumentDisplay:
         collection_name = "e2e_display_search"
 
         # Create documents
-        for filename in ["report_2024.pdf", "user_guide.md"]:
+        for filename in ["report_2024.txt", "user_guide.md"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 client.post(
@@ -427,11 +413,11 @@ class TestDocumentDisplay:
         # Filename search is a UI concern; backend exposes existence check only.
         check_response = client.post(
             f"/api/kb/collections/{collection_name}/documents/check",
-            json={"filenames": ["report_2024.pdf"]},
+            json={"filenames": ["report_2024.txt"]},
             headers=auth_headers,
         )
         assert check_response.status_code == 200
-        assert "report_2024.pdf" in check_response.json().get("existing_filenames", [])
+        assert "report_2024.txt" in check_response.json().get("existing_filenames", [])
 
 
 # ==========================================
@@ -487,7 +473,7 @@ class TestIngestionProgressDisplay:
         """Test that ingestion errors are displayed with clear messages."""
         collection_name = "e2e_display_errors"
 
-        # Try to ingest a non-existent file (should fail gracefully)
+        # Try to ingest an invalid PDF payload (should fail gracefully)
         response = client.post(
             "/api/kb/ingest",
             files={"file": ("nonexistent.pdf", b"", "application/pdf")},
@@ -495,8 +481,11 @@ class TestIngestionProgressDisplay:
             headers=auth_headers,
         )
 
-        # Empty files are accepted by the API
-        assert response.status_code == 200
+        # Ingest should fail with a structured error response.
+        assert response.status_code == 500
+        payload = response.json()
+        assert payload.get("status") == "error"
+        assert isinstance(payload.get("message"), str) and payload["message"]
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -562,11 +551,12 @@ class TestFileIdDisplay:
                 headers=auth_headers,
             )
 
-        if response.status_code == 200:
-            result = response.json()
-            # Check if file_id is in response (may not be in all implementations)
-            if "file_id" in result:
-                assert result["file_id"] is not None
+        assert response.status_code == 200, http_detail(response)
+        result = response.json()
+        # Contract: file_id should be present after ingest.
+        assert result.get("file_id"), (
+            "Expected ingest response to include non-empty file_id"
+        )
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -590,31 +580,30 @@ class TestFileIdDisplay:
                 headers=auth_headers,
             )
 
-        if create_response.status_code == 200:
-            create_result = create_response.json()
-            file_id = create_result.get("file_id")
-            doc_id = create_result.get("doc_id")
+        assert create_response.status_code == 200, http_detail(create_response)
+        create_result = create_response.json()
+        file_id = create_result.get("file_id")
+        doc_id = create_result.get("doc_id")
 
-            if file_id:
-                # Document lookup by file_id is via DELETE .../documents/{filename}?file_id=...
-                # (no GET on this path). Use non-destructive checks instead.
-                check_response = client.post(
-                    f"/api/kb/collections/{collection_name}/documents/check",
-                    json={"filenames": ["readme.txt"]},
-                    headers=auth_headers,
-                )
-                assert check_response.status_code == 200
-                existing = check_response.json().get("existing_filenames", [])
-                assert "readme.txt" in existing
+        assert file_id, "Expected ingest response to include non-empty file_id"
+        assert doc_id, "Expected ingest response to include non-empty doc_id"
 
-            if doc_id:
-                parse_response = client.get(
-                    f"/api/kb/collections/{collection_name}/parses/{doc_id}/parse_result",
-                    params={"page": 1, "page_size": 20},
-                    headers=auth_headers,
-                )
-                # Parse result should be available for successfully created document
-                assert parse_response.status_code == 200
+        # Non-destructive check: filename should exist in collection.
+        check_response = client.post(
+            f"/api/kb/collections/{collection_name}/documents/check",
+            json={"filenames": ["readme.txt"]},
+            headers=auth_headers,
+        )
+        assert check_response.status_code == 200, http_detail(check_response)
+        existing = check_response.json().get("existing_filenames", [])
+        assert "readme.txt" in existing
+
+        parse_response = client.get(
+            f"/api/kb/collections/{collection_name}/parses/{doc_id}/parse_result",
+            params={"page": 1, "page_size": 20},
+            headers=auth_headers,
+        )
+        assert parse_response.status_code == 200, http_detail(parse_response)
 
 
 # ==========================================
@@ -646,7 +635,7 @@ class TestMetadataDisplay:
         collection_name = "e2e_display_filetype"
 
         # Create documents of different types
-        for filename in ["report_2024.pdf", "user_guide.md", "config.json"]:
+        for filename in ["report_2024.txt", "user_guide.md", "config.json"]:
             file_path = files[filename]
             with open(file_path, "rb") as f:
                 client.post(
@@ -658,7 +647,7 @@ class TestMetadataDisplay:
 
         check_response = client.post(
             f"/api/kb/collections/{collection_name}/documents/check",
-            json={"filenames": ["report_2024.pdf", "user_guide.md", "config.json"]},
+            json={"filenames": ["report_2024.txt", "user_guide.md", "config.json"]},
             headers=auth_headers,
         )
         assert check_response.status_code == 200
@@ -688,11 +677,11 @@ class TestMetadataDisplay:
                 headers=auth_headers,
             )
 
-        if response.status_code == 200:
-            # Check if file size is in response
-            result = response.json()
-            if "file_size" in result:
-                assert result["file_size"] == file_size
+        assert response.status_code == 200, http_detail(response)
+        result = response.json()
+        # file_size is not part of the stable ingest response contract; only assert presence when provided
+        if "file_size" in result:
+            assert result["file_size"] == file_size
 
     @pytest.mark.e2e
     @pytest.mark.slow
@@ -715,10 +704,9 @@ class TestMetadataDisplay:
                 headers=auth_headers,
             )
 
-        if response.status_code == 200:
-            # Check if upload date is in response
-            result = response.json()
-            if "uploaded_at" in result or "created_at" in result:
-                # Date should be in ISO format
-                date_field = result.get("uploaded_at") or result.get("created_at")
-                assert date_field is not None
+        assert response.status_code == 200, http_detail(response)
+        result = response.json()
+        # uploaded_at/created_at are optional in current ingest contract
+        # (frontend display can use other endpoints to show dates when available).
+        date_field = result.get("uploaded_at") or result.get("created_at")
+        assert date_field is None or isinstance(date_field, str)

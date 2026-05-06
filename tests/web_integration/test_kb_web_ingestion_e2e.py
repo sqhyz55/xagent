@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from xagent.core.model.model import EmbeddingModelConfig
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     CollectionInfo,
     IngestionResult,
@@ -30,20 +29,9 @@ pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
 
 
 @pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """Override with web ingestion-specific embedding config."""
-    return EmbeddingModelConfig(
-        id="e2e-web-test-embedding",
-        model_name="e2e-web-test-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
-
-
-@pytest.fixture
 def mock_web_rag_pipeline(
     monkeypatch: Any,
-    stub_embedding_config: EmbeddingModelConfig,
+    stub_embedding_config,
     stub_embedding_adapter,
 ) -> None:
     """Mock the RAG pipeline components for web ingestion E2E testing.

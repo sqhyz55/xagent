@@ -17,20 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.web_integration.http_helpers import http_detail
-from xagent.core.model.model import EmbeddingModelConfig
 
 pytestmark = [pytest.mark.e2e, pytest.mark.contract_stub]
-
-
-@pytest.fixture
-def stub_embedding_config() -> EmbeddingModelConfig:
-    """Override shared contract_stub config for this suite."""
-    return EmbeddingModelConfig(
-        id="e2e-ac-embedding",
-        model_name="e2e-ac-embedding-model",
-        model_provider="test",
-        dimension=2,
-    )
 
 
 def _register_and_login(
