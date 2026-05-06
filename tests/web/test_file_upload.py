@@ -3,6 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi import FastAPI
@@ -77,15 +78,15 @@ def auth_headers(test_db):
     """Authentication headers for admin user"""
     admin_user, _ = test_db
     # Create a valid JWT token directly
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     import jwt
 
     payload = {
         "sub": admin_user.username,  # Use unique username from test_db fixture
         "type": "access",
-        "exp": datetime.utcnow() + timedelta(hours=1),
-        "iat": datetime.utcnow(),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        "iat": datetime.now(timezone.utc),
         "user_id": admin_user.id,  # Use actual user ID from test_db fixture
     }
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
@@ -696,8 +697,6 @@ class TestFileUploadSecurity:
         self, client, test_db, temp_uploads_dir, auth_headers
     ):
         """Test that download_file rejects path traversal attempts."""
-        from urllib.parse import quote
-
         malicious_paths = [
             "../../../etc/passwd",
             "..\\..\\..\\windows\\system32",
@@ -717,8 +716,6 @@ class TestFileUploadSecurity:
         self, client, test_db, temp_uploads_dir, auth_headers
     ):
         """Test that preview_file rejects path traversal attempts."""
-        from urllib.parse import quote
-
         task_id = 1
 
         malicious_paths = [

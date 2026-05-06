@@ -10,7 +10,7 @@ Also covers:
 
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -160,7 +160,7 @@ class TestMultiTenancyCollections:
                 "source_path": "/tmp/test.txt",
                 "file_type": "txt",
                 "content_hash": "hash1",
-                "uploaded_at": datetime.utcnow(),
+                "uploaded_at": datetime.now(timezone.utc),
                 "title": "Test Document",
                 "language": "en",
                 "user_id": user_id,
@@ -358,7 +358,7 @@ class TestMultiTenancySearch:
                     "vector_dimension": 1,
                     "text": "content for user 1",
                     "chunk_hash": "chash1",
-                    "created_at": datetime.utcnow(),
+                    "created_at": datetime.now(timezone.utc),
                     "metadata": "{}",
                     "user_id": 1,
                 }
@@ -378,7 +378,7 @@ class TestMultiTenancySearch:
                     "vector_dimension": 1,
                     "text": "content for user 2",
                     "chunk_hash": "chash2",
-                    "created_at": datetime.utcnow(),
+                    "created_at": datetime.now(timezone.utc),
                     "metadata": "{}",
                     "user_id": 2,
                 }
@@ -435,7 +435,7 @@ class TestMultiTenancySearch:
                         "vector_dimension": 1,
                         "text": "orphaned content should be hidden",
                         "chunk_hash": "chunk_hash_orphaned",
-                        "created_at": datetime.utcnow(),
+                        "created_at": datetime.now(timezone.utc),
                         "metadata": "{}",
                         "user_id": MIN_INT64,
                     }

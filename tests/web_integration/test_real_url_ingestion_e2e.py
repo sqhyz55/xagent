@@ -67,13 +67,17 @@ def _poll_with_backoff(
     Returns:
         True if condition was met, False if timeout reached
     """
-    start_time = time.time()
+    deadline = time.monotonic() + max_wait_seconds
     sleep_time = initial_sleep
 
-    while time.time() - start_time < max_wait_seconds:
+    while time.monotonic() < deadline:
         if condition():
             return True
-        time.sleep(sleep_time)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        # Sleep only for the remaining budget to avoid overshooting timeout.
+        time.sleep(min(sleep_time, remaining))
         # Exponential backoff: double sleep time, capped at max_sleep
         sleep_time = min(sleep_time * 2, max_sleep)
 
@@ -233,7 +237,8 @@ class TestRealURLIngestion:
             return False
 
         # Poll with exponential backoff - may timeout if indexing is slow
-        _poll_with_backoff(has_search_results, max_wait_seconds=20)
+        search_ready = _poll_with_backoff(has_search_results, max_wait_seconds=20)
+        assert search_ready, "Search results were not ready within polling timeout"
 
         # Final search verification (may be empty if indexing still pending)
         response = client.post(

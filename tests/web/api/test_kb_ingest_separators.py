@@ -185,8 +185,10 @@ def test_delete_collection_forbidden_for_non_admin_with_other_users_docs(
 
     assert resp.status_code == 403
     detail = resp.json()["detail"]
-    assert "Access denied for collection" in detail
-    assert "test_collection" in detail
+    assert (
+        "Only admin users can delete collections containing documents from other users."
+        in detail
+    )
     mock_delete_collection.assert_not_called()
 
 
