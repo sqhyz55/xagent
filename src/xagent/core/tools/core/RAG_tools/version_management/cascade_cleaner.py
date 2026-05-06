@@ -332,9 +332,6 @@ def _delete_by_predicates(
             "documents",
         ) or name.startswith("embeddings_"):
             continue
-        if name.startswith("embeddings_"):
-            # Already handled in the explicit embeddings pass above.
-            continue
         if name not in table_names:
             deleted[name] = 0
             continue
