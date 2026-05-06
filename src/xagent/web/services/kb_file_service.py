@@ -132,7 +132,7 @@ def upsert_uploaded_file_record(
     db.refresh(file_record)
 
     # Invalidate cache for this user since file list may have changed
-    _file_status_cache.invalidate_user(user_id)
+    _file_status_cache.invalidate_user(scope.user_id)
 
     return file_record
 
@@ -301,7 +301,7 @@ def delete_uploaded_file_if_orphaned(
     db.flush()
 
     # Invalidate cache for this user since file list changed
-    _file_status_cache.invalidate_user(user_id)
+    _file_status_cache.invalidate_user(scope.user_id)
 
     return True
 

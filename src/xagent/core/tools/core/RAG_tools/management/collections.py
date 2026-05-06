@@ -44,7 +44,7 @@ from ..management.status import (
     write_ingestion_status,
 )
 from ..storage.factory import get_metadata_store, get_vector_index_store
-from ..utils.lancedb_query_utils import _safe_count_rows, list_table_names
+from ..utils.lancedb_query_utils import _safe_count_rows
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from ..utils.user_scope import resolve_user_scope
