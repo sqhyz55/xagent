@@ -371,7 +371,7 @@ class TestDocumentTypeDefaultParsing:
         auth_headers: dict[str, str],
         sample_parsing_files: tuple[dict[str, str], str],
     ) -> None:
-        """Test that code files (.py, .js, etc.) are parsed correctly."""
+        """Test that unsupported code files are rejected with a clear error."""
         files, temp_dir = sample_parsing_files
         collection_name = "e2e_parse_code"
         file_path = files["code.py"]
@@ -384,9 +384,10 @@ class TestDocumentTypeDefaultParsing:
                 headers=auth_headers,
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 500
         result = response.json()
-        assert result["status"] in ["success", "partial"]
+        assert result["status"] == "error"
+        assert "Unsupported file type" in str(result.get("message", ""))
 
 
 # ==========================================
