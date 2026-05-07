@@ -16,10 +16,13 @@ jobs:
   real_rag_tests:
     name: Real RAG E2E Tests
     runs-on: ubuntu-latest
-    # Skip job if not a PR/ready PR, OR if both embedding API keys are missing
+    # Run only when PR is ready and embedding key+model are both configured.
     if: |
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false) &&
-      (secrets.DASHSCOPE_API_KEY != '' || secrets.ZHIPU_API_KEY != '')
+      (
+        (secrets.DASHSCOPE_API_KEY != '' && vars.DASHSCOPE_EMBEDDING_MODEL != '') ||
+        (secrets.ZHIPU_API_KEY != '' && vars.ZHIPU_EMBEDDING_MODEL != '')
+      )
 
     steps:
       - name: Checkout code
@@ -71,30 +74,36 @@ jobs:
         run: |
           set -e
 
-          # Export API keys for the tests
+          # Export embedding config for tests.
+          # We require both key and model name to avoid starting the job with incomplete config.
           if [ -n "${{ secrets.DASHSCOPE_API_KEY }}" ]; then
             export DASHSCOPE_API_KEY="${{ secrets.DASHSCOPE_API_KEY }}"
-            echo "✓ DASHSCOPE_API_KEY configured"
+            export DASHSCOPE_EMBEDDING_MODEL="${{ vars.DASHSCOPE_EMBEDDING_MODEL }}"
+            echo "✓ DASHSCOPE embedding config configured"
           fi
           if [ -n "${{ secrets.ZHIPU_API_KEY }}" ]; then
             export ZHIPU_API_KEY="${{ secrets.ZHIPU_API_KEY }}"
-            echo "✓ ZHIPU_API_KEY configured"
+            export ZHIPU_EMBEDDING_MODEL="${{ vars.ZHIPU_EMBEDDING_MODEL }}"
+            echo "✓ ZHIPU embedding config configured"
           fi
 
           # Run real_rag tests serially as required
           python3 -m uv run python -m pytest -m "real_rag" -v -n 0
         env:
-          # Pass secrets as environment variables
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DASHSCOPE_EMBEDDING_MODEL: ${{ vars.DASHSCOPE_EMBEDDING_MODEL }}
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          ZHIPU_EMBEDDING_MODEL: ${{ vars.ZHIPU_EMBEDDING_MODEL }}
 
       - name: Test summary
         if: always()
         run: |
           echo "## Real RAG Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "These tests require real embedding API keys (DASHSCOPE_API_KEY or ZHIPU_API_KEY)." >> $GITHUB_STEP_SUMMARY
+          echo "These tests require both embedding API key and embedding model variables." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "To enable locally, set one of these environment variables before running tests." >> $GITHUB_STEP_SUMMARY
+          echo "Required CI config (one provider minimum):" >> $GITHUB_STEP_SUMMARY
+          echo "- DASHSCOPE_API_KEY (secret) + DASHSCOPE_EMBEDDING_MODEL (repo variable)" >> $GITHUB_STEP_SUMMARY
+          echo "- ZHIPU_API_KEY (secret) + ZHIPU_EMBEDDING_MODEL (repo variable)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "To enable in CI, add the API key to repository secrets." >> $GITHUB_STEP_SUMMARY
+          echo "To enable in CI, configure both the secret and the corresponding model variable." >> $GITHUB_STEP_SUMMARY
