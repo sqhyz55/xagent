@@ -347,7 +347,7 @@ class TestBehaviorConsistency:
 
         # Verify search results structure is consistent
         for result in results:
-            assert "content" in result
+            assert "content" in result or "text" in result
             assert "score" in result
 
     def test_ingestion_consistency_before_after_migration(

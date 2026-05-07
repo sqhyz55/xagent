@@ -58,5 +58,7 @@ class TestSearchRealProviderSmoke:
         assert "results" in body
         results = body.get("results") or []
         if results:
-            joined = " ".join(str(r.get("content", "")) for r in results)
+            joined = " ".join(
+                str(r.get("content") or r.get("text", "")) for r in results
+            )
             assert token_phrase in joined, http_detail(search)

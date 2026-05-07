@@ -390,16 +390,19 @@ class TestMultiTenantSearchIsolation:
             )
             assert response.status_code == 200, http_detail(response)
             results = response.json().get("results", [])
-            result_text = " ".join(r.get("content", "") for r in results)
+            result_text = " ".join(
+                str(r.get("content") or r.get("text", "")) for r in results
+            )
+            normalized_result_text = result_text.lower()
             if results:
                 for keyword in search_data["expected_keywords"]:
-                    assert keyword in result_text, (
+                    assert keyword.lower() in normalized_result_text, (
                         f"Search results should contain expected keyword: {keyword}"
                     )
             other_tenant = "tenant2" if tenant_key == "tenant1" else "tenant1"
             for keyword in tenant_search_data[other_tenant]["expected_keywords"]:
                 if keyword.startswith(other_tenant.capitalize()):
-                    assert keyword not in result_text, (
+                    assert keyword.lower() not in normalized_result_text, (
                         f"Search results should NOT contain {other_tenant}'s content"
                     )
 

@@ -1632,6 +1632,51 @@ def test_kb_rename_target_directory_exists_conflict(test_env, temp_uploads):
         )
 
 
+def test_kb_rename_rejects_existing_visible_target_collection(test_env):
+    """Rename must reject when target collection already exists and is visible."""
+    app, headers, user, _ = test_env
+    client = TestClient(app)
+
+    old_collection_name = "rename_source"
+    new_collection_name = "rename_target_existing"
+
+    from xagent.core.tools.core.RAG_tools.core.schemas import (
+        CollectionInfo,
+        ListCollectionsResult,
+    )
+
+    visible_for_user = ListCollectionsResult(
+        status="success",
+        collections=[
+            CollectionInfo(name=old_collection_name, documents=1, document_names=[]),
+            CollectionInfo(name=new_collection_name, documents=1, document_names=[]),
+        ],
+        total_count=2,
+        message="ok",
+        warnings=[],
+    )
+
+    with (
+        patch("xagent.web.api.kb._ensure_collection_access", new_callable=AsyncMock),
+        patch(
+            "xagent.web.api.kb._list_collections_with_retry",
+            new_callable=AsyncMock,
+            return_value=visible_for_user,
+        ),
+        patch("xagent.web.api.kb.rename_collection_storage") as mock_rename_storage,
+    ):
+        response = client.put(
+            f"/api/kb/collections/{old_collection_name}",
+            data={"new_name": new_collection_name},
+            headers=headers,
+        )
+
+    assert response.status_code == 409, (
+        f"Expected 409 when target exists, got {response.status_code}: {response.text}"
+    )
+    mock_rename_storage.assert_not_called()
+
+
 def test_delete_after_rename_not_denied_by_stale_list_collections(test_env):
     """When access passes, stale ``list_collections`` alone does not block delete.
 

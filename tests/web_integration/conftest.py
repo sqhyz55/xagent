@@ -136,6 +136,11 @@ def mock_rag_pipeline(
     This fixture uses the test file's own stub_embedding_config if defined,
     otherwise falls back to the default from this conftest.py.
     """
+    # Do not monkeypatch embedding pipeline for real provider smoke tests.
+    # Those tests must exercise the real embedding/search stack.
+    if request.node.get_closest_marker("real_rag") is not None:
+        return
+
     # Get stub_embedding_config from the test file if available, otherwise use default
     config = request.getfixturevalue("stub_embedding_config")
     _setup_rag_mocks(monkeypatch, config, stub_embedding_adapter)

@@ -3424,6 +3424,11 @@ async def rename_collection_api(
         is_admin=False,
         stage="rename_list_visible_collections",
     )
+    if any(c.name == safe_new_collection for c in visible_for_user.collections):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Target collection already exists: {safe_new_collection}",
+        )
     if not any(c.name == safe_new_collection for c in visible_for_user.collections):
         all_named = await _list_collections_with_retry(
             user_id=None,
