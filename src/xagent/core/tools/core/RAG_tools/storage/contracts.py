@@ -540,6 +540,24 @@ class VectorIndexStore(ABC):
         """List backend table names."""
 
     @abstractmethod
+    def plan_vector_plane_cascade(
+        self,
+        table_to_filter: Dict[str, str],
+        *,
+        model_tag: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Preview row counts per table for vector-plane cascade predicates."""
+
+    @abstractmethod
+    def execute_vector_plane_cascade(
+        self,
+        table_to_filter: Dict[str, str],
+        *,
+        model_tag: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Execute vector-plane cascade deletes for prepared backend filter strings."""
+
+    @abstractmethod
     def get_vector_dimension(self, table_name: str) -> Optional[int]:
         """Get the vector dimension from a table's schema.
 

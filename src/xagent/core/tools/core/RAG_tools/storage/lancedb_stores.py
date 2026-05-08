@@ -780,6 +780,34 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         self.invalidate_table_cache()
         return counts
 
+    def plan_vector_plane_cascade(
+        self,
+        table_to_filter: Dict[str, str],
+        *,
+        model_tag: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Preview LanceDB cascade counts (adapter-owned)."""
+        from . import lancedb_cascade_vector_plane as lcv
+
+        return lcv.plan_by_predicates(
+            self._get_connection(), dict(table_to_filter), model_tag=model_tag
+        )
+
+    def execute_vector_plane_cascade(
+        self,
+        table_to_filter: Dict[str, str],
+        *,
+        model_tag: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Execute LanceDB cascade deletes (adapter-owned)."""
+        from . import lancedb_cascade_vector_plane as lcv
+
+        result = lcv.delete_by_predicates(
+            self._get_connection(), dict(table_to_filter), model_tag=model_tag
+        )
+        self.invalidate_table_cache()
+        return result
+
     def _count_collections_fast(
         self,
         table_name: str,
