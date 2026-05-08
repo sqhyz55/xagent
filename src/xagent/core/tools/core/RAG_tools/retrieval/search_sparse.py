@@ -4,8 +4,6 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any, Dict, List, Optional, cast
 
-import pandas as pd
-
 from ..core.schemas import (
     SearchFallbackAction,
     SearchResult,

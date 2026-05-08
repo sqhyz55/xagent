@@ -154,7 +154,9 @@ def list_documents_for_user(
     return [_document_record_to_dict(record) for record in records]
 
 
-def _document_record_to_dict(record: Union[Dict[str, Any], DocumentRecord]) -> Dict[str, Any]:
+def _document_record_to_dict(
+    record: Union[Dict[str, Any], DocumentRecord],
+) -> Dict[str, Any]:
     """Convert a document record projection to the legacy dict shape."""
     if isinstance(record, dict):
         return dict(record)

@@ -121,9 +121,7 @@ class TestSearchSparse:
 
             mock_fallback.assert_called_once()
             mock_vector_store.search_fts_by_model.assert_called_once()
-            assert (
-                mock_vector_store.search_fts_by_model.call_args.kwargs["top_k"] == 5
-            )
+            assert mock_vector_store.search_fts_by_model.call_args.kwargs["top_k"] == 5
 
     def test_search_sparse_applies_collection_filter(self) -> None:
         """Test that search_sparse always applies collection filter for KB isolation (Issue #72)."""

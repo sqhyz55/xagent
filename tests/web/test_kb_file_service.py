@@ -8,7 +8,9 @@ from unittest.mock import patch
 from xagent.web.services import kb_file_service
 
 
-def test_list_documents_for_user_delegates_to_vector_store_without_raw_lancedb() -> None:
+def test_list_documents_for_user_delegates_to_vector_store_without_raw_lancedb() -> (
+    None
+):
     """Document listing should go through the storage contract, not LanceDB directly."""
     fake_store = SimpleNamespace()
     fake_store.list_document_records = lambda **kwargs: [

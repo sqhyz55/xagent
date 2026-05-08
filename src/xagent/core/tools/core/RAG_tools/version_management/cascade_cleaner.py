@@ -21,7 +21,7 @@ from ..LanceDB.schema_manager import (
     ensure_parses_table,
 )
 from ..storage.factory import get_vector_store_raw_connection
-from ..utils.lancedb_query_utils import _safe_count_rows, list_table_names
+from ..utils.lancedb_query_utils import list_table_names
 from ..utils.string_utils import (
     build_lancedb_filter_expression,
     build_user_id_filter_for_table,
