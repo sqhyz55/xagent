@@ -780,6 +780,43 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         self.invalidate_table_cache()
         return counts
 
+    def list_version_candidates(
+        self,
+        *,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List raw candidate rows for version-management steps."""
+        from ..LanceDB.schema_manager import _safe_close_table
+
+        conn = self._get_connection()
+        filter_expr = build_lancedb_filter_expression(
+            {"collection": collection, "doc_id": doc_id}
+        )
+        table_names = set(self.list_table_names())
+
+        def _query(table_name: str) -> List[Dict[str, Any]]:
+            if table_name not in table_names:
+                return []
+            table = None
+            try:
+                table = conn.open_table(table_name)
+                return query_to_list(table.search().where(filter_expr))
+            finally:
+                _safe_close_table(table)
+
+        if step_type == "parse":
+            return _query("parses")
+        if step_type == "chunk":
+            return _query("chunks")
+        if step_type == "embed":
+            if not model_tag:
+                return []
+            return _query(f"embeddings_{model_tag}")
+        return []
+
     def plan_vector_plane_cascade(
         self,
         table_to_filter: Dict[str, str],

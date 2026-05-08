@@ -536,6 +536,24 @@ class VectorIndexStore(ABC):
         """
 
     @abstractmethod
+    def list_version_candidates(
+        self,
+        *,
+        collection: str,
+        doc_id: str,
+        step_type: str,
+        model_tag: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List raw candidate rows for version-management step.
+
+        Args:
+            collection: Collection name.
+            doc_id: Document ID.
+            step_type: One of "parse", "chunk", "embed".
+            model_tag: Required for "embed" step.
+        """
+
+    @abstractmethod
     def list_table_names(self) -> Sequence[str]:
         """List backend table names."""
 
