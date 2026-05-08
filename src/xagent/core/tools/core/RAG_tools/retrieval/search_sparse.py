@@ -10,6 +10,7 @@ from ..core.schemas import (
     SearchWarning,
     SparseSearchResponse,
 )
+from ..LanceDB.model_tag_utils import to_model_tag
 from ..LanceDB.schema_manager import _safe_close_table
 from ..storage.contracts import FilterCondition, FilterExpression, FilterOperator
 from ..storage.factory import (
@@ -222,9 +223,9 @@ def _substring_fallback(
     if filters:
         query_filters.update(filters)
 
-    _table = None
     try:
-        _table, table_name = vector_store.open_embeddings_table(model_tag)
+        # Avoid opening an extra table handle here; iter_batches will open internally.
+        table_name = f"embeddings_{to_model_tag(model_tag)}"
 
         for batch in vector_store.iter_batches(
             table_name=table_name,
@@ -288,8 +289,6 @@ def _substring_fallback(
 
     except Exception as exc:
         logger.error("Substring fallback failed: %s", exc)
-    finally:
-        _safe_close_table(_table)
 
     return results
 

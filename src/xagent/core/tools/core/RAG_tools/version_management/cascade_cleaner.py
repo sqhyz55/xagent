@@ -261,34 +261,42 @@ def cascade_delete(
                 is_admin=is_admin,
             )
 
-    # Embeddings tables: expand explicitly so we can safely include user_id filter
-    for t in table_names:
-        if not t.startswith("embeddings_"):
-            continue
-        if model_tag is not None and t != f"embeddings_{model_tag}":
-            continue
+    # Embeddings predicates: keep per-table keys for compatibility, but avoid
+    # opening every embeddings_* table during predicate construction.
+    target_embeddings_tables = [
+        t
+        for t in table_names
+        if t.startswith("embeddings_")
+        and (model_tag is None or t == f"embeddings_{model_tag}")
+    ]
+    if target_embeddings_tables:
+        sample_embeddings_table = target_embeddings_tables[0]
         if target == "collection":
-            predicates[t] = _build_collection_filter(
+            embed_filter = _build_collection_filter(
                 conn=conn,
-                table_name=t,
+                table_name=sample_embeddings_table,
                 collection=collection,
                 user_id=user_id,
                 is_admin=is_admin,
             )
         else:
-            predicates[t] = _build_document_filter(
+            embed_filter = _build_document_filter(
                 conn=conn,
-                table_name=t,
+                table_name=sample_embeddings_table,
                 collection=collection,
                 doc_id=str(doc_id),
                 user_id=user_id,
                 is_admin=is_admin,
             )
 
-    if preview_only and not confirm:
-        return _plan_by_predicates(conn, predicates, model_tag=None)
+        # Reuse one computed embeddings filter across all target embeddings_* tables.
+        for t in target_embeddings_tables:
+            predicates[t] = embed_filter
 
-    return _delete_by_predicates(conn, predicates, model_tag=None)
+    if preview_only and not confirm:
+        return _plan_by_predicates(conn, predicates, model_tag=model_tag)
+
+    return _delete_by_predicates(conn, predicates, model_tag=model_tag)
 
 
 def cleanup_cascade(

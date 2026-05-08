@@ -1274,6 +1274,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         Yields backend-specific batch objects (e.g., PyArrow RecordBatch).
         """
         from ..LanceDB.schema_manager import (
+            _safe_close_table,
             ensure_chunks_table,
             ensure_documents_table,
             ensure_parses_table,
@@ -1289,10 +1290,9 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         elif table_name == "chunks":
             ensure_chunks_table(conn)
 
-        from ..LanceDB.schema_manager import _safe_close_table
-
         table = None
         try:
+            # High-frequency scan path: bypass table cache to avoid FD buildup.
             table = self._get_table(table_name, use_cache=False)
         except Exception as exc:
             logger.debug("Unable to open table '%s': %s", table_name, exc)
@@ -1756,7 +1756,12 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 )
                 return raw_results
             except Exception as exc:
-                logger.error("Sync FTS search failed: %s", exc)
+                logger.warning(
+                    "Sync FTS search failed for table='%s', query='%s': %s",
+                    table_name,
+                    query_text[:100],
+                    exc,
+                )
                 return []
         finally:
             _safe_close_table(table)
@@ -1890,7 +1895,12 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             return results
 
         except Exception as exc:
-            logger.error("Async FTS search failed: %s", exc)
+            logger.warning(
+                "Async FTS search failed for table='%s', query='%s': %s",
+                table_name,
+                query_text[:100],
+                exc,
+            )
             return []
         finally:
             _safe_close_table(table)

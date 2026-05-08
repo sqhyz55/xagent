@@ -11,23 +11,29 @@ import logging
 from typing import Any, Dict, Optional
 
 from ..LanceDB.schema_manager import _safe_close_table
-from ..utils.lancedb_query_utils import _safe_count_rows
+from ..utils.lancedb_query_utils import _safe_count_rows, list_table_names
 
 logger = logging.getLogger(__name__)
 
 
 def get_table_names(conn: Any) -> list[str]:
     """Return table names from a LanceDB connection (defensive)."""
-    table_names_fn = getattr(conn, "table_names", None)
-    if table_names_fn is None:
-        return []
     try:
-        names = table_names_fn()
+        names = list_table_names(conn)
+        if names:
+            return names
+        # Fallback for mocked/legacy connections where list_tables exists but
+        # does not return real names while table_names() is configured.
+        table_names_fn = getattr(conn, "table_names", None)
+        if callable(table_names_fn):
+            raw = table_names_fn()
+            if isinstance(raw, str):
+                return [raw]
+            if isinstance(raw, list):
+                return [str(name) for name in raw]
+        return []
     except Exception:
         return []
-    if not names:
-        return []
-    return [str(name) for name in names]
 
 
 def plan_by_predicates(
@@ -84,62 +90,94 @@ def delete_by_predicates(
     """Delete rows by table predicates in a fixed, safe order."""
     deleted: Dict[str, int] = {}
     table_names = get_table_names(conn)
+    current_stage = "prepare"
 
-    for t in table_names:
-        if not t.startswith("embeddings_") or t not in table_to_filter:
-            continue
-        filt = table_to_filter[t]
-        table = None
-        try:
-            table = conn.open_table(t)
-            cnt = _safe_count_rows(table, filt)
-            if cnt > 0:
-                table.delete(filt)
-                logger.info("Cascade cleanup: deleted %s rows from %s", cnt, t)
-            deleted[t] = cnt
-        finally:
-            _safe_close_table(table)
-
-    order = [
-        "__embeddings__",
-        "chunks",
-        "parses",
-        "main_pointers",
-        "ingestion_runs",
-        "documents",
-    ]
-
-    if "__embeddings__" in table_to_filter:
-        filt = table_to_filter["__embeddings__"]
-        total = 0
-
-        all_embed_tables = [t for t in table_names if t.startswith("embeddings_")]
-        if model_tag is not None:
-            target_tables = [
-                t for t in all_embed_tables if t == f"embeddings_{model_tag}"
-            ]
-        else:
-            target_tables = all_embed_tables
-
-        for t in target_tables:
+    try:
+        current_stage = "explicit_embeddings"
+        for t in table_names:
+            if not t.startswith("embeddings_") or t not in table_to_filter:
+                continue
+            filt = table_to_filter[t]
             table = None
             try:
                 table = conn.open_table(t)
                 cnt = _safe_count_rows(table, filt)
                 if cnt > 0:
                     table.delete(filt)
-                total += cnt
+                    logger.info("Cascade cleanup: deleted %s rows from %s", cnt, t)
+                deleted[t] = cnt
             finally:
                 _safe_close_table(table)
-        deleted["embeddings"] = total
-        if total > 0:
-            logger.info(
-                "Cascade cleanup: deleted %s rows from embeddings tables", total
-            )
 
-    for name in order[1:]:
-        if name in table_to_filter and name in table_names:
-            filt = table_to_filter[name]
+        order = [
+            "__embeddings__",
+            "chunks",
+            "parses",
+            "main_pointers",
+            "ingestion_runs",
+            "documents",
+        ]
+
+        current_stage = "embeddings_fanout"
+        if "__embeddings__" in table_to_filter:
+            filt = table_to_filter["__embeddings__"]
+            total = 0
+
+            all_embed_tables = [t for t in table_names if t.startswith("embeddings_")]
+            if model_tag is not None:
+                target_tables = [
+                    t for t in all_embed_tables if t == f"embeddings_{model_tag}"
+                ]
+            else:
+                target_tables = all_embed_tables
+
+            for t in target_tables:
+                table = None
+                try:
+                    table = conn.open_table(t)
+                    cnt = _safe_count_rows(table, filt)
+                    if cnt > 0:
+                        table.delete(filt)
+                    total += cnt
+                finally:
+                    _safe_close_table(table)
+            deleted["embeddings"] = total
+            if total > 0:
+                logger.info(
+                    "Cascade cleanup: deleted %s rows from embeddings tables", total
+                )
+
+        current_stage = "core_tables"
+        for name in order[1:]:
+            if name in table_to_filter and name in table_names:
+                filt = table_to_filter[name]
+                table = None
+                try:
+                    table = conn.open_table(name)
+                    cnt = _safe_count_rows(table, filt)
+                    if cnt > 0:
+                        table.delete(filt)
+                        logger.info(
+                            "Cascade cleanup: deleted %s rows from %s", cnt, name
+                        )
+                    deleted[name] = cnt
+                finally:
+                    _safe_close_table(table)
+
+        current_stage = "custom_tables"
+        for name, filt in table_to_filter.items():
+            if name in (
+                "__embeddings__",
+                "chunks",
+                "parses",
+                "main_pointers",
+                "ingestion_runs",
+                "documents",
+            ) or name.startswith("embeddings_"):
+                continue
+            if name not in table_names:
+                deleted[name] = 0
+                continue
             table = None
             try:
                 table = conn.open_table(name)
@@ -150,29 +188,14 @@ def delete_by_predicates(
                 deleted[name] = cnt
             finally:
                 _safe_close_table(table)
-
-    for name, filt in table_to_filter.items():
-        if name in (
-            "__embeddings__",
-            "chunks",
-            "parses",
-            "main_pointers",
-            "ingestion_runs",
-            "documents",
-        ) or name.startswith("embeddings_"):
-            continue
-        if name not in table_names:
-            deleted[name] = 0
-            continue
-        table = None
-        try:
-            table = conn.open_table(name)
-            cnt = _safe_count_rows(table, filt)
-            if cnt > 0:
-                table.delete(filt)
-                logger.info("Cascade cleanup: deleted %s rows from %s", cnt, name)
-            deleted[name] = cnt
-        finally:
-            _safe_close_table(table)
+    except Exception as exc:
+        logger.error(
+            "Cascade delete incomplete at stage='%s'; partial_deleted=%s; error=%s",
+            current_stage,
+            deleted,
+            exc,
+            exc_info=True,
+        )
+        raise
 
     return deleted
