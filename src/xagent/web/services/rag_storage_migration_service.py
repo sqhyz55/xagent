@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,9 @@ class RAGStorageMigrationService:
 
     async def _check_and_backfill_documents_table(self) -> None:
         """Fix nullability and backfill empty file_id / NULL user_id when needed."""
-        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import _safe_close_table
+        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
+            _safe_close_table,
+        )
         from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import query_to_list
         from ...migrations.lancedb.backfill_documents_file_id import backfill_all
         from ...migrations.lancedb.fix_file_id_nullable import fix_file_id_nullable
@@ -139,14 +141,16 @@ class RAGStorageMigrationService:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not fix file_id nullability: %s", e)
 
-        documents_table: Optional[object] = None
+        documents_table: Optional[Any] = None
         try:
             documents_table = conn.open_table("documents")
             empty_file_id_count = len(
                 query_to_list(documents_table.search().where("file_id = ''").limit(1))
             )
             null_user_id_count = len(
-                query_to_list(documents_table.search().where("user_id IS NULL").limit(1))
+                query_to_list(
+                    documents_table.search().where("user_id IS NULL").limit(1)
+                )
             )
 
             if empty_file_id_count == 0 and null_user_id_count == 0:
@@ -175,9 +179,13 @@ class RAGStorageMigrationService:
                     user_id_result.get("updated", 0),
                 )
             if file_id_result.get("error"):
-                logger.warning("file_id backfill error: %s", file_id_result.get("error"))
+                logger.warning(
+                    "file_id backfill error: %s", file_id_result.get("error")
+                )
             if user_id_result.get("error"):
-                logger.warning("user_id backfill error: %s", user_id_result.get("error"))
+                logger.warning(
+                    "user_id backfill error: %s", user_id_result.get("error")
+                )
         except Exception as e:  # noqa: BLE001
             logger.debug("Could not check documents table: %s", e)
         finally:
