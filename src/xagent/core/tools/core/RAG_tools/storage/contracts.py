@@ -221,12 +221,15 @@ class DocumentRecord:
     """Lightweight document projection for metadata/control operations.
 
     Attributes:
+        collection: Optional collection identifier for callers that need to
+            preserve collection context when listing documents across collections.
         doc_id: Document identifier.
         file_id: Optional file identifier for uploaded file tracking.
         source_path: Original source path if available.
     """
 
     doc_id: str
+    collection: Optional[str] = None
     file_id: Optional[str] = None
     source_path: Optional[str] = None
 

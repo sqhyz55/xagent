@@ -555,6 +555,9 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 records.append(
                     DocumentRecord(
                         doc_id=str(raw_doc_id),
+                        collection=(
+                            str(item["collection"]) if item.get("collection") else None
+                        ),
                         file_id=str(item["file_id"]) if item.get("file_id") else None,
                         source_path=(
                             str(item["source_path"])

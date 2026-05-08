@@ -297,8 +297,8 @@ def test_vector_store_list_document_records_filters_and_maps(
     mock_table.schema = [SimpleNamespace(name="doc_id")]
     mock_conn.open_table.return_value = mock_table
     mock_query_to_list.return_value = [
-        {"doc_id": "doc-1", "source_path": "/tmp/a.pdf"},
-        {"doc_id": "doc-2", "source_path": None},
+        {"collection": "kb1", "doc_id": "doc-1", "source_path": "/tmp/a.pdf"},
+        {"collection": "kb1", "doc_id": "doc-2", "source_path": None},
     ]
 
     store = LanceDBVectorIndexStore()
@@ -310,6 +310,7 @@ def test_vector_store_list_document_records_filters_and_maps(
     )
 
     assert [r.doc_id for r in records] == ["doc-1", "doc-2"]
+    assert [r.collection for r in records] == ["kb1", "kb1"]
     assert records[0].source_path == "/tmp/a.pdf"
     mock_table.search.return_value.where.assert_called_once()
 

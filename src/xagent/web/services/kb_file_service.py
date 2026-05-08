@@ -19,6 +19,7 @@ from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
 )
 from ...core.tools.core.RAG_tools.management.status import load_ingestion_status
 from ...core.tools.core.RAG_tools.storage.contracts import DocumentRecord
+from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
 from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import (
     list_embeddings_table_names,
     query_to_list,
@@ -144,32 +145,25 @@ def list_documents_for_user(
     collection_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Load KB document metadata rows for a user."""
-    conn = get_connection_from_env()
-    ensure_documents_table(conn)
-    table = None
-    try:
-        table = conn.open_table("documents")
+    records = get_vector_index_store().list_document_records(
+        collection_name=collection_name,
+        user_id=user_id,
+        is_admin=is_admin,
+        max_results=10000,
+    )
+    return [_document_record_to_dict(record) for record in records]
 
-        base_filter = ""
-        if collection_name:
-            base_filter = build_lancedb_filter_expression(
-                {"collection": collection_name}
-            )
-        scope = resolve_user_scope(user_id=user_id, is_admin=is_admin)
-        user_filter = UserPermissions.get_user_filter(
-            scope.user_id, is_admin=scope.is_admin
-        )
-        combined_filter = (
-            f"({base_filter}) and ({user_filter})"
-            if user_filter and base_filter
-            else (user_filter or base_filter)
-        )
-        query = table.search()
-        if combined_filter:
-            query = query.where(combined_filter)
-        return query_to_list(query.limit(10000))
-    finally:
-        _safe_close_table(table)
+
+def _document_record_to_dict(record: Union[Dict[str, Any], DocumentRecord]) -> Dict[str, Any]:
+    """Convert a document record projection to the legacy dict shape."""
+    if isinstance(record, dict):
+        return dict(record)
+    return {
+        "collection": record.collection,
+        "doc_id": record.doc_id,
+        "file_id": record.file_id,
+        "source_path": record.source_path,
+    }
 
 
 def build_uploaded_filename_map(
