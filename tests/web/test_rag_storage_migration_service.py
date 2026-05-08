@@ -20,8 +20,10 @@ async def test_start_background_migrations_creates_task(
         called["run"] += 1
 
     monkeypatch.setattr(service, "_run_migrations", _fake_run)
+    monkeypatch.setattr(service, "_should_start_background_task", lambda: True)
 
     task = await service.start_background_migrations()
+    assert task is not None
     await task
 
     assert isinstance(task, asyncio.Task)

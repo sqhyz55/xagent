@@ -7,7 +7,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from xagent.core.tools.core.RAG_tools.core.exceptions import DatabaseOperationError, VersionManagementError
+from xagent.core.tools.core.RAG_tools.core.exceptions import (
+    VersionManagementError,
+)
 from xagent.core.tools.core.RAG_tools.core.schemas import StepType
 from xagent.core.tools.core.RAG_tools.version_management.list_candidates import (
     list_candidates,
