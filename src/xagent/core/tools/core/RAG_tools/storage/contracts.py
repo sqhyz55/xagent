@@ -774,6 +774,41 @@ class VectorIndexStore(ABC):
             - metadata: Additional metadata
         """
 
+    @abstractmethod
+    def search_fts(
+        self,
+        table_name: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        text_column_name: str = "text",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Execute full-text search (sync).
+
+        Args:
+            table_name: Name of embeddings/table to search (must have FTS index).
+            query_text: Query text for full-text search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            text_column_name: Name of text column with FTS index (default "text").
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
+
+        Returns:
+            List of search result dictionaries with keys:
+            - doc_id: Document ID
+            - chunk_id: Chunk ID
+            - text: Chunk text
+            - _score: TF-IDF score (higher is better)
+            - metadata: Additional metadata
+
+        Raises:
+            DatabaseOperationError: If FTS index is not configured or search fails.
+        """
+
     def search_vectors_by_model(
         self,
         model_tag: str,
@@ -814,6 +849,45 @@ class VectorIndexStore(ABC):
             top_k=top_k,
             filters=filters,
             vector_column_name=vector_column_name,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def search_fts_by_model(
+        self,
+        model_tag: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        text_column_name: str = "text",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Convenience method: sync FTS search by model_tag with automatic table resolution.
+
+        This method combines open_embeddings_table() + search_fts() for callers that
+        only know model_tag.
+
+        Args:
+            model_tag: Model tag for the embeddings table.
+            query_text: Query text for full-text search.
+            top_k: Number of top results to return.
+            filters: Optional abstract filter expression.
+            text_column_name: Name of text column with FTS index (default "text").
+            user_id: Optional user ID for multi-tenancy filtering.
+            is_admin: Whether the user has admin privileges.
+
+        Returns:
+            List of search result dictionaries (see search_fts).
+        """
+        _table, table_name = self.open_embeddings_table(model_tag)
+        return self.search_fts(
+            table_name=table_name,
+            query_text=query_text,
+            top_k=top_k,
+            filters=filters,
+            text_column_name=text_column_name,
             user_id=user_id,
             is_admin=is_admin,
         )

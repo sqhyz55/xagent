@@ -1638,6 +1638,64 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         finally:
             _safe_close_table(table)
 
+    def search_fts(
+        self,
+        table_name: str,
+        query_text: str,
+        *,
+        top_k: int,
+        filters: Optional[FilterExpression] = None,
+        text_column_name: str = "text",
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Execute full-text search using sync LanceDB FTS API."""
+        log_performance(
+            "search_fts_start",
+            top_k=top_k,
+            table_name=table_name,
+            has_filters=filters is not None,
+        )
+
+        from ..LanceDB.schema_manager import _safe_close_table
+
+        conn = self._get_connection()
+
+        try:
+            table = conn.open_table(table_name)
+        except Exception as exc:
+            logger.debug("Unable to open table '%s' for FTS: %s", table_name, exc)
+            return []
+
+        try:
+            backend_filter = self.build_filter_expression(
+                filters, user_id=user_id, is_admin=is_admin
+            )
+
+            search_query = table.search(
+                query_text,
+                query_type="fts",
+            )
+
+            if backend_filter:
+                search_query = search_query.where(backend_filter)
+
+            search_query = search_query.limit(top_k)
+
+            try:
+                raw_results = query_to_list(search_query)
+                log_performance(
+                    "search_fts_complete",
+                    result_count=len(raw_results),
+                    table_name=table_name,
+                )
+                return raw_results
+            except Exception as exc:
+                logger.error("Sync FTS search failed: %s", exc)
+                return []
+        finally:
+            _safe_close_table(table)
+
     # --- Async method implementations (Phase 1A Option C) ---
 
     async def search_vectors_async(
