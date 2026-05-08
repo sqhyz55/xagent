@@ -248,23 +248,20 @@ def _get_candidates(
 
     Internally applies minimal branching and reuses common helpers.
     """
-    try:
-        if step_type == StepType.PARSE:
-            return _get_parse_candidates(rows)
+    if step_type == StepType.PARSE:
+        return _get_parse_candidates(rows)
 
-        if step_type == StepType.CHUNK:
-            return _get_chunk_candidates(rows)
+    if step_type == StepType.CHUNK:
+        return _get_chunk_candidates(rows)
 
-        if step_type == StepType.EMBED:
-            if not model_tag:
-                raise VersionManagementError("model_tag is required for embed step")
-            return _get_embed_candidates(rows, model_tag)
+    if step_type == StepType.EMBED:
+        if not model_tag:
+            raise VersionManagementError("model_tag is required for embed step")
+        return _get_embed_candidates(rows, model_tag)
 
-        # Handle invalid step_type
-        step_type_str = step_type.value
-        raise VersionManagementError(f"Unknown step_type: {step_type_str}")
-    except Exception as e:
-        raise DatabaseOperationError(f"Failed to get candidates: {e}") from e
+    # Handle invalid step_type
+    step_type_str = step_type.value
+    raise VersionManagementError(f"Unknown step_type: {step_type_str}")
 
 
 def list_candidates(
@@ -291,18 +288,21 @@ def list_candidates(
         Dictionary containing candidates list and metadata
 
     Raises:
-        DatabaseOperationError: If database connection or operation fails
-        VersionManagementError: If there's a version management logic error
+        DatabaseOperationError: If backend candidate query fails.
+        VersionManagementError: If step/model input is invalid.
     """
     resolved_step_type = _resolve_step_type(step_type)
     try:
         vector_store = get_vector_index_store()
-        rows = vector_store.list_version_candidates(
-            collection=collection,
-            doc_id=doc_id,
-            step_type=resolved_step_type.value,
-            model_tag=model_tag,
-        )
+        try:
+            rows = vector_store.list_version_candidates(
+                collection=collection,
+                doc_id=doc_id,
+                step_type=resolved_step_type.value,
+                model_tag=model_tag,
+            )
+        except Exception as e:
+            raise DatabaseOperationError(f"Failed to get candidates: {e}") from e
 
         candidates = _get_candidates(
             rows=rows,

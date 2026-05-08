@@ -187,6 +187,18 @@ class RAGStorageMigrationService:
                     "user_id backfill error: %s", user_id_result.get("error")
                 )
         except Exception as e:  # noqa: BLE001
-            logger.debug("Could not check documents table: %s", e)
+            error_message = str(e).lower()
+            # Table may legitimately not exist in early bootstrap or fresh DB states.
+            if "not found" in error_message or "does not exist" in error_message:
+                logger.debug("Documents table does not exist yet: %s", e)
+            else:
+                logger.error("=" * 60)
+                logger.error("DOCUMENTS TABLE BACKFILL FAILED")
+                logger.error("=" * 60)
+                logger.error("Error: %s", e, exc_info=True)
+                logger.warning(
+                    "Some features may not work correctly. "
+                    "Please run backfill manually: python -m xagent.migrations.lancedb.backfill_documents_file_id"
+                )
         finally:
             _safe_close_table(documents_table)

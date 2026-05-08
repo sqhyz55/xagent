@@ -7,10 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from xagent.core.tools.core.RAG_tools.core.exceptions import (
-    DatabaseOperationError,
-    VersionManagementError,
-)
+from xagent.core.tools.core.RAG_tools.core.exceptions import DatabaseOperationError, VersionManagementError
 from xagent.core.tools.core.RAG_tools.core.schemas import StepType
 from xagent.core.tools.core.RAG_tools.version_management.list_candidates import (
     list_candidates,
@@ -119,7 +116,7 @@ def test_embed_candidates_require_model_tag() -> None:
         "xagent.core.tools.core.RAG_tools.version_management.list_candidates.get_vector_index_store",
         return_value=store,
     ):
-        with pytest.raises(DatabaseOperationError, match="model_tag is required"):
+        with pytest.raises(VersionManagementError, match="model_tag is required"):
             list_candidates("test_collection", "test_doc", StepType.EMBED)
 
 
