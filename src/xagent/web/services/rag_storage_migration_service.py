@@ -17,7 +17,7 @@ class RAGStorageMigrationService:
     """Run storage compatibility checks and background migrations."""
 
     async def start_background_migrations(self) -> Optional[asyncio.Task[None]]:
-        """Create a non-blocking background task only when migration is needed."""
+        """Create a non-blocking background task when auto-migrate is enabled."""
         if not self._should_start_background_task():
             logger.info("Skipping background LanceDB migration task (not needed)")
             return None
@@ -25,40 +25,7 @@ class RAGStorageMigrationService:
 
     def _should_start_background_task(self) -> bool:
         """Return whether startup should create a migration background task."""
-        from ...core.tools.core.RAG_tools.LanceDB.schema_manager import (
-            check_table_needs_migration,
-        )
-        from ...core.tools.core.RAG_tools.utils.lancedb_query_utils import (
-            list_embeddings_table_names,
-        )
-        from ...providers.vector_store.lancedb import get_connection_from_env
-
-        auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "true").lower() == "true"
-        if not auto_migrate:
-            return False
-
-        conn = get_connection_from_env()
-        tables_to_check = [
-            "chunks",
-            "documents",
-            "parses",
-            "ingestion_runs",
-            "prompt_templates",
-        ]
-
-        if any(check_table_needs_migration(conn, table) for table in tables_to_check):
-            return True
-
-        try:
-            return any(
-                check_table_needs_migration(conn, table_name)
-                for table_name in list_embeddings_table_names(conn)
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Could not inspect embeddings tables for migration need: %s", e
-            )
-            return False
+        return os.getenv("LANCEDB_AUTO_MIGRATE", "true").lower() == "true"
 
     async def _run_migrations(self) -> None:
         """Run migration checks and backfills in background."""

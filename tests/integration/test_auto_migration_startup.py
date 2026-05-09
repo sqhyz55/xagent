@@ -905,7 +905,7 @@ async def test_startup_event_triggers_background_auto_migration(
 async def test_startup_event_no_task_when_no_table_needs_migration(
     monkeypatch: pytest.MonkeyPatch, temp_lancedb_dir
 ):
-    """Startup should not create migration task when no table needs migration."""
+    """Startup should still create task to run documents backfill checks."""
     import importlib
 
     _patch_channel_modules_disabled(monkeypatch)
