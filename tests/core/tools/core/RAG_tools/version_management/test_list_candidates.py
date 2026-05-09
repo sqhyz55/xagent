@@ -161,3 +161,163 @@ def test_embed_candidates_from_store_rows() -> None:
         step_type="embed",
         model_tag="bge_large",
     )
+
+
+def test_state_filter() -> None:
+    """State filter should keep only matching candidates."""
+    now = datetime.now()
+    rows = [
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": "hash1",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": now,
+        }
+    ]
+    store = Mock()
+    store.list_version_candidates.return_value = rows
+
+    with patch(
+        "xagent.core.tools.core.RAG_tools.version_management.list_candidates.get_vector_index_store",
+        return_value=store,
+    ):
+        result = list_candidates(
+            "test_collection",
+            "test_doc",
+            StepType.PARSE,
+            state="candidate",
+        )
+
+    assert len(result["candidates"]) == 1
+    assert result["total_count"] == 1
+    assert result["returned_count"] == 1
+    assert result["filters"]["state"] == "candidate"
+    assert result["candidates"][0]["state"] == "candidate"
+
+
+def test_limit_filter() -> None:
+    """Limit should truncate results after sorting/filtering."""
+    base = datetime.now()
+    rows = [
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": f"hash{i}",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": base + timedelta(seconds=i),
+        }
+        for i in range(5)
+    ]
+    store = Mock()
+    store.list_version_candidates.return_value = rows
+
+    with patch(
+        "xagent.core.tools.core.RAG_tools.version_management.list_candidates.get_vector_index_store",
+        return_value=store,
+    ):
+        result = list_candidates(
+            "test_collection",
+            "test_doc",
+            StepType.PARSE,
+            limit=3,
+        )
+
+    assert len(result["candidates"]) == 3
+    assert result["total_count"] == 5
+    assert result["returned_count"] == 3
+    assert result["filters"]["limit"] == 3
+
+
+def test_sort_before_limit() -> None:
+    """Sorting must happen before limiting to keep newest N rows."""
+    base = datetime(2024, 1, 1)
+    rows = [
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": "hash_oldest",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": base,
+        },
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": "hash_middle",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": base + timedelta(days=5),
+        },
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": "hash_newer",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": base + timedelta(days=7),
+        },
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": "hash_newest",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": base + timedelta(days=10),
+        },
+        {
+            "collection": "test_collection",
+            "doc_id": "test_doc",
+            "parse_hash": "hash_second_newest",
+            "parse_method": "unstructured",
+            "parser": "local:UnstructuredParser@v1",
+            "created_at": base + timedelta(days=8),
+        },
+    ]
+    store = Mock()
+    store.list_version_candidates.return_value = rows
+
+    with patch(
+        "xagent.core.tools.core.RAG_tools.version_management.list_candidates.get_vector_index_store",
+        return_value=store,
+    ):
+        result = list_candidates(
+            "test_collection",
+            "test_doc",
+            StepType.PARSE,
+            limit=3,
+            order_by="created_at desc",
+        )
+
+    technical_ids = [c["technical_id"] for c in result["candidates"]]
+    assert technical_ids == ["hash_newest", "hash_second_newest", "hash_newer"]
+    assert result["total_count"] == 5
+    assert result["returned_count"] == 3
+
+
+def test_embed_model_tag_forwarded_to_store() -> None:
+    """Embed model_tag should be forwarded to store query call."""
+    store = Mock()
+    store.list_version_candidates.return_value = []
+
+    with patch(
+        "xagent.core.tools.core.RAG_tools.version_management.list_candidates.get_vector_index_store",
+        return_value=store,
+    ):
+        result = list_candidates(
+            "test_collection",
+            "test_doc",
+            StepType.EMBED,
+            model_tag="minilm",
+        )
+
+    assert result["step_type"] == "embed"
+    assert result["model_tag"] == "minilm"
+    store.list_version_candidates.assert_called_once_with(
+        collection="test_collection",
+        doc_id="test_doc",
+        step_type="embed",
+        model_tag="minilm",
+    )
