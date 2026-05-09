@@ -24,6 +24,7 @@ from typing import (
 )
 
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
+from ..core.exceptions import DatabaseOperationError
 from ..core.schemas import CollectionInfo, IndexResult
 
 logger = logging.getLogger(__name__)
@@ -681,8 +682,6 @@ class VectorIndexStore(ABC):
         Returns:
             Row count, or 0 if table doesn't exist or count fails.
         """
-        from ..core.exceptions import DatabaseOperationError
-
         try:
             return self.count_rows(table_name, filters, user_id, is_admin)
         except DatabaseOperationError as e:

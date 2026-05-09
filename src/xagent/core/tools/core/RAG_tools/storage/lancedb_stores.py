@@ -41,6 +41,20 @@ from .logging_utils import log_audit, log_performance
 logger = logging.getLogger(__name__)
 
 
+def _arrow_table_to_dicts(results_table: Any) -> List[Dict[str, Any]]:
+    """Convert Arrow table batches to list-of-dicts rows."""
+    results: List[Dict[str, Any]] = []
+    for batch in results_table.to_batches():
+        for i in range(batch.num_rows):
+            row: Dict[str, Any] = {}
+            for j in range(batch.num_columns):
+                col_name = batch.schema.names[j]
+                col_array = batch.column(j)
+                row[col_name] = col_array[i].as_py()
+            results.append(row)
+    return results
+
+
 class LanceDBMetadataStore(MetadataStore):
     """LanceDB implementation for control-plane metadata operations."""
 
@@ -1569,7 +1583,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         """
         from ..LanceDB.model_tag_utils import to_model_tag
         from ..LanceDB.schema_manager import ensure_embeddings_table
-        from ..vector_storage.vector_manager import _is_non_recoverable_merge_error
+        from ..vector_storage.vector_manager import is_non_recoverable_merge_error
 
         if not records:
             return
@@ -1595,7 +1609,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                 ["collection", "doc_id", "chunk_id"]
             ).when_matched_update_all().when_not_matched_insert_all().execute(records)
         except Exception as merge_error:
-            if _is_non_recoverable_merge_error(merge_error):
+            if is_non_recoverable_merge_error(merge_error):
                 # Log critical error and re-raise without fallback
                 logger.error(
                     "merge_insert failed with non-recoverable error (error_type=%s): %s. "
@@ -1819,16 +1833,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             results_table = await search_query.to_arrow()
 
             # Convert Arrow to list of dicts
-            results = []
-            for batch in results_table.to_batches():
-                for i in range(batch.num_rows):
-                    row = {}
-                    for j in range(batch.num_columns):
-                        col_name = batch.schema.names[j]
-                        col_array = batch.column(j)
-                        value = col_array[i].as_py()
-                        row[col_name] = value
-                    results.append(row)
+            results = _arrow_table_to_dicts(results_table)
 
             # Log performance metric
             log_performance(
@@ -1884,16 +1889,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             results_table = await search_query.to_arrow()
 
             # Convert Arrow to list of dicts
-            results = []
-            for batch in results_table.to_batches():
-                for i in range(batch.num_rows):
-                    row = {}
-                    for j in range(batch.num_columns):
-                        col_name = batch.schema.names[j]
-                        col_array = batch.column(j)
-                        value = col_array[i].as_py()
-                        row[col_name] = value
-                    results.append(row)
+            results = _arrow_table_to_dicts(results_table)
             return results
 
         except Exception as exc:

@@ -416,14 +416,14 @@ class TestSearchSparseAsync:
         )
         mock_vector_store.search_fts_by_model_async = AsyncMock(
             return_value=[
-            {
-                "doc_id": "doc1",
-                "chunk_id": "chunk1",
-                "text": "hello world",
-                "_score": 0.8,
-                "parse_hash": "h1",
-                "created_at": pd.Timestamp.now(),
-            }
+                {
+                    "doc_id": "doc1",
+                    "chunk_id": "chunk1",
+                    "text": "hello world",
+                    "_score": 0.8,
+                    "parse_hash": "h1",
+                    "created_at": pd.Timestamp.now(),
+                }
             ]
         )
 
@@ -446,7 +446,9 @@ class TestSearchSparseAsync:
             model_tag="m1",
             query_text="hello",
             top_k=3,
-            filters=mock_vector_store.search_fts_by_model_async.call_args.kwargs["filters"],
+            filters=mock_vector_store.search_fts_by_model_async.call_args.kwargs[
+                "filters"
+            ],
             text_column_name="text",
         )
 
@@ -472,14 +474,17 @@ class TestSearchSparseAsync:
             )
         ]
 
-        with patch(
-            "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store",
-            return_value=mock_vector_store,
-        ), patch.object(
-            search_sparse_module,
-            "_substring_fallback_async",
-            return_value=fallback_result,
-        ) as mock_fallback:
+        with (
+            patch(
+                "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store",
+                return_value=mock_vector_store,
+            ),
+            patch.object(
+                search_sparse_module,
+                "_substring_fallback_async",
+                return_value=fallback_result,
+            ) as mock_fallback,
+        ):
             response = await search_sparse_module.search_sparse_async(
                 collection="kb1",
                 model_tag="m1",

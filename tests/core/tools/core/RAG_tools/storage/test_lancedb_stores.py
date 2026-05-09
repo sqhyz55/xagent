@@ -2623,7 +2623,9 @@ def test_count_rows_sync_basic(mock_get_connection: Mock) -> None:
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
-def test_ingestion_status_store_sync_write_load_clear(mock_get_connection: Mock) -> None:
+def test_ingestion_status_store_sync_write_load_clear(
+    mock_get_connection: Mock,
+) -> None:
     """Ingestion status store sync CRUD should work with filters."""
     mock_conn = Mock()
     mock_table = Mock()
@@ -2636,7 +2638,9 @@ def test_ingestion_status_store_sync_write_load_clear(mock_get_connection: Mock)
         {"collection": "kb1", "doc_id": "d1", "status": "done"}
     ]
     mock_table.search.return_value.to_arrow.return_value = mock_result
-    mock_table.search.return_value.where.return_value.to_arrow.return_value = mock_result
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = (
+        mock_result
+    )
 
     store = LanceDBIngestionStatusStore()
     store.write_ingestion_status("kb1", "d1", status="running", user_id=7)
@@ -2654,7 +2658,9 @@ async def test_ingestion_status_store_async_methods_delegate_to_sync() -> None:
     store = LanceDBIngestionStatusStore()
 
     with patch.object(store, "write_ingestion_status", return_value=None) as mock_write:
-        await store.write_ingestion_status_async("kb1", "d1", status="running", user_id=1)
+        await store.write_ingestion_status_async(
+            "kb1", "d1", status="running", user_id=1
+        )
         mock_write.assert_called_once()
 
     with patch.object(
