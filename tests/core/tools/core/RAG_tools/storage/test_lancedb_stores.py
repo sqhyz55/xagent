@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
+    LanceDBIngestionStatusStore,
     LanceDBMainPointerStore,
     LanceDBMetadataStore,
     LanceDBPromptTemplateStore,
@@ -2510,3 +2511,163 @@ def test_count_collections_fast_error_graceful(mock_get_connection: Mock) -> Non
         "documents", "documents", stats, user_id=None, is_admin=True
     )
     assert stats == {}
+
+
+@patch("xagent.core.tools.core.RAG_tools.storage.lancedb_stores.query_to_list")
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_search_vectors_sync_basic(
+    mock_get_connection: Mock,
+    mock_query_to_list: Mock,
+) -> None:
+    """Sync vector search should return rows from query_to_list."""
+    mock_conn = Mock()
+    mock_table = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_conn.open_table.return_value = mock_table
+    mock_query_to_list.return_value = [{"doc_id": "d1"}, {"doc_id": "d2"}]
+
+    mock_search = Mock()
+    mock_search.where.return_value = mock_search
+    mock_search.limit.return_value = mock_search
+    mock_table.search.return_value = mock_search
+
+    store = LanceDBVectorIndexStore()
+    rows = store.search_vectors(
+        table_name="embeddings_test",
+        query_vector=[0.1, 0.2],
+        top_k=2,
+    )
+
+    assert [r["doc_id"] for r in rows] == ["d1", "d2"]
+    mock_table.search.assert_called_once()
+
+
+@patch("xagent.core.tools.core.RAG_tools.storage.lancedb_stores.query_to_list")
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_search_fts_sync_basic(
+    mock_get_connection: Mock,
+    mock_query_to_list: Mock,
+) -> None:
+    """Sync FTS search should query table and return rows."""
+    mock_conn = Mock()
+    mock_table = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_conn.open_table.return_value = mock_table
+    mock_query_to_list.return_value = [{"doc_id": "d1", "_score": 1.0}]
+
+    mock_search = Mock()
+    mock_search.where.return_value = mock_search
+    mock_search.limit.return_value = mock_search
+    mock_table.search.return_value = mock_search
+
+    store = LanceDBVectorIndexStore()
+    rows = store.search_fts(table_name="embeddings_test", query_text="hello", top_k=1)
+
+    assert len(rows) == 1
+    assert rows[0]["doc_id"] == "d1"
+    mock_table.search.assert_called_once_with("hello", query_type="fts")
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_iter_batches_sync_basic(mock_get_connection: Mock) -> None:
+    """Sync iter_batches should yield RecordBatch objects."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_table = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_conn.open_table.return_value = mock_table
+
+    batch = pa.RecordBatch.from_pydict({"doc_id": ["d1"], "text": ["hello"]})
+    mock_result = Mock()
+    mock_result.to_batches.return_value = [batch]
+
+    mock_search = Mock()
+    mock_search.select.return_value = mock_search
+    mock_search.where.return_value = mock_search
+    mock_search.limit.return_value = mock_search
+    mock_search.to_arrow.return_value = mock_result
+    mock_table.search.return_value = mock_search
+
+    store = LanceDBVectorIndexStore()
+    batches = list(store.iter_batches(table_name="chunks", batch_size=100))
+
+    assert len(batches) == 1
+    assert batches[0].num_rows == 1
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_count_rows_sync_basic(mock_get_connection: Mock) -> None:
+    """Sync count_rows should return count from table.count_rows()."""
+    mock_conn = Mock()
+    mock_table = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_conn.open_table.return_value = mock_table
+    mock_table.count_rows.return_value = 12
+
+    store = LanceDBVectorIndexStore()
+    count = store.count_rows(table_name="chunks")
+
+    assert count == 12
+    mock_table.count_rows.assert_called_once()
+
+
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_ingestion_status_store_sync_write_load_clear(mock_get_connection: Mock) -> None:
+    """Ingestion status store sync CRUD should work with filters."""
+    mock_conn = Mock()
+    mock_table = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_conn.open_table.return_value = mock_table
+
+    mock_result = Mock()
+    mock_result.__len__ = Mock(return_value=1)
+    mock_result.to_pylist.return_value = [
+        {"collection": "kb1", "doc_id": "d1", "status": "done"}
+    ]
+    mock_table.search.return_value.to_arrow.return_value = mock_result
+    mock_table.search.return_value.where.return_value.to_arrow.return_value = mock_result
+
+    store = LanceDBIngestionStatusStore()
+    store.write_ingestion_status("kb1", "d1", status="running", user_id=7)
+    rows = store.load_ingestion_status("kb1", "d1", user_id=7, is_admin=False)
+    store.clear_ingestion_status("kb1", "d1", user_id=7, is_admin=False)
+
+    assert rows[0]["doc_id"] == "d1"
+    mock_table.add.assert_called_once()
+    mock_table.delete.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_ingestion_status_store_async_methods_delegate_to_sync() -> None:
+    """Async ingestion methods should delegate to sync counterparts."""
+    store = LanceDBIngestionStatusStore()
+
+    with patch.object(store, "write_ingestion_status", return_value=None) as mock_write:
+        await store.write_ingestion_status_async("kb1", "d1", status="running", user_id=1)
+        mock_write.assert_called_once()
+
+    with patch.object(
+        store,
+        "load_ingestion_status",
+        return_value=[{"doc_id": "d1", "status": "done"}],
+    ) as mock_load:
+        rows = await store.load_ingestion_status_async(
+            "kb1", "d1", user_id=1, is_admin=False
+        )
+        assert rows[0]["doc_id"] == "d1"
+        mock_load.assert_called_once()
+
+    with patch.object(store, "clear_ingestion_status", return_value=None) as mock_clear:
+        await store.clear_ingestion_status_async("kb1", "d1", user_id=1, is_admin=False)
+        mock_clear.assert_called_once()

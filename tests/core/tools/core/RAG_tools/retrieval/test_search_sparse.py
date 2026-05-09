@@ -7,9 +7,10 @@ This module tests the sparse (FTS) search implementation:
 
 import importlib
 from typing import Any, List
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pandas as pd
+import pytest
 
 from xagent.core.tools.core.RAG_tools.core.schemas import (
     IndexResult,
@@ -399,3 +400,123 @@ class TestSearchSparse:
         assert "used substring search fallback" in warning.message
         assert "Check FTS tokenizer configuration" in warning.message
         assert "update LanceDB to ensure proper tokenisation" in warning.message
+
+
+@pytest.mark.asyncio
+class TestSearchSparseAsync:
+    """Test async sparse search paths."""
+
+    async def test_search_sparse_async_success_forwards_user_scope(self) -> None:
+        """Async sparse search should forward user scope to async store call."""
+        mock_vector_store = Mock()
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
+        mock_vector_store.search_fts_by_model_async = AsyncMock(
+            return_value=[
+            {
+                "doc_id": "doc1",
+                "chunk_id": "chunk1",
+                "text": "hello world",
+                "_score": 0.8,
+                "parse_hash": "h1",
+                "created_at": pd.Timestamp.now(),
+            }
+            ]
+        )
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store",
+            return_value=mock_vector_store,
+        ):
+            response = await search_sparse_module.search_sparse_async(
+                collection="kb1",
+                model_tag="m1",
+                query_text="hello",
+                top_k=3,
+                user_id=9,
+                is_admin=False,
+            )
+
+        assert response.status == "success"
+        assert response.total_count == 1
+        mock_vector_store.search_fts_by_model_async.assert_called_once_with(
+            model_tag="m1",
+            query_text="hello",
+            top_k=3,
+            filters=mock_vector_store.search_fts_by_model_async.call_args.kwargs["filters"],
+            text_column_name="text",
+        )
+
+    async def test_search_sparse_async_triggers_fallback(self) -> None:
+        """Async sparse should use async fallback when FTS returns empty."""
+        mock_vector_store = Mock()
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
+        mock_vector_store.search_fts_by_model_async = AsyncMock(return_value=[])
+
+        fallback_result = [
+            SearchResult(
+                doc_id="doc-fallback",
+                chunk_id="chunk-fallback",
+                text="fallback text",
+                score=1.0,
+                parse_hash="h2",
+                model_tag="m1",
+                created_at=pd.Timestamp.now(),
+            )
+        ]
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store",
+            return_value=mock_vector_store,
+        ), patch.object(
+            search_sparse_module,
+            "_substring_fallback_async",
+            return_value=fallback_result,
+        ) as mock_fallback:
+            response = await search_sparse_module.search_sparse_async(
+                collection="kb1",
+                model_tag="m1",
+                query_text="miss",
+                top_k=2,
+                user_id=7,
+                is_admin=False,
+            )
+
+        assert response.status == "success"
+        assert response.total_count == 1
+        assert response.results[0].doc_id == "doc-fallback"
+        mock_fallback.assert_called_once()
+
+    async def test_search_sparse_async_error_returns_failed_response(self) -> None:
+        """Async sparse should return failed response when store call errors."""
+        mock_vector_store = Mock()
+        mock_vector_store.create_index.return_value = IndexResult(
+            status="index_ready",
+            advice=None,
+            fts_enabled=True,
+        )
+        mock_vector_store.search_fts_by_model_async = AsyncMock(
+            side_effect=Exception("boom")
+        )
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store",
+            return_value=mock_vector_store,
+        ):
+            response = await search_sparse_module.search_sparse_async(
+                collection="kb1",
+                model_tag="m1",
+                query_text="q",
+                top_k=1,
+            )
+
+        assert response.status == "failed"
+        assert response.total_count == 0
+        assert any(w.code == "FTS_SEARCH_FAILED" for w in response.warnings)
