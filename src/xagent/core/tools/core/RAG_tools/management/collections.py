@@ -44,7 +44,7 @@ from ..management.status import (
     write_ingestion_status,
 )
 from ..storage.factory import get_metadata_store, get_vector_index_store
-from ..utils.lancedb_query_utils import _safe_count_rows
+from ..utils.lancedb_query_utils import _safe_count_rows, list_table_names
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from ..utils.user_scope import resolve_user_scope
@@ -331,7 +331,7 @@ def _list_table_names(conn: DBConnection, warnings: List[str]) -> List[str]:
     )
 
     try:
-        names = list_table_names(conn)
+        names: List[str] = list_table_names(conn)
     except Exception as exc:  # noqa: BLE001 - convert to warning
         message = f"Failed to list LanceDB tables: {exc}"
         logger.warning(message)
