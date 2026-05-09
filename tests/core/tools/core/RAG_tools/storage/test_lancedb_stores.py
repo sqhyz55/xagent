@@ -1144,6 +1144,92 @@ async def test_search_vectors_async_basic(
 
 
 @pytest.mark.asyncio
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_search_vectors_by_model_async_forwards_user_scope(
+    mock_get_connection: Mock,
+) -> None:
+    """Convenience async vector search should forward user scope args."""
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+    mock_table = Mock()
+    mock_table.schema = Mock(names=[])
+
+    store = LanceDBVectorIndexStore()
+    store.open_embeddings_table = Mock(return_value=(mock_table, "embeddings_test"))  # type: ignore[method-assign]
+    store.search_vectors_async = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await store.search_vectors_by_model_async(
+        model_tag="test_model",
+        query_vector=[0.1, 0.2],
+        top_k=3,
+        user_id=42,
+        is_admin=False,
+    )
+
+    store.search_vectors_async.assert_awaited_once_with(
+        table_name="embeddings_test",
+        query_vector=[0.1, 0.2],
+        top_k=3,
+        filters=None,
+        vector_column_name="vector",
+        user_id=42,
+        is_admin=False,
+    )
+
+
+@pytest.mark.asyncio
+@patch("lancedb.connect_async", new_callable=AsyncMock)
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+async def test_search_vectors_async_uses_user_scope_in_filter_building(
+    mock_get_connection: Mock,
+    mock_connect_async: AsyncMock,
+) -> None:
+    """Async vector search should pass user scope into filter builder."""
+    import pyarrow as pa
+
+    mock_conn = Mock()
+    mock_conn.uri = "test_uri"
+    mock_get_connection.return_value = mock_conn
+
+    mock_async_conn = Mock()
+    mock_connect_async.return_value = mock_async_conn
+
+    mock_table = Mock()
+    mock_table.schema = Mock(names=[])
+    mock_async_conn.open_table = AsyncMock(return_value=mock_table)
+
+    arrow_table = pa.Table.from_pydict({"doc_id": ["doc1"], "score": [0.9]})
+    mock_search = Mock()
+    mock_search.where.return_value = mock_search
+    mock_search.limit.return_value = mock_search
+
+    async def mock_to_arrow() -> Any:
+        return arrow_table
+
+    mock_search.to_arrow = mock_to_arrow
+    mock_table.search = Mock(return_value=mock_search)
+
+    store = LanceDBVectorIndexStore()
+    with patch.object(
+        store, "build_filter_expression", return_value="user_id == 42"
+    ) as mock_build_filter:
+        await store.search_vectors_async(
+            table_name="embeddings_test",
+            query_vector=[0.1, 0.2, 0.3],
+            top_k=5,
+            user_id=42,
+            is_admin=False,
+        )
+
+    mock_build_filter.assert_called_once_with(None, user_id=42, is_admin=False)
+    mock_search.where.assert_called_once_with("user_id == 42")
+
+
+@pytest.mark.asyncio
 @patch("lancedb.connect_async", new_callable=AsyncMock)
 @patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
