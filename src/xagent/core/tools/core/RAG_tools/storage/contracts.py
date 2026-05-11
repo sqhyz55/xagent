@@ -412,6 +412,7 @@ class VectorIndexStore(ABC):
         user_id: Optional[int],
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
+        file_ids: Optional[List[str]] = None,
     ) -> List[DocumentRecord]:
         """List document records from vector index side.
 
@@ -420,6 +421,9 @@ class VectorIndexStore(ABC):
             user_id: User ID for multi-tenancy filtering.
             is_admin: Whether the user has admin privileges.
             max_results: Maximum records to return.
+            file_ids: Optional list of file IDs to filter by. When provided,
+                only documents whose ``file_id`` matches one of the given
+                values are returned.
         """
 
     @abstractmethod

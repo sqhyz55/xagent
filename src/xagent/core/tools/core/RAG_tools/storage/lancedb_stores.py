@@ -526,6 +526,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         user_id: Optional[int],
         is_admin: bool,
         max_results: int = DEFAULT_VECTOR_STORE_SCAN_LIMIT,
+        file_ids: Optional[List[str]] = None,
     ) -> List[DocumentRecord]:
         # Audit log for data access
         log_audit(
@@ -537,12 +538,22 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             max_results=max_results,
         )
 
-        # Build filter expression using common function (includes validation)
-        filters = {}
+        conditions: list[FilterCondition] = []
         if collection_name is not None:
-            filters["collection"] = collection_name
+            conditions.append(
+                FilterCondition("collection", FilterOperator.EQ, collection_name)
+            )
+        if file_ids:
+            conditions.append(
+                FilterCondition("file_id", FilterOperator.IN, list(file_ids))
+            )
 
-        filter_expr_obj = build_filter_from_dict(filters)
+        filter_expr_obj: Optional[FilterExpression] = None
+        if len(conditions) == 1:
+            filter_expr_obj = conditions[0]
+        elif len(conditions) > 1:
+            filter_expr_obj = tuple(conditions)
+
         combined_filter = self.build_filter_expression(
             filters=filter_expr_obj,
             user_id=user_id,
