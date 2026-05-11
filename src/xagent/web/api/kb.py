@@ -2459,6 +2459,9 @@ async def ingest_web(
             respect_robots_txt=(
                 respect_robots_txt if respect_robots_txt is not None else True
             ),
+            render_js=bool(render_js),
+            render_wait_until=render_wait_until or "networkidle",
+            render_timeout_ms=render_timeout_ms or 30000,
         )
 
         final_chunk_size = (

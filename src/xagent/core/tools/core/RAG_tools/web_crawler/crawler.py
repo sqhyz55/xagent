@@ -290,14 +290,14 @@ class WebCrawler:
             }
 
         try:
-            if getattr(self.config, "render_js", False):
+            if self.config.render_js:
                 ua = self.config.user_agent or _DEFAULT_USER_AGENT
                 await self._start_playwright(user_agent=ua)
 
             async with self._open_sessions(httpx_headers) as sessions:
                 await self._crawl_loop(sessions)
         finally:
-            if getattr(self.config, "render_js", False):
+            if self.config.render_js:
                 await self._stop_playwright()
 
         elapsed = time.time() - self.start_time
@@ -569,29 +569,38 @@ class WebCrawler:
             try:
                 logger.debug("Crawling %s (depth: %s)", url, depth)
 
-                # Fetch page (with TLS fingerprint fallback chain)
-                response, fingerprint_used = await self._fetch_with_fallback(
-                    sessions, url
-                )
-                if response is None:
-                    error_msg = "All TLS fingerprints raised exceptions"
-                    logger.error("Failed to crawl %s: %s", url, error_msg)
-                    self.failed_urls[url] = error_msg
-                    return None, set()
+                # Fetch page — Playwright (JS rendered) or TLS fallback chain
+                if self.config.render_js:
+                    try:
+                        html, _meta = await self._fetch_html_rendered(url)
+                    except RuntimeError as e:
+                        error_msg = str(e)
+                        logger.error("Failed to crawl %s: %s", url, error_msg)
+                        self.failed_urls[url] = error_msg
+                        return None, set()
+                else:
+                    response, fingerprint_used = await self._fetch_with_fallback(
+                        sessions, url
+                    )
+                    if response is None:
+                        error_msg = "All TLS fingerprints raised exceptions"
+                        logger.error("Failed to crawl %s: %s", url, error_msg)
+                        self.failed_urls[url] = error_msg
+                        return None, set()
 
-                if fingerprint_used is None and 200 <= response.status_code < 300:
-                    error_msg = "TLS fallback exhausted with challenge page"
-                    logger.error("Failed to crawl %s: %s", url, error_msg)
-                    self.failed_urls[url] = error_msg
-                    return None, set()
+                    if fingerprint_used is None and 200 <= response.status_code < 300:
+                        error_msg = "TLS fallback exhausted with challenge page"
+                        logger.error("Failed to crawl %s: %s", url, error_msg)
+                        self.failed_urls[url] = error_msg
+                        return None, set()
 
-                if not 200 <= response.status_code < 300:
-                    error_msg = f"HTTP {response.status_code}"
-                    logger.error("Failed to crawl %s: %s", url, error_msg)
-                    self.failed_urls[url] = error_msg
-                    return None, set()
+                    if not 200 <= response.status_code < 300:
+                        error_msg = f"HTTP {response.status_code}"
+                        logger.error("Failed to crawl %s: %s", url, error_msg)
+                        self.failed_urls[url] = error_msg
+                        return None, set()
 
-                html = response.text
+                    html = response.text
 
                 # Clean and convert content
                 cleaned = self.content_cleaner.clean_and_convert(html, url)
@@ -599,9 +608,6 @@ class WebCrawler:
                 # Validate content
                 content = cleaned["content_markdown"]
                 if not self.content_cleaner.is_valid_content(content, min_length=10):
-                    snippet = (content or "").replace("\n", "\\n")
-                    if len(snippet) > 400:
-                        snippet = snippet[:400] + "...(truncated)"
                     logger.warning(
                         "Insufficient content at %s (content_length=%s, title=%s)",
                         url,
@@ -609,12 +615,16 @@ class WebCrawler:
                         cleaned.get("title"),
                         extra={"trace_id": self.trace_id},
                     )
-                    logger.debug(
-                        "Insufficient content snippet at %s (snippet=%s)",
-                        url,
-                        snippet,
-                        extra={"trace_id": self.trace_id},
-                    )
+                    if logger.isEnabledFor(logging.DEBUG):
+                        snippet = (content or "").replace("\n", "\\n")
+                        if len(snippet) > 400:
+                            snippet = snippet[:400] + "...(truncated)"
+                        logger.debug(
+                            "Insufficient content snippet at %s (snippet=%s)",
+                            url,
+                            snippet,
+                            extra={"trace_id": self.trace_id},
+                        )
                     self.failed_urls[url] = "Insufficient content"
                     return None, set()
 
@@ -784,16 +794,17 @@ class WebCrawler:
             len(html or ""),
             extra={"trace_id": self.trace_id},
         )
-        html_snippet = (html or "").replace("\n", "\\n")
-        if len(html_snippet) > 400:
-            html_snippet = html_snippet[:400] + "...(truncated)"
-        logger.debug(
-            "Fetched page snippet [%s] (requested_url=%s, html_snippet=%s)",
-            mode,
-            requested_url,
-            html_snippet,
-            extra={"trace_id": self.trace_id},
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            html_snippet = (html or "").replace("\n", "\\n")
+            if len(html_snippet) > 400:
+                html_snippet = html_snippet[:400] + "...(truncated)"
+            logger.debug(
+                "Fetched page snippet [%s] (requested_url=%s, html_snippet=%s)",
+                mode,
+                requested_url,
+                html_snippet,
+                extra={"trace_id": self.trace_id},
+            )
 
     async def _start_playwright(self, *, user_agent: str) -> None:
         try:
@@ -808,6 +819,8 @@ class WebCrawler:
         self._playwright = await async_playwright().start()
         chromium = getattr(self._playwright, "chromium", None)
         if chromium is None:
+            await self._playwright.stop()
+            self._playwright = None
             raise RuntimeError("Playwright chromium is unavailable")
         try:
             self._browser = await chromium.launch(headless=True)
@@ -815,8 +828,8 @@ class WebCrawler:
                 user_agent=user_agent
             )
         except PlaywrightError as exc:
+            await self._stop_playwright()
             msg = str(exc)
-            # Common setup issue: playwright python package installed but browsers not downloaded.
             if "Executable doesn't exist" in msg or "playwright install" in msg:
                 raise RuntimeError(
                     "Playwright browsers are not installed. "

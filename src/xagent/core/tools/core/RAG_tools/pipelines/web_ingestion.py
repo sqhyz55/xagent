@@ -136,9 +136,9 @@ async def run_web_ingestion(
             "request_delay": crawl_config.request_delay,
             "timeout": crawl_config.timeout,
             "respect_robots_txt": crawl_config.respect_robots_txt,
-            "render_js": getattr(crawl_config, "render_js", None),
-            "render_wait_until": getattr(crawl_config, "render_wait_until", None),
-            "render_timeout_ms": getattr(crawl_config, "render_timeout_ms", None),
+            "render_js": crawl_config.render_js,
+            "render_wait_until": crawl_config.render_wait_until,
+            "render_timeout_ms": crawl_config.render_timeout_ms,
             "ingestion_parse_method": str(ing_cfg.parse_method),
             "ingestion_chunk_strategy": str(ing_cfg.chunk_strategy),
             "ingestion_chunk_size": ing_cfg.chunk_size,
@@ -343,6 +343,7 @@ async def run_web_ingestion(
                             progress_manager=progress_manager,
                             user_id=user_id,
                             is_admin=is_admin,
+                            trace_id=trace_id,
                         )
 
                     with concurrent.futures.ThreadPoolExecutor() as executor:

@@ -223,7 +223,7 @@ class ContentCleaner:
             True if valid, False otherwise
         """
         if not content or len(content) < min_length:
-            logger.info(
+            logger.debug(
                 "Content rejected by min_length",
                 extra={
                     "trace_id": self.trace_id,
@@ -236,7 +236,7 @@ class ContentCleaner:
         # Check if content has actual text (not just empty lines/spaces)
         lines = [line.strip() for line in content.split("\n") if line.strip()]
         if len(lines) == 0:
-            logger.info(
+            logger.debug(
                 "Content rejected: no non-empty lines",
                 extra={
                     "trace_id": self.trace_id,

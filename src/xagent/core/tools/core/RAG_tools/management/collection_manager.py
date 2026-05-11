@@ -279,7 +279,6 @@ class CollectionManager:
         schema = pa.schema(
             [
                 ("name", pa.string()),
-                ("owners", pa.string()),  # JSON string
                 ("schema_version", pa.string()),
                 ("embedding_model_id", pa.string()),  # Nullable
                 ("embedding_dimension", pa.int32()),  # Nullable
