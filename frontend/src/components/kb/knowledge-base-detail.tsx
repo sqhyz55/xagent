@@ -68,6 +68,13 @@ interface IngestionResult {
   message: string
 }
 
+/** KB search API returns ``SearchPipelineResult`` (HTTP 200 even on pipeline failure). */
+interface SearchPipelineResponse {
+  status: string
+  message?: string
+  results?: SearchResult[]
+}
+
 interface WebIngestionResult {
   status: string
   collection: string
@@ -582,7 +589,18 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
         throw new Error(message)
       }
 
-      const result = await response.json()
+      const result = (await response.json()) as SearchPipelineResponse
+      if (result.status === "error") {
+        setSearchResults([])
+        let message =
+          typeof result.message === "string" && result.message.trim()
+            ? result.message.trim()
+            : t("kb.detail.errors.searchFailed")
+        if (/embedding|not configured|not available/i.test(message)) {
+          message = t("kb.detail.errors.embeddingNotConfigured")
+        }
+        throw new Error(message)
+      }
       setSearchResults(result.results || [])
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("kb.detail.errors.searchFailed"))
