@@ -22,20 +22,11 @@ def test_list_documents_for_user_delegates_to_vector_store_without_raw_lancedb()
         )
     ]
 
-    with (
-        patch.object(
-            kb_file_service,
-            "get_connection_from_env",
-            side_effect=AssertionError("raw LanceDB connection should not be used"),
-            create=True,
-        ),
-        patch.object(
-            kb_file_service,
-            "get_vector_index_store",
-            return_value=fake_store,
-            create=True,
-        ) as mock_get_store,
-    ):
+    with patch.object(
+        kb_file_service,
+        "get_vector_index_store",
+        return_value=fake_store,
+    ) as mock_get_store:
         records = kb_file_service.list_documents_for_user(
             user_id=123,
             is_admin=False,

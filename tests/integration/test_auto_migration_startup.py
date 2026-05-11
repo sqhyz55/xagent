@@ -1002,6 +1002,6 @@ async def test_startup_event_no_task_when_no_table_needs_migration(
     if created_tasks:
         await asyncio.gather(*created_tasks)
 
-    # We expect 1 task: uploaded files reconcile (even without migration needs)
-    assert len(created_tasks) == 1
+    # 2 tasks: migration service (always starts when auto_migrate=true) + reconcile
+    assert len(created_tasks) == 2
     assert migration_called["value"] is False

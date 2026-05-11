@@ -317,6 +317,50 @@ def test_vector_store_list_document_records_filters_and_maps(
 
 
 @patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.UserPermissions.get_user_filter"
+)
+@patch("xagent.core.tools.core.RAG_tools.storage.lancedb_stores.query_to_list")
+@patch(
+    "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
+)
+def test_vector_store_list_document_records_file_ids_filter(
+    mock_get_connection: Mock,
+    mock_query_to_list: Mock,
+    mock_user_filter: Mock,
+) -> None:
+    """Passing file_ids should include a file_id IN filter in the query."""
+    from types import SimpleNamespace
+
+    mock_conn = Mock()
+    mock_get_connection.return_value = mock_conn
+
+    mock_user_filter.return_value = "user_id == 1"
+    mock_table = Mock()
+    mock_table.schema = [SimpleNamespace(name="doc_id")]
+    mock_conn.open_table.return_value = mock_table
+    mock_query_to_list.return_value = [
+        {"collection": "kb1", "doc_id": "doc-1", "file_id": "f-1", "source_path": None},
+    ]
+
+    store = LanceDBVectorIndexStore()
+    records = store.list_document_records(
+        collection_name=None,
+        user_id=1,
+        is_admin=False,
+        file_ids=["f-1", "f-2"],
+    )
+
+    assert len(records) == 1
+    assert records[0].doc_id == "doc-1"
+    where_call = mock_table.search.return_value.where
+    where_call.assert_called_once()
+    filter_arg = where_call.call_args[0][0]
+    assert "f-1" in filter_arg
+    assert "f-2" in filter_arg
+    assert "IN" in filter_arg.upper()
+
+
+@patch(
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
 def test_vector_store_rename_collection_data_updates_expected_tables(

@@ -288,6 +288,7 @@ async def startup_event() -> None:
         f"Memory store similarity threshold: {store_info['similarity_threshold']}"
     )
 
+    auto_migrate = os.getenv("LANCEDB_AUTO_MIGRATE", "true").lower() == "true"
     migration_service = RAGStorageMigrationService()
     _migration_task = await migration_service.start_background_migrations()
 
