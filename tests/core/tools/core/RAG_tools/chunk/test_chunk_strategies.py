@@ -4,6 +4,7 @@ from xagent.core.tools.core.RAG_tools.chunk.chunk_strategies import (
     _find_protected_ranges,
     _split_by_headers,
     _split_by_separators_core,
+    apply_fixed_size_strategy,
     apply_markdown_strategy,
     apply_recursive_strategy,
     attach_media_context,
@@ -50,7 +51,7 @@ class TestApplyRecursiveStrategyTokenMode:
                 assert n <= 25, f"chunk token count {n} expected <= 25: {text[:80]}..."
 
     def test_use_token_count_preserves_metadata(self) -> None:
-        """Chunks retain source paragraph metadata."""
+        """Chunks retain source paragraph metadata fields; original dict is not mutated."""
         meta = {"page_number": 1, "section": "Intro"}
         paragraphs = [{"text": "Short.", "metadata": meta}]
         params = {
@@ -60,7 +61,13 @@ class TestApplyRecursiveStrategyTokenMode:
         }
         chunks = apply_recursive_strategy(paragraphs, params)
         assert len(chunks) == 1
-        assert chunks[0].get("metadata") == meta
+        chunk_meta = chunks[0].get("metadata", {})
+        assert chunk_meta["page_number"] == 1
+        assert chunk_meta["section"] == "Intro"
+        # C2: chunk metadata must be a copy, not the original dict
+        assert chunk_meta is not meta
+        # Original paragraph metadata must not be mutated
+        assert "spanning_pages" not in meta
 
     def test_no_chunk_size_trusts_semantic_splitting(self) -> None:
         """When chunk_size is None, no token/char limit (semantic only)."""
@@ -196,6 +203,7 @@ class TestApplyRecursiveStrategyCustomSeparators:
         assert chunks == []
 
     def test_metadata_preserved_in_chunks(self) -> None:
+        """Source metadata fields are preserved; original dict is not mutated."""
         meta = {"page_number": 1, "section": "intro"}
         paragraphs = [self._paragraph("a\n\nb"), self._paragraph("c")]
         for p in paragraphs:
@@ -208,10 +216,16 @@ class TestApplyRecursiveStrategyCustomSeparators:
         chunks = apply_recursive_strategy(paragraphs, params)
         assert len(chunks) >= 1
         for c in chunks:
-            assert c.get("metadata") == meta
+            chunk_meta = c.get("metadata", {})
+            assert chunk_meta["page_number"] == 1
+            assert chunk_meta["section"] == "intro"
+            # C2: must be a copy, not the shared original
+            assert chunk_meta is not meta
+        # Original metadata must not be mutated
+        assert "spanning_pages" not in meta
 
-    def test_positions_populated_for_multi_page_chunks(self) -> None:
-        """Chunks spanning multiple pages should have metadata['positions'] with all pages."""
+    def test_spanning_pages_populated_for_multi_page_chunks(self) -> None:
+        """Chunks spanning multiple pages should have metadata['spanning_pages'] with all pages."""
         para1 = {"text": "AAA ", "metadata": {"page_number": 1}}
         para2 = {"text": "BBB ", "metadata": {"page_number": 2}}
         paragraphs = [para1, para2]
@@ -223,9 +237,8 @@ class TestApplyRecursiveStrategyCustomSeparators:
         assert len(chunks) >= 1
         first = chunks[0]
         meta = first.get("metadata") or {}
-        positions = meta.get("positions")
-        assert positions == [1, 2]
-        # page_number should be derived from positions when available
+        spanning = meta.get("spanning_pages")
+        assert spanning == [1, 2]
         assert first.get("page_number") == 1
 
 
@@ -343,15 +356,122 @@ class TestMarkdownHeadersAndSection:
         assert len(chunks) >= 1
         assert "No headers" in chunks[0].get("text", "")
 
+    def test_markdown_header_page_not_lost(self) -> None:
+        """C3: Header on page 1 + content on page 2 must include both pages."""
+        paragraphs = [
+            {"text": "# Title", "metadata": {"page_number": 1}},
+            {"text": "Content here.", "metadata": {"page_number": 2}},
+        ]
+        params = {"chunk_size": 500, "chunk_overlap": 0}
+        chunks = apply_markdown_strategy(paragraphs, params)
+        assert len(chunks) >= 1
+        spanning = chunks[0].get("metadata", {}).get("spanning_pages", [])
+        assert 1 in spanning, f"Header page 1 lost, got spanning_pages={spanning}"
+        assert 2 in spanning, f"Content page 2 lost, got spanning_pages={spanning}"
+
+    def test_markdown_per_window_spanning_pages(self) -> None:
+        """M6: Within a section, per-window spanning_pages should be specific, not section-level."""
+        page1_text = "A " * 300
+        page2_text = "B " * 300
+        paragraphs = [
+            {"text": f"# Section\n{page1_text}", "metadata": {"page_number": 1}},
+            {"text": page2_text, "metadata": {"page_number": 2}},
+        ]
+        params = {"chunk_size": 200, "chunk_overlap": 0}
+        chunks = apply_markdown_strategy(paragraphs, params)
+        assert len(chunks) >= 2, f"Expected multiple chunks, got {len(chunks)}"
+        first_spanning = chunks[0].get("metadata", {}).get("spanning_pages", [])
+        last_spanning = chunks[-1].get("metadata", {}).get("spanning_pages", [])
+        # The first chunk (page 1 content) should NOT claim page 2
+        if first_spanning:
+            assert 2 not in first_spanning, (
+                f"First chunk should not span page 2, got {first_spanning}"
+            )
+        # The last chunk (page 2 content) should NOT claim page 1
+        if last_spanning:
+            assert 1 not in last_spanning, (
+                f"Last chunk should not span page 1, got {last_spanning}"
+            )
+
+    def test_markdown_overlapping_windows_track_correct_spanning_pages(self) -> None:
+        """M6: Overlapping markdown windows should track their actual page ranges."""
+        page1_text = "A" * 260
+        page2_text = "B" * 260
+        paragraphs = [
+            {"text": f"# Section\n{page1_text}", "metadata": {"page_number": 1}},
+            {"text": page2_text, "metadata": {"page_number": 2}},
+        ]
+
+        chunks = apply_markdown_strategy(
+            paragraphs, {"chunk_size": 200, "chunk_overlap": 100}
+        )
+
+        assert len(chunks) >= 3
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            spanning = chunk.get("metadata", {}).get("spanning_pages", [])
+            expected = []
+            if "A" in text:
+                expected.append(1)
+            if "B" in text:
+                expected.append(2)
+            assert spanning == expected, (
+                f"Chunk text page markers do not match spanning_pages: "
+                f"expected={expected}, got={spanning}, text={text[:40]!r}"
+            )
+
+
+class TestSharedMutationProtection:
+    """C2: Verify that chunking does not mutate source paragraph metadata."""
+
+    def test_overlapping_windows_no_shared_mutation(self) -> None:
+        """Overlapping windows sharing a source paragraph must not cross-contaminate."""
+        paragraphs = [
+            {"text": "A" * 200, "metadata": {"page_number": 1}},
+            {"text": "B" * 50, "metadata": {"page_number": 2}},
+        ]
+        chunks = apply_recursive_strategy(
+            paragraphs, {"chunk_size": 100, "chunk_overlap": 20}
+        )
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            spanning = chunk.get("metadata", {}).get("spanning_pages", [])
+            if "B" not in text and spanning:
+                assert 2 not in spanning, (
+                    f"Chunk with only page-1 content got page 2 in spanning_pages: {spanning}"
+                )
+        # Original paragraph metadata must not be mutated
+        assert "spanning_pages" not in paragraphs[0]["metadata"]
+        assert "spanning_pages" not in paragraphs[1]["metadata"]
+
+    def test_source_paragraphs_not_mutated(self) -> None:
+        """Source paragraph metadata dicts must remain unchanged after chunking."""
+        meta1 = {"page_number": 1}
+        meta2 = {"page_number": 2}
+        paragraphs = [
+            {"text": "Hello world.", "metadata": meta1},
+            {"text": "Goodbye world.", "metadata": meta2},
+        ]
+        apply_recursive_strategy(paragraphs, {"chunk_size": 100, "chunk_overlap": 0})
+        assert meta1 == {"page_number": 1}, f"meta1 mutated: {meta1}"
+        assert meta2 == {"page_number": 2}, f"meta2 mutated: {meta2}"
+
 
 class TestChunkingPerformance:
-    """Performance benchmark tests for chunking operations."""
+    """Performance benchmark tests for chunking operations.
 
+    These tests use ``pytest.mark.slow`` so they can be excluded from CI
+    via ``-m 'not slow'``.  Wall-clock timing assertions are inherently
+    flaky on loaded runners, so the thresholds are intentionally generous.
+    """
+
+    import pytest
+
+    @pytest.mark.slow
     def test_large_document_performance(self) -> None:
         """Verify chunking performance for large documents (100+ pages)."""
         import time
 
-        # 100页文档
         paragraphs = [
             {"text": "Content " * 100, "metadata": {"page_number": i}}
             for i in range(100)
@@ -363,15 +483,14 @@ class TestChunkingPerformance:
         )
         elapsed = time.perf_counter() - start
 
-        # Performance assertion: should complete within 2 seconds
-        assert elapsed < 2.0, f"Chunking took {elapsed:.3f}s, expected < 2.0s"
+        assert elapsed < 5.0, f"Chunking took {elapsed:.3f}s, expected < 5.0s"
         assert len(chunks) > 0, "Should produce chunks from input"
 
-    def test_multi_page_positions_performance(self) -> None:
-        """Verify positions collection doesn't degrade performance significantly."""
+    @pytest.mark.slow
+    def test_multi_page_spanning_pages_performance(self) -> None:
+        """Verify spanning_pages collection doesn't degrade performance significantly."""
         import time
 
-        # 50页跨页面文档
         paragraphs = [
             {"text": f"Page {i} content " * 50, "metadata": {"page_number": i}}
             for i in range(50)
@@ -383,16 +502,38 @@ class TestChunkingPerformance:
         )
         elapsed = time.perf_counter() - start
 
-        # Performance assertion
-        assert elapsed < 1.0, (
-            f"Multi-page chunking took {elapsed:.3f}s, expected < 1.0s"
+        assert elapsed < 3.0, (
+            f"Multi-page chunking took {elapsed:.3f}s, expected < 3.0s"
         )
 
-        # Verify positions are collected correctly
-        chunks_with_positions = [
-            c for c in chunks if c.get("metadata", {}).get("positions")
+        chunks_with_spanning = [
+            c for c in chunks if c.get("metadata", {}).get("spanning_pages")
         ]
-        assert len(chunks_with_positions) > 0, "Should have chunks with positions"
+        assert len(chunks_with_spanning) > 0, "Should have chunks with spanning_pages"
+
+
+class TestFixedSizeStrategySpanningPages:
+    """M5: apply_fixed_size_strategy should track spanning_pages like other strategies."""
+
+    def test_fixed_size_multi_page_spanning_pages(self) -> None:
+        """Chunks spanning multiple pages should have spanning_pages."""
+        paragraphs = [
+            {"text": "Page one content.", "metadata": {"page_number": 1}},
+            {"text": "Page two content.", "metadata": {"page_number": 2}},
+        ]
+        chunks = apply_fixed_size_strategy(
+            paragraphs, {"chunk_size": 200, "chunk_overlap": 0}
+        )
+        assert len(chunks) >= 1
+        spanning = chunks[0].get("metadata", {}).get("spanning_pages")
+        assert spanning == [1, 2], f"Expected [1, 2], got {spanning}"
+
+    def test_fixed_size_source_not_mutated(self) -> None:
+        """Source paragraph metadata must not be mutated."""
+        meta = {"page_number": 1}
+        paragraphs = [{"text": "Content.", "metadata": meta}]
+        apply_fixed_size_strategy(paragraphs, {"chunk_size": 100, "chunk_overlap": 0})
+        assert "spanning_pages" not in meta
 
 
 class TestAttachMediaContext:

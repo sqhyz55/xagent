@@ -60,10 +60,12 @@ def _create_chunk_record(
         source_paragraph: Source paragraph metadata for position info
 
     Returns:
-        Chunk record with text, position fields, and full metadata dictionary
+        Chunk record with text, position fields, and a **shallow copy** of
+        the source metadata dictionary so that downstream mutations
+        (e.g. adding ``spanning_pages``) do not affect the original paragraph.
     """
-    # Extract metadata from source paragraph if available
-    metadata = (source_paragraph or {}).get("metadata", {})
+    original = (source_paragraph or {}).get("metadata", {})
+    metadata = dict(original)
 
     return {
         "text": text,
@@ -71,7 +73,7 @@ def _create_chunk_record(
         "section": metadata.get("section"),
         "anchor": metadata.get("anchor"),
         "json_path": metadata.get("json_path"),
-        "metadata": metadata,  # Preserve full metadata dictionary
+        "metadata": metadata,
     }
 
 
@@ -125,77 +127,83 @@ def _collect_pages_from_paragraphs(
         if not meta or not isinstance(meta, dict):
             continue
 
-        # Validate and extract page_number
         page_num = meta.get("page_number")
-        if isinstance(page_num, int) and page_num > 0:
+        if isinstance(page_num, int) and page_num >= 0:
             pages.add(page_num)
 
     return sorted(pages)
 
 
-def _validate_positions_record(record: Dict[str, Any]) -> bool:
-    """Validate the integrity of positions metadata in a chunk record.
+def _validate_spanning_pages_record(record: Dict[str, Any]) -> bool:
+    """Validate the integrity of spanning_pages metadata in a chunk record.
 
     Checks:
-    - Positions list is sorted in ascending order
-    - No duplicate page numbers in positions
-    - page_number (if set) is present in positions list
+    - spanning_pages list is sorted in ascending order
+    - No duplicate page numbers in spanning_pages
+    - page_number (if set) is present in spanning_pages list
 
     Args:
         record: Chunk record to validate
 
     Returns:
-        True if positions metadata is valid, False otherwise
+        True if spanning_pages metadata is valid, False otherwise
     """
-    positions = record.get("metadata", {}).get("positions")
-    if not positions:
-        return True  # No positions to validate
+    spanning = record.get("metadata", {}).get("spanning_pages")
+    if not spanning:
+        return True
+
+    if not isinstance(spanning, list):
+        logger.warning("spanning_pages is not a list: %s", type(spanning))
+        return False
 
     # Check if sorted
-    if positions != sorted(positions):
-        logger.warning(f"Positions not sorted: {positions}")
+    if spanning != sorted(spanning):
+        logger.warning("spanning_pages not sorted: %s", spanning)
         return False
 
     # Check for duplicates
-    if len(positions) != len(set(positions)):
-        logger.warning(f"Duplicate positions found: {positions}")
+    if len(spanning) != len(set(spanning)):
+        logger.warning("Duplicate spanning_pages found: %s", spanning)
         return False
 
     # Check page_number consistency
     page_num = record.get("page_number")
-    if page_num and page_num not in positions:
-        logger.warning(f"page_number {page_num} not in positions {positions}")
+    if page_num and page_num not in spanning:
+        logger.warning("page_number %s not in spanning_pages %s", page_num, spanning)
         return False
 
     return True
 
 
-def _apply_positions_to_record(
+def _apply_spanning_pages_to_record(
     record: Dict[str, Any],
-    positions: Any,
+    spanning_pages: Optional[List[int]],
 ) -> None:
-    """Normalize positions list and apply to final chunk record metadata.
+    """Normalize spanning_pages list and apply to final chunk record metadata.
 
-    - Ensures positions are unique positive integers.
-    - Writes them to metadata['positions'] if non-empty.
-    - Derives page_number from the smallest position when missing.
+    Uses ``metadata["spanning_pages"]`` to avoid collision with the deepdoc
+    parser's ``metadata["positions"]`` (bounding-box visualisation data).
+
+    - Ensures spanning_pages are unique positive integers.
+    - Writes them to metadata['spanning_pages'] if non-empty.
+    - Derives page_number from the smallest page when missing.
     """
-    if not isinstance(positions, list):
+    if not isinstance(spanning_pages, list):
         return
 
     pages: set[int] = set()
-    for p in positions:
-        if isinstance(p, int) and p > 0:
+    for p in spanning_pages:
+        if isinstance(p, int) and p >= 0:
             pages.add(p)
     if not pages:
         return
 
     sorted_pages = sorted(pages)
     meta = record.get("metadata") or {}
-    meta["positions"] = sorted_pages
+    meta["spanning_pages"] = sorted_pages
     record["metadata"] = meta
 
-    if not record.get("page_number"):
+    if record.get("page_number") is None:
         record["page_number"] = sorted_pages[0]
 
 
@@ -400,9 +408,9 @@ def _window_with_overlap_and_metadata(
                 "text": window_text,
                 "source_paragraph": first_paragraph,
             }
-            positions = _collect_pages_from_paragraphs(contributing_paragraphs)
-            if positions:
-                window_record["positions"] = positions
+            spanning_pages = _collect_pages_from_paragraphs(contributing_paragraphs)
+            if spanning_pages:
+                window_record["spanning_pages"] = spanning_pages
 
             windows.append(window_record)
 
@@ -488,15 +496,14 @@ def _merge_units_by_token_limit(
                 "text": chunk_text,
                 "source_paragraph": first_para,
             }
-            # OPTIMIZATION: Direct iteration instead of generator to avoid overhead
             contributing_paragraphs: List[Dict[str, Any]] = []
             for u in current_units:
                 para = u.get("source_paragraph")
                 if para:
                     contributing_paragraphs.append(para)
-            positions = _collect_pages_from_paragraphs(contributing_paragraphs)
-            if positions:
-                window_record["positions"] = positions
+            spanning_pages = _collect_pages_from_paragraphs(contributing_paragraphs)
+            if spanning_pages:
+                window_record["spanning_pages"] = spanning_pages
 
             windows.append(window_record)
         # Overlap: take trailing units that fit in chunk_token_overlap
@@ -520,15 +527,14 @@ def _merge_units_by_token_limit(
             "text": chunk_text,
             "source_paragraph": first_para,
         }
-        # OPTIMIZATION: Direct iteration instead of generator to avoid overhead
         final_contributing_paragraphs: List[Dict[str, Any]] = []
         for u in current_units:
             para = u.get("source_paragraph")
             if para:
                 final_contributing_paragraphs.append(para)
-        positions = _collect_pages_from_paragraphs(final_contributing_paragraphs)
-        if positions:
-            window_record["positions"] = positions
+        spanning_pages = _collect_pages_from_paragraphs(final_contributing_paragraphs)
+        if spanning_pages:
+            window_record["spanning_pages"] = spanning_pages
 
         windows.append(window_record)
 
@@ -543,13 +549,6 @@ def apply_recursive_strategy(
     This strategy splits text by separators first, then applies sliding window
     with overlap. Metadata from source paragraphs is preserved and propagated
     to the final chunks.
-
-    Thread-safety: This function is thread-safe as it does not modify shared
-    state. However, the input paragraphs list should not be modified during
-    execution to ensure consistent results.
-
-    Deterministic: Given the same input, this function produces identical
-    output, ensuring reproducible chunking for document versioning.
     """
     if not paragraphs:
         return []
@@ -624,7 +623,6 @@ def apply_recursive_strategy(
         sum(out_lens),
     )
 
-    # Create final chunk records with preserved metadata and multi-page positions
     final_chunks: List[Dict[str, Any]] = []
     for w in windows:
         text = w.get("text", "").strip()
@@ -634,12 +632,8 @@ def apply_recursive_strategy(
         source_paragraph = w.get("source_paragraph")
         record = _create_chunk_record(text, source_paragraph)
 
-        positions = w.get("positions")
-        _apply_positions_to_record(record, positions)
-
-        # Validate positions metadata integrity (optional, for debugging)
-        if not _validate_positions_record(record):
-            logger.debug(f"Positions validation failed for chunk: {record}")
+        spanning_pages = w.get("spanning_pages")
+        _apply_spanning_pages_to_record(record, spanning_pages)
 
         final_chunks.append(record)
 
@@ -657,13 +651,12 @@ def _split_by_headers_with_positions(
     """
     lines = text.splitlines()
     if not headers_to_split_on:
-        # Default: atx-style # to ######
         header_pattern = re.compile(r"^\s{0,3}#{1,6}\s+")
         sections_with_headers: List[tuple[str, str, int, int]] = []
         current: List[str] = []
         section_header = ""
         current_start_pos = 0
-        current_line_number = 0
+        current_char_offset = 0
 
         for line in lines:
             line_with_newline = line + "\n"
@@ -675,30 +668,32 @@ def _split_by_headers_with_positions(
                             section_text,
                             section_header,
                             current_start_pos,
-                            current_line_number,
+                            current_char_offset,
                         )
                     )
                     current = []
                 section_header = line.strip()
-                # Update start position for next section
-                current_start_pos = current_line_number + len(line_with_newline)
+                # New section starts at the header line itself so that
+                # _find_contributing_paragraphs_for_range includes the
+                # header paragraph's page number.
+                current_start_pos = current_char_offset
             current.append(line)
-            current_line_number += len(line_with_newline)
+            current_char_offset += len(line_with_newline)
 
         if current:
             section_text = "\n".join(current)
             sections_with_headers.append(
-                (section_text, section_header, current_start_pos, current_line_number)
+                (section_text, section_header, current_start_pos, current_char_offset)
             )
         return sections_with_headers
 
-    # User-provided headers: e.g. [("# ", "H1"), ("## ", "H2")]. Try longest prefix first.
+    # User-provided headers: e.g. [("# ", "H1"), ("## ", "H2")].
     sorted_headers = sorted(headers_to_split_on, key=lambda x: len(x[0]), reverse=True)
     sections_with_headers = []
     section_lines: List[str] = []
     section_header = ""
     current_start_pos = 0
-    current_line_number = 0
+    current_char_offset = 0
 
     for line in lines:
         line_with_newline = line + "\n"
@@ -712,24 +707,23 @@ def _split_by_headers_with_positions(
                             section_text,
                             section_header,
                             current_start_pos,
-                            current_line_number,
+                            current_char_offset,
                         )
                     )
                     section_lines = []
                 section_header = line.strip()
                 section_lines.append(line)
-                # Update start position for next section
-                current_start_pos = current_line_number + len(line_with_newline)
+                current_start_pos = current_char_offset
                 matched = True
                 break
         if not matched:
             section_lines.append(line)
-        current_line_number += len(line_with_newline)
+        current_char_offset += len(line_with_newline)
 
     if section_lines:
         section_text = "\n".join(section_lines)
         sections_with_headers.append(
-            (section_text, section_header, current_start_pos, current_line_number)
+            (section_text, section_header, current_start_pos, current_char_offset)
         )
     return sections_with_headers
 
@@ -738,48 +732,17 @@ def _split_by_headers(
     text: str,
     headers_to_split_on: Optional[List[tuple[str, str]]],
 ) -> List[tuple[str, str]]:
-    """Split text into (section_text, section_header) by header patterns. P1."""
-    lines = text.splitlines()
-    if not headers_to_split_on:
-        # Default: atx-style # to ######
-        header_pattern = re.compile(r"^\s{0,3}#{1,6}\s+")
-        sections_with_headers = []
-        current: List[str] = []
-        section_header = ""
-        for line in lines:
-            if header_pattern.match(line):
-                if current:
-                    sections_with_headers.append(("\n".join(current), section_header))
-                    current = []
-                section_header = line.strip()
-            current.append(line)
-        if current:
-            sections_with_headers.append(("\n".join(current), section_header))
-        return sections_with_headers
+    """Split text into (section_text, section_header) by header patterns. P1.
 
-    # User-provided headers: e.g. [("# ", "H1"), ("## ", "H2")]. Try longest prefix first.
-    sorted_headers = sorted(headers_to_split_on, key=lambda x: len(x[0]), reverse=True)
-    sections_with_headers = []
-    section_lines: List[str] = []
-    section_header = ""
-    for line in lines:
-        matched = False
-        for prefix, _ in sorted_headers:
-            if line.strip().startswith(prefix) or line.startswith(prefix):
-                if section_lines:
-                    sections_with_headers.append(
-                        ("\n".join(section_lines), section_header)
-                    )
-                    section_lines = []
-                section_header = line.strip()
-                section_lines.append(line)
-                matched = True
-                break
-        if not matched:
-            section_lines.append(line)
-    if section_lines:
-        sections_with_headers.append(("\n".join(section_lines), section_header))
-    return sections_with_headers
+    Delegates to ``_split_by_headers_with_positions`` and discards the
+    position data so both functions share a single splitting implementation.
+    """
+    return [
+        (sec_text, sec_header)
+        for sec_text, sec_header, _, _ in _split_by_headers_with_positions(
+            text, headers_to_split_on
+        )
+    ]
 
 
 def apply_markdown_strategy(
@@ -790,16 +753,7 @@ def apply_markdown_strategy(
     This strategy detects markdown headers (# ## ###) and splits documents
     into sections, preserving section metadata in chunks. Falls back to
     recursive strategy if no headers are found.
-
-    Thread-safety: This function is thread-safe as it does not modify shared
-    state. Input paragraphs should not be modified during execution.
-
-    Deterministic: Produces identical output for the same input, ensuring
-    reproducible chunking for markdown documents.
     """
-    text = _join_paragraphs(paragraphs)
-    if not text:
-        return []
     chunk_size_param = params.get("chunk_size")
     chunk_overlap: int = int(params.get("chunk_overlap", 200))
     separators: Optional[List[str]] = params.get("separators")
@@ -807,92 +761,119 @@ def apply_markdown_strategy(
         "headers_to_split_on"
     )
 
-    # P1: Split by Markdown headers (configurable or default # to ######)
-    sections_with_headers = _split_by_headers(text, headers_to_split_on)
-
-    # If no headers found (single section with no header), fallback to recursive
-    if len(sections_with_headers) == 1 and not sections_with_headers[0][1]:
-        return apply_recursive_strategy(paragraphs, params)
-
-    # Build text with metadata tracking for positions support
+    # Single join producing both text and interval metadata
     try:
-        text_with_intervals, intervals = _join_paragraphs_with_metadata(paragraphs)
+        text, intervals = _join_paragraphs_with_metadata(paragraphs)
     except Exception as e:
         logger.warning(
-            f"Failed to join paragraphs with metadata, falling back to recursive: {e}"
+            "Failed to join paragraphs with metadata, falling back to recursive: %s", e
         )
         return apply_recursive_strategy(paragraphs, params)
 
-    # Split by headers while tracking positions in original text
+    if not text:
+        return []
+
+    # P1: Split by Markdown headers (configurable or default # to ######)
     try:
         sections_with_positions = _split_by_headers_with_positions(
-            text_with_intervals, headers_to_split_on
+            text, headers_to_split_on
         )
     except Exception as e:
         logger.warning(
-            f"Failed to split by headers with positions, falling back to recursive: {e}"
+            "Failed to split by headers with positions, falling back to recursive: %s",
+            e,
         )
         return apply_recursive_strategy(paragraphs, params)
 
-    # For each section, further split and create chunks with section metadata (P1)
-    chunks = []
-    section_meta = {"section": ""}
+    # If no headers found (single section with no header), fallback to recursive
+    if len(sections_with_positions) == 1 and not sections_with_positions[0][1]:
+        return apply_recursive_strategy(paragraphs, params)
+
+    # For each section, further split and create chunks with section metadata (P1).
+    # Each window gets its own per-window spanning_pages rather than inheriting the
+    # full section-level page set (fixes M6).
+    chunks: List[Dict[str, Any]] = []
 
     for sec, section_header, section_start, section_end in sections_with_positions:
-        section_meta["section"] = section_header or ""
-        source_para = {"metadata": dict(section_meta)}
+        source_para: Dict[str, Any] = {"metadata": {"section": section_header or ""}}
 
-        # Find contributing paragraphs for this section using actual positions
-        # Validate section range to prevent empty range queries
         if section_end > section_start:
-            contributing_paragraphs = _find_contributing_paragraphs_for_range(
+            section_paragraphs = _find_contributing_paragraphs_for_range(
                 intervals, section_start, section_end
             )
         else:
-            contributing_paragraphs = []
+            section_paragraphs = []
+
+        # Build per-window records that carry their own spanning_pages.
+        window_records: List[Dict[str, Any]] = []
 
         if separators and separators != DEFAULT_SEPARATORS:
             section_chunks = _split_by_separators(sec, separators)
             if section_chunks:
                 if chunk_size_param is None:
-                    windows = section_chunks
+                    window_records = [{"text": t} for t in section_chunks]
                 else:
                     chunk_size = int(chunk_size_param)
-                    total_chars = sum(len(chunk) for chunk in section_chunks)
+                    total_chars = sum(len(c) for c in section_chunks)
                     if total_chars <= chunk_size:
-                        windows = section_chunks
+                        window_records = [{"text": t} for t in section_chunks]
                     else:
-                        # Create metadata records for each chunk
                         chunk_records = [
-                            {"text": chunk, "source_paragraph": None}
-                            for chunk in section_chunks
+                            {"text": c, "source_paragraph": None}
+                            for c in section_chunks
                         ]
-                        windowed_chunks = _window_with_overlap_and_metadata(
-                            chunk_records,
-                            chunk_size,
-                            chunk_overlap,
+                        window_records = _window_with_overlap_and_metadata(
+                            chunk_records, chunk_size, chunk_overlap
                         )
-                        windows = [w["text"] for w in windowed_chunks]
             else:
-                windows = [sec]
+                window_records = [{"text": sec}]
         else:
             if chunk_size_param is None:
-                windows = [sec]
+                window_records = [{"text": sec}]
             else:
                 chunk_size = int(chunk_size_param)
-                tokens = list(sec)
-                windows = _window_with_overlap(tokens, chunk_size, chunk_overlap)
+                window_records = []
+                if chunk_size <= 0:
+                    continue
 
-        if not windows:
-            continue
+                effective_overlap = max(chunk_overlap, 0)
+                local_start = 0
+                section_length = len(sec)
+                while local_start < section_length:
+                    local_end = min(section_length, local_start + chunk_size)
+                    win_text = sec[local_start:local_end]
+                    wr: Dict[str, Any] = {"text": win_text}
 
-        for w in windows:
-            if w.strip():
-                record = _create_chunk_record(w.strip(), source_paragraph=source_para)
-                # Apply positions from contributing paragraphs
-                positions = _collect_pages_from_paragraphs(contributing_paragraphs)
-                _apply_positions_to_record(record, positions)
-                chunks.append(record)
+                    # Compute per-window spanning_pages using the same window
+                    # offsets as _window_with_overlap, including overlap.
+                    win_start = section_start + local_start
+                    win_end = section_start + local_end
+                    contributing = _find_contributing_paragraphs_for_range(
+                        intervals, win_start, win_end
+                    )
+                    pages = _collect_pages_from_paragraphs(contributing)
+                    if pages:
+                        wr["spanning_pages"] = pages
+                    window_records.append(wr)
+
+                    if local_end == section_length:
+                        break
+                    local_start = max(
+                        local_start + chunk_size - effective_overlap,
+                        local_start + 1,
+                    )
+
+        for wr in window_records:
+            text = wr.get("text", "").strip()
+            if not text:
+                continue
+            record = _create_chunk_record(text, source_paragraph=source_para)
+            # Prefer per-window spanning_pages; fall back to section-level
+            spanning = wr.get("spanning_pages")
+            if not spanning:
+                spanning = _collect_pages_from_paragraphs(section_paragraphs)
+            _apply_spanning_pages_to_record(record, spanning)
+            chunks.append(record)
 
     return chunks
 
@@ -976,17 +957,41 @@ def attach_media_context(
 def apply_fixed_size_strategy(
     paragraphs: List[Dict[str, Any]], params: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
-    text = _join_paragraphs(paragraphs)
-    if not text:
+    """Apply fixed-size chunking with spanning_pages tracking."""
+    if not paragraphs:
         return []
+
     chunk_size_param = params.get("chunk_size")
     chunk_overlap: int = int(params.get("chunk_overlap", 0))
 
     if chunk_size_param is None:
-        # User didn't set chunk_size, return whole text as one chunk
-        return [_create_chunk_record(text.strip())]
-    else:
-        chunk_size = int(chunk_size_param)
-        tokens = list(text)
-        windows = _window_with_overlap(tokens, chunk_size, chunk_overlap)
-        return [_create_chunk_record(w.strip()) for w in windows if w.strip()]
+        text = _join_paragraphs(paragraphs)
+        if not text:
+            return []
+        record = _create_chunk_record(text.strip())
+        all_pages = _collect_pages_from_paragraphs(paragraphs)
+        _apply_spanning_pages_to_record(record, all_pages)
+        return [record]
+
+    chunk_size = int(chunk_size_param)
+    chunk_records = [
+        {"text": p.get("text", ""), "source_paragraph": p}
+        for p in paragraphs
+        if p.get("text", "").strip()
+    ]
+    if not chunk_records:
+        return []
+
+    windows = _window_with_overlap_and_metadata(
+        chunk_records, chunk_size, chunk_overlap
+    )
+    final: List[Dict[str, Any]] = []
+    for w in windows:
+        text = w.get("text", "").strip()
+        if not text:
+            continue
+        record = _create_chunk_record(text, w.get("source_paragraph"))
+        win_pages: Optional[List[int]] = w.get("spanning_pages")
+        _apply_spanning_pages_to_record(record, win_pages)
+        final.append(record)
+    return final

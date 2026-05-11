@@ -248,27 +248,18 @@ async def _parse_document_internal(
         unique_pages = []
         page_count = 0
 
-    try:
-        # Inject page stats into params so they are persisted in params_json
-        # Use _derived namespace to avoid conflicts with user-provided params
-        params_with_page_stats = {
-            **params,
-            "_derived": {
-                "page_stats": {
-                    "page_count": page_count,
-                    "page_numbers": unique_pages,
-                }
-            },
-        }
+    page_stats = {"page_count": page_count, "page_numbers": unique_pages}
 
+    try:
         written = _write_parse_to_db(
             collection,
             doc_id,
             parse_hash,
             str(parse_method),
-            params_with_page_stats,
+            params,
             enriched_paragraphs,
             user_id,
+            page_stats=page_stats,
         )
     except Exception as e:
         raise DatabaseOperationError(f"Database write failed: {e}") from e
@@ -550,6 +541,7 @@ def _write_parse_to_db(
     params: Dict[str, Any],
     paragraphs: List[ParsedParagraph],
     user_id: Optional[int] = None,
+    page_stats: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Write parse record to database using abstraction layer."""
     enable_timing = os.environ.get("PARSE_DETAILED_TIMING", "0").lower() in (
@@ -596,15 +588,19 @@ def _write_parse_to_db(
                 "[PARSE TIMING]    - Starting database operation (upsert_parses)..."
             )
 
+        params_for_storage = dict(params)
+        if page_stats:
+            params_for_storage["_derived"] = {"page_stats": page_stats}
+
         parse_record = {
             "collection": collection,
             "doc_id": doc_id,
             "parse_hash": parse_hash,
             "parser": f"local:{parse_method}@v1.0.0",
             "created_at": pd.Timestamp.now(tz="UTC"),
-            "params_json": json.dumps(params, ensure_ascii=False),
+            "params_json": json.dumps(params_for_storage, ensure_ascii=False),
             "parsed_content": parsed_content,
-            "user_id": user_id,  # Add user_id for multi-tenancy
+            "user_id": user_id,
         }
 
         # Use abstraction layer for upsert
