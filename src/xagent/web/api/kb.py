@@ -155,6 +155,57 @@ def _normalize_parse_method_for_filename(
     return normalized
 
 
+def _validate_parser_for_file(
+    filename: str,
+    parse_method: Optional[ParseMethod],
+    *,
+    user_id: Any = None,
+) -> None:
+    """Fail-fast validation: reject files with no parser or incompatible parser.
+
+    Raises:
+        HTTPException(422): if no parser supports the extension or the
+            requested parser is incompatible.
+    """
+    file_ext = Path(filename).suffix.lower()
+    effective = _normalize_parse_method_for_filename(parse_method, filename)
+
+    if effective == ParseMethod.DEFAULT:
+        supported = get_supported_parsers(file_ext)
+        if not supported:
+            logger.warning(
+                "KB ingest rejected: no parser supports extension=%s filename=%s user_id=%s",
+                file_ext,
+                filename,
+                user_id,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unsupported file type '{file_ext}' for ingestion. "
+                    "No available parser supports this format."
+                ),
+            )
+    else:
+        if not validate_parser_compatibility(file_ext, str(effective)):
+            supported = get_supported_parsers(file_ext)
+            logger.warning(
+                "KB ingest rejected: parser=%s not compatible with extension=%s filename=%s supported=%s",
+                str(effective),
+                file_ext,
+                filename,
+                supported,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Parser '{str(effective)}' is not compatible with "
+                    f"file type '{file_ext}'. "
+                    f"Supported parsers for this type: {supported}"
+                ),
+            )
+
+
 def _get_completed_step_metadata(
     result: IngestionResult, step_name: str
 ) -> Optional[Dict[str, Any]]:
@@ -1135,44 +1186,9 @@ async def ingest(
             detail=f"File type {Path(safe_filename).suffix.lower()} not supported",
         )
 
-    file_ext = Path(safe_filename).suffix.lower()
-    effective_parse_method = _normalize_parse_method_for_filename(
-        parse_method, safe_filename
+    _validate_parser_for_file(
+        safe_filename, parse_method, user_id=getattr(_user, "id", None)
     )
-    if effective_parse_method == ParseMethod.DEFAULT:
-        supported = get_supported_parsers(file_ext)
-        if not supported:
-            logger.warning(
-                "KB ingest rejected: no parser supports extension=%s filename=%s user_id=%s",
-                file_ext,
-                safe_filename,
-                getattr(_user, "id", None),
-            )
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Unsupported file type '{file_ext}' for ingestion. "
-                    "No available parser supports this format."
-                ),
-            )
-    else:
-        if not validate_parser_compatibility(file_ext, str(effective_parse_method)):
-            supported = get_supported_parsers(file_ext)
-            logger.warning(
-                "KB ingest rejected: parser=%s not compatible with extension=%s filename=%s supported=%s",
-                str(effective_parse_method),
-                file_ext,
-                safe_filename,
-                supported,
-            )
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Parser '{str(effective_parse_method)}' is not compatible with "
-                    f"file type '{file_ext}'. "
-                    f"Supported parsers for this type: {supported}"
-                ),
-            )
 
     if not collection or not collection.strip():
         collection = Path(safe_filename).stem
@@ -1486,6 +1502,18 @@ async def ingest_cloud(
                 file_info.fileId,
             )
             file_path = Path(get_upload_path(storage_filename, user_id=int(_user.id)))
+            try:
+                _validate_parser_for_file(
+                    safe_filename,
+                    request.parse_method,
+                    user_id=int(_user.id),
+                )
+            except HTTPException as ve:
+                return IngestionResult(
+                    status="error",
+                    message=ve.detail,
+                    doc_id=file_info.fileName,
+                )
             try:
                 if file_info.provider == "google-drive":
                     # Get credentials (run in thread to avoid blocking)

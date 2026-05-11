@@ -4,6 +4,7 @@ These tests define the expected fail-fast behavior for the /ingest endpoint:
 - Files whose extension is allowed to upload but has no available parser → 422
 - Explicit parser that is incompatible with the file extension → 422
 - HTML / HTM files with 'unstructured' parser available → accepted (not 422)
+- PDF-only parsers auto-fallback to default for non-PDF files (no reject)
 """
 
 import io
@@ -12,11 +13,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from xagent.core.tools.core.RAG_tools.core.parser_registry import get_supported_parsers
-from xagent.web.api.kb import kb_router
+from xagent.core.tools.core.RAG_tools.core.schemas import ParseMethod
+from xagent.web.api.kb import _validate_parser_for_file, kb_router
 from xagent.web.models.database import get_db
 
 
@@ -83,7 +85,45 @@ class TestParserRegistrySupport:
 
 
 # ---------------------------------------------------------------------------
-# Ingest endpoint: reject unsupported / incompatible files (fail-fast)
+# Unit tests for _validate_parser_for_file (single source of truth)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateParserForFile:
+    """Direct unit tests for the fail-fast validation function."""
+
+    def test_rejects_unparsable_extension(self):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_parser_for_file("test.py", None)
+        assert exc_info.value.status_code == 422
+        assert "Unsupported file type" in exc_info.value.detail
+
+    def test_rejects_incompatible_explicit_parser(self):
+        """deepdoc is not compatible with .pptx (only unstructured is)."""
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_parser_for_file("slides.pptx", ParseMethod.DEEPDOC)
+        assert exc_info.value.status_code == 422
+        assert "not compatible" in exc_info.value.detail
+
+    def test_accepts_html_default(self):
+        _validate_parser_for_file("page.html", None)
+
+    def test_accepts_htm_default(self):
+        _validate_parser_for_file("page.htm", None)
+
+    def test_accepts_pdf_default(self):
+        _validate_parser_for_file("doc.pdf", None)
+
+    def test_pdf_only_parser_falls_back_for_non_pdf(self):
+        """pypdf on .xlsx should NOT raise — it auto-normalizes to default."""
+        _validate_parser_for_file("table.xlsx", ParseMethod.PYPDF)
+
+    def test_accepts_compatible_explicit_parser(self):
+        _validate_parser_for_file("report.docx", ParseMethod.UNSTRUCTURED)
+
+
+# ---------------------------------------------------------------------------
+# Ingest endpoint integration tests
 # ---------------------------------------------------------------------------
 
 
@@ -108,11 +148,7 @@ class TestIngestFailFast:
         mock_ingest.assert_not_called()
 
     def test_rejects_incompatible_explicit_parser(self, app_with_kb):
-        """Specifying deepdoc for a .pptx file should be rejected as incompatible.
-
-        .pptx only supports 'unstructured', and 'deepdoc' is not a PDF-only
-        parser (so it won't be auto-normalized to default).
-        """
+        """Specifying deepdoc for a .pptx file should be rejected as incompatible."""
         client = TestClient(app_with_kb)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -130,15 +166,11 @@ class TestIngestFailFast:
 
         assert resp.status_code == 422
         detail = resp.json().get("detail", "")
-        assert "not compatible" in detail or "incompatible" in detail.lower()
+        assert "not compatible" in detail
         mock_ingest.assert_not_called()
 
-    def test_html_not_rejected_by_fail_fast(self, app_with_kb):
-        """HTML files must pass the parser validation check.
-
-        The request may fail later (deeper mocking gaps) but must NOT be rejected
-        with an 'Unsupported file type' or 'not compatible' 422 error.
-        """
+    def test_html_passes_fail_fast(self, app_with_kb):
+        """HTML files must pass the parser validation (may fail later in pipeline)."""
         client = TestClient(app_with_kb, raise_server_exceptions=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -150,17 +182,13 @@ class TestIngestFailFast:
                     client, "page.html", b"<html><body>hi</body></html>"
                 )
 
-        if resp.status_code == 422:
-            detail = resp.json().get("detail", "")
-            assert "Unsupported file type" not in detail, (
-                f"HTML should not be rejected as unsupported: {detail}"
-            )
-            assert "not compatible" not in detail.lower(), (
-                f"HTML should not be rejected as incompatible: {detail}"
-            )
+        assert resp.status_code != 422 or (
+            "Unsupported file type" not in resp.json().get("detail", "")
+            and "not compatible" not in resp.json().get("detail", "").lower()
+        ), f"HTML rejected by fail-fast: {resp.json()}"
 
-    def test_htm_not_rejected_by_fail_fast(self, app_with_kb):
-        """HTM files must also pass the parser validation check."""
+    def test_htm_passes_fail_fast(self, app_with_kb):
+        """HTM files must also pass the parser validation."""
         client = TestClient(app_with_kb, raise_server_exceptions=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -170,8 +198,6 @@ class TestIngestFailFast:
             ):
                 resp = _post_ingest(client, "page.htm", b"<html><body>hi</body></html>")
 
-        if resp.status_code == 422:
-            detail = resp.json().get("detail", "")
-            assert "Unsupported file type" not in detail, (
-                f"HTM should not be rejected as unsupported: {detail}"
-            )
+        assert resp.status_code != 422 or (
+            "Unsupported file type" not in resp.json().get("detail", "")
+        ), f"HTM rejected by fail-fast: {resp.json()}"

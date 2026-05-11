@@ -106,32 +106,25 @@ async def parse_document(
             f"local={tool_args.capabilities.use_local_parser}"
         )
 
-    # If auto-routing, further narrow parsers by file extension compatibility.
-    # This prevents accidental selection of the first registered parser (e.g. pypdf)
-    # for unsupported formats (e.g. .html) when capabilities happen to match.
+    # If auto-routing, narrow parsers by file extension using the single
+    # source of truth (parser_registry) to avoid drift between the static
+    # compatibility table and individual parser class attributes.
     ext = Path(resolved_file_path).suffix.lower()
     if not tool_args.parser_name:
-        ext_compatible: list[str] = []
-        for parser_name in available_parsers:
-            parser_class = parsers.get(parser_name)
-            supported = (
-                getattr(parser_class, "supported_extensions", None)
-                if parser_class
-                else None
-            )
-            if not supported:
-                # If a parser doesn't declare supported_extensions, keep it eligible.
-                ext_compatible.append(parser_name)
-                continue
-            if ext in {e.lower() for e in supported}:
-                ext_compatible.append(parser_name)
+        # Lazy import to avoid circular dependency:
+        # parser_registry imports document_parser_registry from this module.
+        from .RAG_tools.core.parser_registry import get_supported_parsers
+
+        registry_supported = set(get_supported_parsers(ext))
+        ext_compatible = [p for p in available_parsers if p in registry_supported]
 
         if not ext_compatible:
             logger.warning(
                 "No compatible document parsers found for extension '%s'. "
-                "Available parsers by capability: %s",
+                "Available parsers by capability: %s, registry supported: %s",
                 ext,
                 ", ".join(available_parsers),
+                ", ".join(registry_supported) or "(none)",
             )
             raise ValueError(
                 f"Unsupported file type '{ext}'. No available parser can handle this extension."
@@ -161,7 +154,9 @@ async def parse_document(
         elif ext in (".html", ".htm") and "unstructured" in available_parsers:
             selected_parser = "unstructured"
             logger.info(
-                f"Auto-selected 'unstructured' parser for {ext} file: {resolved_file_path}"
+                "Auto-selected 'unstructured' parser for %s file: %s",
+                ext,
+                resolved_file_path,
             )
         elif (
             ext
