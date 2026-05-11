@@ -1291,12 +1291,6 @@ class CollectionInfo(BaseModel):
     # Basic identifier
     name: str = Field(..., description="Collection identifier")
 
-    # 👥 Ownership / access control (stored as JSON string in LanceDB)
-    owners: List[str] = Field(
-        default_factory=list,
-        description="Collection owners. Stored as JSON string in LanceDB for compatibility.",
-    )
-
     # 🎯 Core binding: Embedding configuration (lazy initialization)
     embedding_model_id: Optional[str] = Field(
         default=None,  # None indicates not initialized

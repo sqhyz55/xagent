@@ -18,14 +18,21 @@ def mock_user():
 def app_with_kb(mock_user):
     """FastAPI app with kb_router and mocked auth."""
 
+    from unittest.mock import MagicMock
+
     from xagent.web.api.kb import get_current_user
+    from xagent.web.models.database import get_db
 
     def override_get_current_user():
         return mock_user
 
+    def override_get_db():
+        yield MagicMock()
+
     app = FastAPI()
     app.include_router(kb_router)
     app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_db] = override_get_db
     return app
 
 

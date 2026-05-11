@@ -479,7 +479,6 @@ async def run_web_ingestion(
             f"{total_chunks} chunks, {total_embeddings} embeddings"
         )
 
-
     result = WebIngestionResult(
         status=status,
         collection=collection,
