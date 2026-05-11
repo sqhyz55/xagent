@@ -445,8 +445,22 @@ class VectorIndexStore(ABC):
         self,
         collection_name: str,
         new_name: str,
+        user_id: Optional[int],
+        is_admin: bool,
     ) -> List[str]:
         """Rename collection key across vector-side tables.
+
+        Applies the same multi-tenancy filter semantics as
+        :meth:`delete_collection_data`: non-admin callers only rename rows they
+        can see (``user_id`` match; legacy NULL ``user_id`` is admin-only).
+        Admins omit the user predicate and rename all rows for the old collection
+        name.
+
+        Args:
+            collection_name: Current collection name stored in vector tables.
+            new_name: Target collection name after rename.
+            user_id: User ID for multi-tenancy filtering.
+            is_admin: Whether the caller has admin privileges.
 
         Returns:
             Warning messages generated during best-effort updates.

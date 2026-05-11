@@ -337,7 +337,12 @@ def test_vector_store_rename_collection_data_updates_expected_tables(
     mock_conn.open_table.return_value = mock_table
 
     store = LanceDBVectorIndexStore()
-    warnings = store.rename_collection_data("old_name", "new_name")
+    warnings = store.rename_collection_data(
+        "old_name",
+        "new_name",
+        user_id=1,
+        is_admin=False,
+    )
 
     assert warnings == []
     # 4 target tables should be updated; control-plane table excluded.

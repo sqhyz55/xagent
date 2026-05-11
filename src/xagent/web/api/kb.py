@@ -1722,6 +1722,7 @@ async def ingest_cloud(
                         file_config = config.model_copy(
                             update={"parse_method": normalized_parse_method}
                         )
+
                         def _run_cloud_ingestion() -> IngestionResult:
                             return run_document_ingestion(
                                 collection=safe_collection,
@@ -4036,6 +4037,8 @@ async def rename_collection_api(
         vector_store.rename_collection_data(
             collection_name=safe_old_collection,
             new_name=safe_new_collection,
+            user_id=int(_user.id),
+            is_admin=bool(_user.is_admin),
         )
     )
 

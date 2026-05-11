@@ -612,11 +612,20 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         self,
         collection_name: str,
         new_name: str,
+        user_id: Optional[int],
+        is_admin: bool,
     ) -> List[str]:
         from ..LanceDB.schema_manager import _safe_close_table
 
         warnings: List[str] = []
-        safe_old_name = escape_lancedb_string(collection_name)
+        filter_expr = self.build_filter_expression(
+            build_filter_from_dict({"collection": collection_name}),
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        if not filter_expr:
+            return warnings
+
         conn = self._get_connection()
         for table_name in self.list_table_names():
             if table_name not in {
@@ -629,7 +638,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             try:
                 table = conn.open_table(table_name)
                 table.update(
-                    f"collection = '{safe_old_name}'",
+                    filter_expr,
                     {"collection": new_name},
                 )
             except Exception as exc:  # noqa: BLE001
