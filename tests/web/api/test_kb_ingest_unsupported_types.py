@@ -170,34 +170,33 @@ class TestIngestFailFast:
         mock_ingest.assert_not_called()
 
     def test_html_passes_fail_fast(self, app_with_kb):
-        """HTML files must pass the parser validation (may fail later in pipeline)."""
+        """HTML files must pass the parser validation and reach downstream ingestion."""
         client = TestClient(app_with_kb, raise_server_exceptions=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch(
-                "xagent.web.api.kb.get_upload_path",
-                return_value=str(Path(tmpdir) / "page.html"),
+            with (
+                patch(
+                    "xagent.web.api.kb.get_upload_path",
+                    return_value=str(Path(tmpdir) / "page.html"),
+                ),
+                patch("xagent.web.api.kb.run_document_ingestion") as mock_ingest,
             ):
-                resp = _post_ingest(
-                    client, "page.html", b"<html><body>hi</body></html>"
-                )
+                _post_ingest(client, "page.html", b"<html><body>hi</body></html>")
 
-        assert resp.status_code != 422 or (
-            "Unsupported file type" not in resp.json().get("detail", "")
-            and "not compatible" not in resp.json().get("detail", "").lower()
-        ), f"HTML rejected by fail-fast: {resp.json()}"
+        mock_ingest.assert_called_once()
 
     def test_htm_passes_fail_fast(self, app_with_kb):
-        """HTM files must also pass the parser validation."""
+        """HTM files must also pass the parser validation and reach downstream ingestion."""
         client = TestClient(app_with_kb, raise_server_exceptions=False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch(
-                "xagent.web.api.kb.get_upload_path",
-                return_value=str(Path(tmpdir) / "page.htm"),
+            with (
+                patch(
+                    "xagent.web.api.kb.get_upload_path",
+                    return_value=str(Path(tmpdir) / "page.htm"),
+                ),
+                patch("xagent.web.api.kb.run_document_ingestion") as mock_ingest,
             ):
-                resp = _post_ingest(client, "page.htm", b"<html><body>hi</body></html>")
+                _post_ingest(client, "page.htm", b"<html><body>hi</body></html>")
 
-        assert resp.status_code != 422 or (
-            "Unsupported file type" not in resp.json().get("detail", "")
-        ), f"HTM rejected by fail-fast: {resp.json()}"
+        mock_ingest.assert_called_once()

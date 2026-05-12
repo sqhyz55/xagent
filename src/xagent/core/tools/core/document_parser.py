@@ -109,8 +109,9 @@ async def parse_document(
     # If auto-routing, narrow parsers by file extension using the single
     # source of truth (parser_registry) to avoid drift between the static
     # compatibility table and individual parser class attributes.
-    ext = Path(resolved_file_path).suffix.lower()
+    ext: str | None = None
     if not tool_args.parser_name:
+        ext = Path(resolved_file_path).suffix.lower()
         # Lazy import to avoid circular dependency:
         # parser_registry imports document_parser_registry from this module.
         from .RAG_tools.core.parser_registry import get_supported_parsers
@@ -141,6 +142,7 @@ async def parse_document(
         selected_parser = tool_args.parser_name
     else:
         # Auto-route based on file extension
+        assert ext is not None
         if ext == ".pdf" and "deepdoc" in available_parsers:
             selected_parser = "deepdoc"
             logger.info(
@@ -165,11 +167,10 @@ async def parse_document(
                 ".pptx",
                 ".doc",
                 ".docx",
+                ".csv",
                 ".txt",
                 ".md",
                 ".json",
-                ".html",
-                ".csv",
             )
             and "unstructured" in available_parsers
         ):
