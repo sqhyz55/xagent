@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -61,6 +62,24 @@ from ..vector_storage.vector_manager import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Per-document ingestion lock keyed by (collection, source_path).
+# Prevents concurrent ingestion of the same document which can cause
+# data loss in the chunk replacement flow (see PR #202 comment 7).
+_ingestion_locks: Dict[tuple, threading.Lock] = {}
+_ingestion_locks_guard = threading.Lock()
+
+
+def _get_ingestion_lock(collection: str, source_path: str) -> threading.Lock:
+    """Get or create a per-document threading lock."""
+    key = (collection, source_path)
+    if key in _ingestion_locks:
+        return _ingestion_locks[key]
+    with _ingestion_locks_guard:
+        if key not in _ingestion_locks:
+            _ingestion_locks[key] = threading.Lock()
+        return _ingestion_locks[key]
+
 
 _SPREADSHEET_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 _SPREADSHEET_CHUNK_SIZE_TOKENS = 512
@@ -521,7 +540,33 @@ def process_document(
           inputs will reuse existing records when possible.
         - Downstream API layers should surface `result.failed_step` and
           `result.warnings` to callers for better observability.
+        - A per-document lock serialises concurrent calls for the same
+          (collection, source_path) to prevent chunk replacement races.
     """
+    lock = _get_ingestion_lock(collection, source_path)
+    with lock:
+        return _process_document_impl(
+            collection,
+            source_path,
+            config=config,
+            progress_manager=progress_manager,
+            user_id=user_id,
+            is_admin=is_admin,
+            file_id=file_id,
+        )
+
+
+def _process_document_impl(
+    collection: str,
+    source_path: str,
+    *,
+    config: Optional[IngestionConfig] = None,
+    progress_manager: Optional[ProgressManager] = None,
+    user_id: Optional[int] = None,
+    is_admin: bool = False,
+    file_id: Optional[str] = None,
+) -> IngestionResult:
+    """Internal implementation of process_document (runs under per-document lock)."""
     cfg = _apply_spreadsheet_ingestion_safeguards(
         coerce_ingestion_config(config),
         source_path,

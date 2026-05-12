@@ -1501,26 +1501,42 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         user_id: Optional[int] = None,
         is_admin: bool = False,
     ) -> None:
-        """Replace chunk records within a scope (delete old + insert new).
+        """Replace chunk records within a scope (insert new, then delete old).
 
-        Safety: inserts new records first, then deletes rows that do NOT belong
-        to the new generation. This avoids data loss if the process crashes
+        Inserts *records* first via idempotent merge_insert, then deletes rows
+        matching *replace_scope* that do not belong to the new generation.
+        This insert-before-delete order avoids data loss if the process crashes
         between the two operations (worst case: brief duplicate data, not zero
-        data).
+        data). Also cascade-deletes orphaned embedding rows from all
+        ``embeddings_*`` tables.
         """
         from ..LanceDB.schema_manager import _safe_close_table, ensure_chunks_table
+
+        if not replace_scope:
+            raise ValueError("replace_scope must not be empty")
 
         for key in replace_scope:
             if key not in self._REPLACE_CHUNKS_ALLOWED_KEYS:
                 raise ValueError(f"Invalid replace_scope column: {key}")
 
+        if records:
+            missing = [i for i, r in enumerate(records) if "chunk_id" not in r]
+            if missing:
+                raise ValueError(
+                    f"records at index {missing} missing required 'chunk_id' field"
+                )
+
         conn = self._get_connection()
         ensure_chunks_table(conn)
         table = conn.open_table("chunks")
         try:
-            # Step 1: Insert new records (safe — idempotent add)
+            # Step 1: Upsert new records (merge_insert is idempotent on retry)
             if records:
-                table.add(records)
+                table.merge_insert(
+                    ["collection", "doc_id", "parse_hash", "chunk_id"]
+                ).when_matched_update_all().when_not_matched_insert_all().execute(
+                    records
+                )
 
             # Step 2: Build delete filter targeting old generations
             scope_parts = [
@@ -1550,6 +1566,48 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         finally:
             _safe_close_table(table)
         self.invalidate_table_cache("chunks")
+
+        # Step 3: Cascade-delete orphaned embeddings for the same scope.
+        # After chunk replacement, old chunk_ids no longer exist in the chunks
+        # table but their embedding rows would still be searchable.
+        embed_scope_parts = [
+            f"{k} == '{escape_lancedb_string(str(v))}'"
+            for k, v in replace_scope.items()
+            if k in ("collection", "doc_id", "parse_hash")
+        ]
+        if not embed_scope_parts:
+            return
+
+        embed_base = " AND ".join(embed_scope_parts)
+        embed_user = UserPermissions.get_user_filter(user_id, is_admin)
+        if embed_base and embed_user:
+            embed_filter = f"({embed_base}) AND ({embed_user})"
+        elif embed_user:
+            embed_filter = embed_user
+        else:
+            embed_filter = embed_base
+
+        if records:
+            new_ids = [r["chunk_id"] for r in records]
+            id_list = ", ".join(f"'{escape_lancedb_string(cid)}'" for cid in new_ids)
+            embed_filter = f"({embed_filter}) AND chunk_id NOT IN ({id_list})"
+
+        for tname in self.list_table_names():
+            if not tname.startswith("embeddings_"):
+                continue
+            try:
+                etable = conn.open_table(tname)
+                try:
+                    etable.delete(embed_filter)
+                finally:
+                    _safe_close_table(etable)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to cascade-delete embeddings from %s",
+                    tname,
+                    exc_info=True,
+                )
+        self.invalidate_table_cache()
 
     def upsert_embeddings(self, model_tag: str, records: List[Dict[str, Any]]) -> None:
         """Upsert embedding records to LanceDB with fallback pattern.

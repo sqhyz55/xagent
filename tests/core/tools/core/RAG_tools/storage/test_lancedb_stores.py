@@ -1578,7 +1578,7 @@ def test_upsert_chunks_basic(mock_get_connection: Mock) -> None:
     "xagent.core.tools.core.RAG_tools.storage.lancedb_stores.get_connection_from_env"
 )
 def test_replace_chunks_inserts_then_deletes_old(mock_get_connection: Mock) -> None:
-    """replace_chunks should add new records first, then delete old generation rows."""
+    """replace_chunks should merge_insert new records first, then delete old generation rows."""
     mock_conn = Mock()
     mock_get_connection.return_value = mock_conn
     mock_conn.list_tables.return_value = []
@@ -1608,12 +1608,14 @@ def test_replace_chunks_inserts_then_deletes_old(mock_get_connection: Mock) -> N
         records, replace_scope=replace_scope, user_id=1, is_admin=False
     )
 
-    # Verify add was called with records (insert first)
-    mock_table.add.assert_called_once_with(records)
+    # Verify merge_insert was called (idempotent upsert)
+    mock_table.merge_insert.assert_called_once_with(
+        ["collection", "doc_id", "parse_hash", "chunk_id"]
+    )
 
     # Verify delete was called with scope filter + user filter + NOT IN exclusion
-    mock_table.delete.assert_called_once()
-    delete_expr = mock_table.delete.call_args[0][0]
+    mock_table.delete.assert_called()
+    delete_expr = mock_table.delete.call_args_list[0][0][0]
     assert "col1" in delete_expr
     assert "doc1" in delete_expr
     assert "hash1" in delete_expr
@@ -1649,7 +1651,7 @@ def test_replace_chunks_empty_records_only_deletes(mock_get_connection: Mock) ->
     mock_table.delete.assert_called_once()
     delete_expr = mock_table.delete.call_args[0][0]
     assert "NOT IN" not in delete_expr
-    mock_table.add.assert_not_called()
+    mock_table.merge_insert.assert_not_called()
 
 
 @patch(

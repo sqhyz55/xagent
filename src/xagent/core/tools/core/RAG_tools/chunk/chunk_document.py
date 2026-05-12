@@ -88,11 +88,10 @@ def chunk_document(
     Chunk parsed paragraphs and write to chunks table.
 
     Concurrency note:
-        This function uses **last-write-wins** semantics. If two concurrent
-        calls target the same (collection, doc_id, parse_hash) with different
-        parameters, the last one to reach ``_write_chunks_to_db`` will replace
-        the other's output. Callers requiring mutual exclusion should hold a
-        collection-level lock before invoking this function.
+        This function uses **last-write-wins** semantics. The ingestion
+        pipeline serialises calls per (collection, source_path) via
+        ``_get_ingestion_lock``, so concurrent chunk replacement races are
+        prevented at the pipeline level.
 
     Args:
         collection: Collection name for data isolation
@@ -544,9 +543,6 @@ def _write_chunks_to_db(
             }
             rows.append(row)
 
-        if not rows:
-            return False
-
         vector_store = get_vector_index_store()
         vector_store.replace_chunks(
             rows,
@@ -558,6 +554,9 @@ def _write_chunks_to_db(
             user_id=user_id,
             is_admin=is_admin,
         )
+
+        if not rows:
+            return False
 
         logger.info(
             "Chunk records written to database: doc_id=%s, parse_hash=%s, config_hash=%s",
