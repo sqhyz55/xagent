@@ -237,7 +237,7 @@ async def _parse_document_internal(
     page_numbers: list[int] = []
     for paragraph in enriched_paragraphs:
         raw_page = paragraph.metadata.get("page_number")
-        if isinstance(raw_page, int) and raw_page > 0:
+        if isinstance(raw_page, int) and raw_page >= 1:
             page_numbers.append(raw_page)
 
     # Handle empty documents gracefully

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -60,12 +61,13 @@ def _create_chunk_record(
         source_paragraph: Source paragraph metadata for position info
 
     Returns:
-        Chunk record with text, position fields, and a **shallow copy** of
+        Chunk record with text, position fields, and a **deep copy** of
         the source metadata dictionary so that downstream mutations
-        (e.g. adding ``spanning_pages``) do not affect the original paragraph.
+        (e.g. adding ``spanning_pages``) do not affect the original paragraph,
+        including nested objects.
     """
     original = (source_paragraph or {}).get("metadata", {})
-    metadata = dict(original)
+    metadata = copy.deepcopy(original)
 
     return {
         "text": text,
@@ -103,32 +105,30 @@ def _find_contributing_paragraphs_for_range(
 def _collect_pages_from_paragraphs(
     paragraphs: Iterable[Dict[str, Any]],
 ) -> List[int]:
-    """Collect sorted unique positive page numbers from paragraph metadata.
+    """Collect sorted unique 1-based page numbers from paragraph metadata.
 
     Handles various edge cases:
     - None or non-dict paragraph entries
     - Missing or non-dict metadata
-    - Non-integer or negative page numbers
+    - Non-integer or non-positive page numbers
 
     Args:
         paragraphs: Iterable of paragraph dictionaries that may contain metadata
 
     Returns:
-        Sorted list of unique positive page numbers
+        Sorted list of unique 1-based page numbers (>= 1)
     """
     pages: set[int] = set()
     for para in paragraphs:
-        # Validate paragraph is a dict
         if not para or not isinstance(para, dict):
             continue
 
-        # Validate metadata exists and is a dict
         meta = para.get("metadata")
         if not meta or not isinstance(meta, dict):
             continue
 
         page_num = meta.get("page_number")
-        if isinstance(page_num, int) and page_num >= 0:
+        if isinstance(page_num, int) and page_num >= 1:
             pages.add(page_num)
 
     return sorted(pages)
@@ -184,7 +184,7 @@ def _apply_spanning_pages_to_record(
     Uses ``metadata["spanning_pages"]`` to avoid collision with the deepdoc
     parser's ``metadata["positions"]`` (bounding-box visualisation data).
 
-    - Ensures spanning_pages are unique positive integers.
+    - Ensures spanning_pages are unique 1-based integers.
     - Writes them to metadata['spanning_pages'] if non-empty.
     - Derives page_number from the smallest page when missing.
     """
@@ -193,7 +193,7 @@ def _apply_spanning_pages_to_record(
 
     pages: set[int] = set()
     for p in spanning_pages:
-        if isinstance(p, int) and p >= 0:
+        if isinstance(p, int) and p >= 1:
             pages.add(p)
     if not pages:
         return
@@ -810,20 +810,41 @@ def apply_markdown_strategy(
         if separators and separators != DEFAULT_SEPARATORS:
             section_chunks = _split_by_separators(sec, separators)
             if section_chunks:
+                # Map each chunk back to its position in sec for page tracking
+                chunk_records_with_pages: list[Dict[str, Any]] = []
+                search_start = 0
+                for sc in section_chunks:
+                    idx = sec.find(sc, search_start)
+                    local_start = idx if idx >= 0 else search_start
+                    local_end = local_start + len(sc)
+                    search_start = local_end
+
+                    contributing = _find_contributing_paragraphs_for_range(
+                        intervals,
+                        section_start + local_start,
+                        section_start + local_end,
+                    )
+                    first_para = contributing[0] if contributing else None
+                    pages = _collect_pages_from_paragraphs(contributing)
+
+                    rec: Dict[str, Any] = {
+                        "text": sc,
+                        "source_paragraph": first_para,
+                    }
+                    if pages:
+                        rec["spanning_pages"] = pages
+                    chunk_records_with_pages.append(rec)
+
                 if chunk_size_param is None:
-                    window_records = [{"text": t} for t in section_chunks]
+                    window_records = chunk_records_with_pages
                 else:
                     chunk_size = int(chunk_size_param)
-                    total_chars = sum(len(c) for c in section_chunks)
+                    total_chars = sum(len(r["text"]) for r in chunk_records_with_pages)
                     if total_chars <= chunk_size:
-                        window_records = [{"text": t} for t in section_chunks]
+                        window_records = chunk_records_with_pages
                     else:
-                        chunk_records = [
-                            {"text": c, "source_paragraph": None}
-                            for c in section_chunks
-                        ]
                         window_records = _window_with_overlap_and_metadata(
-                            chunk_records, chunk_size, chunk_overlap
+                            chunk_records_with_pages, chunk_size, chunk_overlap
                         )
             else:
                 window_records = [{"text": sec}]
@@ -974,13 +995,17 @@ def apply_fixed_size_strategy(
         return [record]
 
     chunk_size = int(chunk_size_param)
-    chunk_records = [
-        {"text": p.get("text", ""), "source_paragraph": p}
-        for p in paragraphs
-        if p.get("text", "").strip()
-    ]
-    if not chunk_records:
+    filtered = [p for p in paragraphs if p.get("text", "").strip()]
+    if not filtered:
         return []
+
+    # Interleave "\n\n" separators between paragraphs so that windowed
+    # character-level concatenation preserves the original paragraph breaks.
+    chunk_records: list[Dict[str, Any]] = []
+    for i, p in enumerate(filtered):
+        if i > 0:
+            chunk_records.append({"text": "\n\n", "source_paragraph": None})
+        chunk_records.append({"text": p.get("text", ""), "source_paragraph": p})
 
     windows = _window_with_overlap_and_metadata(
         chunk_records, chunk_size, chunk_overlap
