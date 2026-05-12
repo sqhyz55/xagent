@@ -844,6 +844,16 @@ export function KnowledgeBaseCreationDialog({ open, onOpenChange, onSuccess }: K
                         />
                       </div>
                     </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="create-render-js"
+                        checked={webIngestionConfig.render_js}
+                        onChange={(e) => setWebIngestionConfig(prev => ({ ...prev, render_js: e.target.checked }))}
+                        className="w-4 h-4"
+                      />
+                      <Label htmlFor="create-render-js" className="cursor-pointer">{t("kb.dialog.webImport.advanced.renderJs")}</Label>
+                    </div>
                   </div>
                 )}
               </div>

@@ -1313,7 +1313,7 @@ export function KnowledgeBaseDetailContent({ collectionName }: { collectionName:
                             className="w-4 h-4"
                           />
                           <Label htmlFor="dialog-render-js" className="cursor-pointer">
-                            启用 JS 渲染（Playwright）
+                            {t("kb.dialog.webImport.advanced.renderJs")}
                           </Label>
                         </div>
                       </div>

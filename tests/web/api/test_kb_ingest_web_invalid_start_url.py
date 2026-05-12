@@ -82,17 +82,38 @@ def test_ingest_web_rejects_invalid_start_url(app_with_kb, start_url: str) -> No
 def test_ingest_web_accepts_stripped_url(app_with_kb) -> None:
     """Whitespace/newline around a valid URL should be accepted after strip()."""
 
-    client = TestClient(app_with_kb)
-    resp = client.post(
-        "/api/kb/ingest-web",
-        data={
-            "collection": "test_coll",
-            "start_url": "  https://xinference.cn\n",
-            "max_pages": "1",
-            "max_depth": "1",
-            "respect_robots_txt": "false",
-        },
-    )
+    from unittest.mock import AsyncMock, patch
 
-    # We don't assert success here (depends on network), only that validation passed.
-    assert resp.status_code != 422
+    mock_result = {
+        "status": "success",
+        "collection": "test_coll",
+        "pages_crawled": 1,
+        "pages_failed": 0,
+        "chunks_stored": 5,
+        "message": "OK",
+    }
+
+    with patch(
+        "xagent.web.api.kb.run_web_ingestion",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ) as mock_run:
+        client = TestClient(app_with_kb)
+        resp = client.post(
+            "/api/kb/ingest-web",
+            data={
+                "collection": "test_coll",
+                "start_url": "  https://xinference.cn\n",
+                "max_pages": "1",
+                "max_depth": "1",
+                "respect_robots_txt": "false",
+            },
+        )
+
+        assert resp.status_code != 422
+
+        if mock_run.called:
+            call_kwargs = mock_run.call_args[1]
+            crawl_config = call_kwargs.get("crawl_config")
+            assert crawl_config is not None
+            assert crawl_config.start_url == "https://xinference.cn"

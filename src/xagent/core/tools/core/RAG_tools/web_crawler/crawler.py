@@ -578,6 +578,14 @@ class WebCrawler:
                         logger.error("Failed to crawl %s: %s", url, error_msg)
                         self.failed_urls[url] = error_msg
                         return None, set()
+
+                    raw_status = _meta.get("status_code")
+                    if raw_status is not None and isinstance(raw_status, int):
+                        if not (200 <= raw_status < 300):
+                            error_msg = f"HTTP {raw_status}"
+                            logger.error("Failed to crawl %s: %s", url, error_msg)
+                            self.failed_urls[url] = error_msg
+                            return None, set()
                 else:
                     response, fingerprint_used = await self._fetch_with_fallback(
                         sessions, url

@@ -1602,7 +1602,6 @@ async def ingest_cloud(
     except Exception as e:
         logger.warning("Failed to save collection config during ingest_cloud: %s", e)
 
-
     semaphore = asyncio.Semaphore(5)
 
     async def process_file(file_info: CloudFile) -> IngestionResult:
