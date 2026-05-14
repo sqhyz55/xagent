@@ -18,9 +18,68 @@ from xagent.core.tools.core.RAG_tools.core.exceptions import (
 )
 from xagent.core.tools.core.RAG_tools.core.schemas import ParseMethod
 from xagent.core.tools.core.RAG_tools.file.register_document import register_document
-from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
+from xagent.core.tools.core.RAG_tools.parse.parse_document import (
+    _validate_parse_params,
+    parse_document,
+)
 
 RESOURCES_DIR = Path("tests/resources/test_files")
+
+
+class TestParseParamsValidationContract:
+    """Contract tests for parse params validation vs persisted ``params_json`` shape."""
+
+    def test_validate_parse_params_accepts_derived_page_stats_pypdf(self) -> None:
+        """Persisted params may include ``_derived``; re-validation must not fail.
+
+        ``_write_parse_to_db`` merges ``page_stats`` under ``params_json['_derived']``.
+        Callers that round-trip JSON and run ``_validate_parse_params`` must accept
+        that key without treating it as an unknown user parameter.
+        """
+        params: dict[str, object] = {
+            "_derived": {"page_stats": {"total_pages": 3, "pages_with_text": [1, 2]}}
+        }
+        _validate_parse_params(ParseMethod.PYPDF, params)
+
+    def test_validate_parse_params_accepts_derived_with_user_keys_pdfplumber(
+        self,
+    ) -> None:
+        """``_derived`` may coexist with normal whitelisted parse parameters."""
+        params: dict[str, object] = {
+            "extract_tables": True,
+            "_derived": {"page_stats": {"total_pages": 1}},
+        }
+        _validate_parse_params(ParseMethod.PDFPLUMBER, params)
+
+    def test_validate_parse_params_rejects_unknown_user_key(self) -> None:
+        """Unknown user-supplied keys are still rejected."""
+        with pytest.raises(DocumentValidationError, match="Invalid parameter"):
+            _validate_parse_params(ParseMethod.PYPDF, {"not_a_real_param": True})
+
+
+class TestPageStatsUsesSamePageUnionAsChunking:
+    """``parse_document`` page_stats must count bbox pages, not only ``page_number``."""
+
+    def test_union_includes_deepdoc_positions_pages(self) -> None:
+        """Same dict shape as DB/chunk pipeline: bbox pages extend primary page."""
+        from xagent.core.tools.core.RAG_tools.core.schemas import ParsedParagraph
+        from xagent.core.tools.core.RAG_tools.utils.paragraph_page_utils import (
+            collect_pages_from_paragraphs,
+        )
+
+        p = ParsedParagraph(
+            text="caption",
+            metadata={
+                "page_number": 1,
+                "positions": [
+                    [1, 0, 0.0, 1.0, 0.0, 1.0],
+                    [2, 0, 0.0, 1.0, 0.0, 1.0],
+                    [3, 0, 0.0, 1.0, 0.0, 1.0],
+                ],
+            },
+        )
+        blocks = [{"text": p.text, "metadata": dict(p.metadata)}]
+        assert collect_pages_from_paragraphs(blocks) == [1, 2, 3]
 
 
 @pytest.fixture

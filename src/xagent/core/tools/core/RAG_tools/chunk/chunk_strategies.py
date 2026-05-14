@@ -3,9 +3,10 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..core.config import DEFAULT_PROTECTED_PATTERNS, DEFAULT_TIKTOKEN_ENCODING
+from ..utils.paragraph_page_utils import collect_pages_from_paragraphs
 from ..utils.token_utils import (
     get_token_counter,
     split_text_by_tokens,
@@ -102,40 +103,12 @@ def _find_contributing_paragraphs_for_range(
     return contributing
 
 
-def _collect_pages_from_paragraphs(
-    paragraphs: Iterable[Dict[str, Any]],
-) -> List[int]:
-    """Collect sorted unique 1-based page numbers from paragraph metadata.
-
-    Handles various edge cases:
-    - None or non-dict paragraph entries
-    - Missing or non-dict metadata
-    - Non-integer or non-positive page numbers
-
-    Args:
-        paragraphs: Iterable of paragraph dictionaries that may contain metadata
-
-    Returns:
-        Sorted list of unique 1-based page numbers (>= 1)
-    """
-    pages: set[int] = set()
-    for para in paragraphs:
-        if not para or not isinstance(para, dict):
-            continue
-
-        meta = para.get("metadata")
-        if not meta or not isinstance(meta, dict):
-            continue
-
-        page_num = meta.get("page_number")
-        if isinstance(page_num, int) and page_num >= 1:
-            pages.add(page_num)
-
-    return sorted(pages)
-
-
 def _validate_spanning_pages_record(record: Dict[str, Any]) -> bool:
     """Validate the integrity of spanning_pages metadata in a chunk record.
+
+    Intended to be called immediately after :func:`_apply_spanning_pages_to_record`
+    mutates ``record``. On failure, emits ``logger.warning`` and returns ``False``;
+    callers do not raise.
 
     Checks:
     - spanning_pages list is sorted in ascending order
@@ -187,6 +160,9 @@ def _apply_spanning_pages_to_record(
     - Ensures spanning_pages are unique 1-based integers.
     - Writes them to metadata['spanning_pages'] if non-empty.
     - Derives page_number from the smallest page when missing.
+
+    After a successful write, runs :func:`_validate_spanning_pages_record` for an
+    explicit integrity pass (failures are log-only; records are not modified).
     """
     if not isinstance(spanning_pages, list):
         return
@@ -205,6 +181,8 @@ def _apply_spanning_pages_to_record(
 
     if record.get("page_number") is None:
         record["page_number"] = sorted_pages[0]
+
+    _validate_spanning_pages_record(record)
 
 
 def _split_by_separators_core(text: str, separators: Optional[List[str]]) -> List[str]:
@@ -408,7 +386,7 @@ def _window_with_overlap_and_metadata(
                 "text": window_text,
                 "source_paragraph": first_paragraph,
             }
-            spanning_pages = _collect_pages_from_paragraphs(contributing_paragraphs)
+            spanning_pages = collect_pages_from_paragraphs(contributing_paragraphs)
             if spanning_pages:
                 window_record["spanning_pages"] = spanning_pages
 
@@ -501,7 +479,7 @@ def _merge_units_by_token_limit(
                 para = u.get("source_paragraph")
                 if para:
                     contributing_paragraphs.append(para)
-            spanning_pages = _collect_pages_from_paragraphs(contributing_paragraphs)
+            spanning_pages = collect_pages_from_paragraphs(contributing_paragraphs)
             if spanning_pages:
                 window_record["spanning_pages"] = spanning_pages
 
@@ -532,7 +510,7 @@ def _merge_units_by_token_limit(
             para = u.get("source_paragraph")
             if para:
                 final_contributing_paragraphs.append(para)
-        spanning_pages = _collect_pages_from_paragraphs(final_contributing_paragraphs)
+        spanning_pages = collect_pages_from_paragraphs(final_contributing_paragraphs)
         if spanning_pages:
             window_record["spanning_pages"] = spanning_pages
 
@@ -825,7 +803,7 @@ def apply_markdown_strategy(
                         section_start + local_end,
                     )
                     first_para = contributing[0] if contributing else None
-                    pages = _collect_pages_from_paragraphs(contributing)
+                    pages = collect_pages_from_paragraphs(contributing)
 
                     rec: Dict[str, Any] = {
                         "text": sc,
@@ -872,7 +850,7 @@ def apply_markdown_strategy(
                     contributing = _find_contributing_paragraphs_for_range(
                         intervals, win_start, win_end
                     )
-                    pages = _collect_pages_from_paragraphs(contributing)
+                    pages = collect_pages_from_paragraphs(contributing)
                     if pages:
                         wr["spanning_pages"] = pages
                     window_records.append(wr)
@@ -892,7 +870,7 @@ def apply_markdown_strategy(
             # Prefer per-window spanning_pages; fall back to section-level
             spanning = wr.get("spanning_pages")
             if not spanning:
-                spanning = _collect_pages_from_paragraphs(section_paragraphs)
+                spanning = collect_pages_from_paragraphs(section_paragraphs)
             _apply_spanning_pages_to_record(record, spanning)
             chunks.append(record)
 
@@ -990,7 +968,7 @@ def apply_fixed_size_strategy(
         if not text:
             return []
         record = _create_chunk_record(text.strip())
-        all_pages = _collect_pages_from_paragraphs(paragraphs)
+        all_pages = collect_pages_from_paragraphs(paragraphs)
         _apply_spanning_pages_to_record(record, all_pages)
         return [record]
 

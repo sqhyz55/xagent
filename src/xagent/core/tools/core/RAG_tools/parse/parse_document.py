@@ -32,6 +32,7 @@ from ..core.schemas import (
 )
 from ..storage.factory import get_vector_index_store
 from ..utils.hash_utils import compute_parse_hash, get_parse_params_whitelist
+from ..utils.paragraph_page_utils import collect_pages_from_paragraphs
 
 logger = logging.getLogger(__name__)
 
@@ -233,21 +234,14 @@ async def _parse_document_internal(
         timing_data["db_write_start"] = time.perf_counter()
         logger.debug("[PARSE TIMING] Starting database write...")
 
-    # Derive basic page statistics for downstream consumers (e.g. UI)
-    page_numbers: list[int] = []
-    for paragraph in enriched_paragraphs:
-        raw_page = paragraph.metadata.get("page_number")
-        if isinstance(raw_page, int) and raw_page >= 1:
-            page_numbers.append(raw_page)
-
-    # Handle empty documents gracefully
-    if page_numbers:
-        unique_pages = sorted(set(page_numbers))
-        page_count = len(unique_pages)
-    else:
-        unique_pages = []
-        page_count = 0
-
+    # Derive basic page statistics for downstream consumers (e.g. UI).
+    # Use the same union as chunk ``spanning_pages`` (page_number + DeepDoc bbox pages).
+    page_dicts = [
+        {"text": paragraph.text, "metadata": dict(paragraph.metadata)}
+        for paragraph in enriched_paragraphs
+    ]
+    unique_pages = collect_pages_from_paragraphs(page_dicts)
+    page_count = len(unique_pages)
     page_stats = {"page_count": page_count, "page_numbers": unique_pages}
 
     try:
@@ -420,6 +414,10 @@ def _validate_parse_params(parse_method: ParseMethod, params: Dict[str, Any]) ->
     try:
         whitelist = get_parse_params_whitelist(str(parse_method))
         for key in params:
+            # System-injected storage metadata (e.g. page_stats) merged into params_json
+            # on write; it is not a user parse knob and must not be rejected on re-read.
+            if key == "_derived":
+                continue
             if key not in whitelist:
                 raise DocumentValidationError(
                     f"Invalid parameter '{key}' for parse method '{parse_method}'"

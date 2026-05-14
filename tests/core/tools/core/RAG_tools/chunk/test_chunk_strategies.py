@@ -9,6 +9,9 @@ from xagent.core.tools.core.RAG_tools.chunk.chunk_strategies import (
     apply_recursive_strategy,
     attach_media_context,
 )
+from xagent.core.tools.core.RAG_tools.utils.paragraph_page_utils import (
+    collect_pages_from_paragraphs,
+)
 from xagent.core.tools.core.RAG_tools.utils.token_utils import num_tokens_from_string
 
 
@@ -457,59 +460,152 @@ class TestSharedMutationProtection:
         assert meta2 == {"page_number": 2}, f"meta2 mutated: {meta2}"
 
 
-class TestChunkingPerformance:
-    """Performance benchmark tests for chunking operations.
+class TestChunkingLargeDocumentCorrectness:
+    """Correctness checks for many-page inputs (no wall-clock thresholds).
 
-    These tests use ``pytest.mark.slow`` so they can be excluded from CI
-    via ``-m 'not slow'``.  Wall-clock timing assertions are inherently
-    flaky on loaded runners, so the thresholds are intentionally generous.
+    CI may run ``-m "slow and not postgresql"``; wall-clock assertions on shared
+    runners are flaky. These tests only assert functional outcomes.
     """
 
-    import pytest
-
-    @pytest.mark.slow
-    def test_large_document_performance(self) -> None:
-        """Verify chunking performance for large documents (100+ pages)."""
-        import time
-
+    def test_large_document_chunking_produces_chunks(self) -> None:
+        """Many-page synthetic input yields non-empty chunk list with stable metadata."""
         paragraphs = [
             {"text": "Content " * 100, "metadata": {"page_number": i}}
-            for i in range(100)
+            for i in range(1, 101)
         ]
-
-        start = time.perf_counter()
         chunks = apply_recursive_strategy(
             paragraphs, {"chunk_size": 1000, "chunk_overlap": 200}
         )
-        elapsed = time.perf_counter() - start
-
-        assert elapsed < 5.0, f"Chunking took {elapsed:.3f}s, expected < 5.0s"
         assert len(chunks) > 0, "Should produce chunks from input"
+        for c in chunks:
+            assert "text" in c
+            meta = c.get("metadata") or {}
+            spanning = meta.get("spanning_pages")
+            if spanning is not None:
+                assert isinstance(spanning, list)
+                assert spanning == sorted(set(spanning))
 
-    @pytest.mark.slow
-    def test_multi_page_spanning_pages_performance(self) -> None:
-        """Verify spanning_pages collection doesn't degrade performance significantly."""
-        import time
-
+    def test_multi_page_spanning_pages_present(self) -> None:
+        """Cross-page inputs produce at least one chunk with ``spanning_pages``."""
         paragraphs = [
             {"text": f"Page {i} content " * 50, "metadata": {"page_number": i}}
-            for i in range(50)
+            for i in range(1, 51)
         ]
-
-        start = time.perf_counter()
         chunks = apply_recursive_strategy(
             paragraphs, {"chunk_size": 500, "chunk_overlap": 100}
         )
-        elapsed = time.perf_counter() - start
-
-        assert elapsed < 3.0, (
-            f"Multi-page chunking took {elapsed:.3f}s, expected < 3.0s"
-        )
-
         chunks_with_spanning = [
             c for c in chunks if c.get("metadata", {}).get("spanning_pages")
         ]
         assert len(chunks_with_spanning) > 0, "Should have chunks with spanning_pages"
+
+
+class TestDeepDocPositionsSpanningPages:
+    """DeepDoc ``metadata['positions']`` contract vs ``spanning_pages`` (PR review).
+
+    DeepDoc builds bbox rows in ``xagent.providers.pdf_parser.deepdoc`` —
+    see ``_build_element_metadata``: enriched rows are
+    ``[page_num, col_id, left, right, top, bottom]``; raw parser rows may be
+    ``[page_num, left, right, top, bottom]``. Chunking must union those page
+    indices with ``page_number`` without overwriting the ``positions`` list.
+    """
+
+    @staticmethod
+    def _enriched_row(page: int) -> list[float | int]:
+        """One DeepDoc-style enriched bbox row (page + col + box)."""
+        return [page, 0, 0.0, 100.0, 0.0, 10.0]
+
+    @staticmethod
+    def _raw_row(page: int) -> list[float]:
+        """One raw five-field bbox row ``[page, left, right, top, bottom]``."""
+        return [float(page), 0.0, 100.0, 0.0, 10.0]
+
+    def test_collect_pages_unions_primary_page_with_bbox_pages(self) -> None:
+        """``page_number`` alone can under-count when bbox spans multiple pages."""
+        paragraphs = [
+            {
+                "text": "table",
+                "metadata": {
+                    "page_number": 1,
+                    "positions": [
+                        self._enriched_row(1),
+                        self._enriched_row(2),
+                        self._enriched_row(3),
+                    ],
+                },
+            }
+        ]
+        assert collect_pages_from_paragraphs(paragraphs) == [1, 2, 3]
+
+    def test_collect_pages_zero_based_position_indices(self) -> None:
+        """If any bbox row uses page index 0, all rows are treated as 0-based."""
+        paragraphs = [
+            {
+                "text": "t",
+                "metadata": {
+                    "page_number": 1,
+                    "positions": [
+                        self._raw_row(0),
+                        self._raw_row(1),
+                        self._raw_row(2),
+                    ],
+                },
+            }
+        ]
+        assert collect_pages_from_paragraphs(paragraphs) == [1, 2, 3]
+
+    def test_collect_pages_one_based_without_zero(self) -> None:
+        """When no row uses index 0, first-column integers ``>= 1`` are 1-based pages."""
+        paragraphs = [
+            {
+                "text": "t",
+                "metadata": {
+                    "page_number": 2,
+                    "positions": [self._enriched_row(2), self._enriched_row(3)],
+                },
+            }
+        ]
+        assert collect_pages_from_paragraphs(paragraphs) == [2, 3]
+
+    def test_collect_pages_skips_malformed_bbox_rows(self) -> None:
+        """Too-short or non-numeric page entries are ignored; valid rows still count."""
+        paragraphs = [
+            {
+                "text": "t",
+                "metadata": {
+                    "page_number": 1,
+                    "positions": [
+                        ["not-a-page", 0, 0, 1, 0, 1],
+                        [1],
+                        self._enriched_row(2),
+                    ],
+                },
+            }
+        ]
+        assert collect_pages_from_paragraphs(paragraphs) == [1, 2]
+
+    def test_recursive_chunk_preserves_positions_and_spanning(self) -> None:
+        """Chunk metadata keeps bbox ``positions`` and adds ``spanning_pages`` union."""
+        positions = [
+            self._enriched_row(1),
+            self._enriched_row(2),
+            self._enriched_row(3),
+        ]
+        paragraphs = [
+            {
+                "text": "x" * 80,
+                "metadata": {"page_number": 1, "positions": list(positions)},
+            }
+        ]
+        chunks = apply_recursive_strategy(
+            paragraphs, {"chunk_size": 500, "chunk_overlap": 0}
+        )
+        assert len(chunks) >= 1
+        chunk0 = chunks[0]
+        assert chunk0["metadata"].get("spanning_pages") == [1, 2, 3]
+        assert chunk0["metadata"].get("positions") == positions
+        assert paragraphs[0]["metadata"]["positions"] == positions
+        assert "spanning_pages" not in paragraphs[0]["metadata"]
 
 
 class TestFixedSizeStrategySpanningPages:
