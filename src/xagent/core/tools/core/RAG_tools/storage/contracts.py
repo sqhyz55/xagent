@@ -29,6 +29,22 @@ from ..core.schemas import CollectionInfo, IndexResult
 
 logger = logging.getLogger(__name__)
 
+
+def _release_embeddings_table_probe(table: Any) -> None:
+    """Close a table handle opened only to resolve embeddings table name.
+
+    ``open_embeddings_table`` returns ``(table, name)``; by-model helpers then
+    delegate to ``search_*`` methods that open their own handles by name. The
+    probe handle must not be left open (LanceDB native tables support
+    ``close()``).
+    """
+    if table is not None and hasattr(table, "close"):
+        try:
+            table.close()
+        except Exception:
+            pass
+
+
 # Field name whitelist for filter validation
 # Derived from all LanceDB table schemas in schema_manager.py
 _VALID_FILTER_FIELDS = frozenset(
@@ -882,15 +898,18 @@ class VectorIndexStore(ABC):
             - metadata: Additional metadata
         """
         _table, table_name = self.open_embeddings_table(model_tag)
-        return self.search_vectors(
-            table_name=table_name,
-            query_vector=query_vector,
-            top_k=top_k,
-            filters=filters,
-            vector_column_name=vector_column_name,
-            user_id=user_id,
-            is_admin=is_admin,
-        )
+        try:
+            return self.search_vectors(
+                table_name=table_name,
+                query_vector=query_vector,
+                top_k=top_k,
+                filters=filters,
+                vector_column_name=vector_column_name,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        finally:
+            _release_embeddings_table_probe(_table)
 
     def search_fts_by_model(
         self,
@@ -921,15 +940,18 @@ class VectorIndexStore(ABC):
             List of search result dictionaries (see search_fts).
         """
         _table, table_name = self.open_embeddings_table(model_tag)
-        return self.search_fts(
-            table_name=table_name,
-            query_text=query_text,
-            top_k=top_k,
-            filters=filters,
-            text_column_name=text_column_name,
-            user_id=user_id,
-            is_admin=is_admin,
-        )
+        try:
+            return self.search_fts(
+                table_name=table_name,
+                query_text=query_text,
+                top_k=top_k,
+                filters=filters,
+                text_column_name=text_column_name,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        finally:
+            _release_embeddings_table_probe(_table)
 
     # --- Async variants (Phase 1A Option C: Hybrid approach) ---
 
@@ -999,15 +1021,18 @@ class VectorIndexStore(ABC):
             - metadata: Additional metadata
         """
         _table, table_name = self.open_embeddings_table(model_tag)
-        return await self.search_vectors_async(
-            table_name=table_name,
-            query_vector=query_vector,
-            top_k=top_k,
-            filters=filters,
-            vector_column_name=vector_column_name,
-            user_id=user_id,
-            is_admin=is_admin,
-        )
+        try:
+            return await self.search_vectors_async(
+                table_name=table_name,
+                query_vector=query_vector,
+                top_k=top_k,
+                filters=filters,
+                vector_column_name=vector_column_name,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        finally:
+            _release_embeddings_table_probe(_table)
 
     @abstractmethod
     async def search_fts_async(
@@ -1073,13 +1098,16 @@ class VectorIndexStore(ABC):
             DatabaseOperationError: If FTS index is not configured or search fails.
         """
         _table, table_name = self.open_embeddings_table(model_tag)
-        return await self.search_fts_async(
-            table_name=table_name,
-            query_text=query_text,
-            top_k=top_k,
-            filters=filters,
-            text_column_name=text_column_name,
-        )
+        try:
+            return await self.search_fts_async(
+                table_name=table_name,
+                query_text=query_text,
+                top_k=top_k,
+                filters=filters,
+                text_column_name=text_column_name,
+            )
+        finally:
+            _release_embeddings_table_probe(_table)
 
     @abstractmethod
     async def iter_batches_async(
