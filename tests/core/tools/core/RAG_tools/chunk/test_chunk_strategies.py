@@ -608,6 +608,55 @@ class TestDeepDocPositionsSpanningPages:
         assert "spanning_pages" not in paragraphs[0]["metadata"]
 
 
+class TestWindowWithOverlapPreservesSpanningPages:
+    """PR #159: secondary windowing must merge precomputed ``spanning_pages``."""
+
+    def test_window_merges_input_record_spanning_pages(self) -> None:
+        from xagent.core.tools.core.RAG_tools.chunk.chunk_strategies import (
+            _window_with_overlap_and_metadata,
+        )
+
+        # Primary page_number alone would yield [1]; precomputed spanning must win.
+        para = {"text": "A" * 40 + "B" * 40, "metadata": {"page_number": 1}}
+        records = [
+            {
+                "text": para["text"],
+                "source_paragraph": para,
+                "spanning_pages": [1, 2],
+            }
+        ]
+        windows = _window_with_overlap_and_metadata(
+            records, chunk_size=30, chunk_overlap=0
+        )
+        page2_only = [w for w in windows if "B" in w["text"] and "A" not in w["text"]]
+        assert page2_only, "expected a window containing only page-2 text"
+        assert page2_only[0].get("spanning_pages") == [1, 2]
+
+    def test_markdown_custom_separator_preserves_section_spanning_pages(
+        self,
+    ) -> None:
+        """Repro from review: non-splitting custom separator + re-windowing."""
+        paragraphs = [
+            {"text": "# H\n" + "A" * 40, "metadata": {"page_number": 1}},
+            {"text": "B" * 40, "metadata": {"page_number": 2}},
+        ]
+        chunks = apply_markdown_strategy(
+            paragraphs,
+            {"separators": ["ZZZ"], "chunk_size": 30, "chunk_overlap": 0},
+        )
+        page2_only = [
+            c
+            for c in chunks
+            if "B" in c.get("text", "") and "A" not in c.get("text", "")
+        ]
+        assert page2_only, "expected a chunk with only page-2 body text"
+        spanning = page2_only[0].get("metadata", {}).get("spanning_pages", [])
+        assert 2 in spanning
+        assert spanning != [1], (
+            f"markdown re-window must merge section spanning_pages: {spanning}"
+        )
+
+
 class TestFixedSizeStrategySpanningPages:
     """M5: apply_fixed_size_strategy should track spanning_pages like other strategies."""
 

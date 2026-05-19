@@ -342,20 +342,23 @@ def _window_with_overlap_and_metadata(
         chunk_overlap = 0
 
     # OPTIMIZATION: Use interval mapping instead of per-character metadata
-    # Store (start_pos, end_pos, source_paragraph) tuples to avoid O(n) memory
+    # Store (start_pos, end_pos, source_paragraph, precomputed spanning_pages) tuples.
     tokens: list[str] = []
-    intervals: List[tuple[int, int, Optional[Dict[str, Any]]]] = []
+    intervals: List[tuple[int, int, Optional[Dict[str, Any]], Optional[List[int]]]] = []
 
     for chunk_record in chunk_records:
         text = chunk_record["text"]
         source_paragraph = chunk_record.get("source_paragraph")
+        record_spanning = chunk_record.get("spanning_pages")
+        precomputed: Optional[List[int]] = (
+            record_spanning if isinstance(record_spanning, list) else None
+        )
 
         start_pos = len(tokens)
         tokens.extend(list(text))
         end_pos = len(tokens)
 
-        # Store interval instead of per-character mapping
-        intervals.append((start_pos, end_pos, source_paragraph))
+        intervals.append((start_pos, end_pos, source_paragraph, precomputed))
 
     # Apply sliding window
     windows: List[Dict[str, Any]] = []
@@ -367,16 +370,16 @@ def _window_with_overlap_and_metadata(
         window_text = "".join(tokens[start:end])
 
         if window_text:
-            # Find contributing paragraphs for this window using interval overlap check
             first_paragraph: Optional[Dict[str, Any]] = None
             contributing_paragraphs: List[Dict[str, Any]] = []
+            pages_set: set[int] = set()
 
-            # OPTIMIZATION: Use interval overlap check instead of iterating each character
-            # Two intervals [a, b) and [c, d) overlap if b > c and d > a
-            for interval_start, interval_end, para in intervals:
-                if (
-                    interval_end > start and interval_start < end
-                ):  # Correct overlap condition
+            for interval_start, interval_end, para, precomputed_spanning in intervals:
+                if interval_end > start and interval_start < end:
+                    if isinstance(precomputed_spanning, list):
+                        for p in precomputed_spanning:
+                            if isinstance(p, int) and p >= 1:
+                                pages_set.add(p)
                     if para is not None:
                         contributing_paragraphs.append(para)
                         if first_paragraph is None:
@@ -386,9 +389,9 @@ def _window_with_overlap_and_metadata(
                 "text": window_text,
                 "source_paragraph": first_paragraph,
             }
-            spanning_pages = collect_pages_from_paragraphs(contributing_paragraphs)
-            if spanning_pages:
-                window_record["spanning_pages"] = spanning_pages
+            pages_set.update(collect_pages_from_paragraphs(contributing_paragraphs))
+            if pages_set:
+                window_record["spanning_pages"] = sorted(pages_set)
 
             windows.append(window_record)
 

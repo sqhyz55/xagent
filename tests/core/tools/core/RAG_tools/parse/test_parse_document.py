@@ -27,34 +27,71 @@ RESOURCES_DIR = Path("tests/resources/test_files")
 
 
 class TestParseParamsValidationContract:
-    """Contract tests for parse params validation vs persisted ``params_json`` shape."""
+    """Contract tests for user parse params vs persisted ``params_json``."""
 
-    def test_validate_parse_params_accepts_derived_page_stats_pypdf(self) -> None:
-        """Persisted params may include ``_derived``; re-validation must not fail.
+    def test_validate_parse_params_rejects_derived_in_user_request(self) -> None:
+        """``_derived`` is system storage metadata; users must not supply it."""
+        with pytest.raises(DocumentValidationError, match="_derived"):
+            _validate_parse_params(
+                ParseMethod.PYPDF,
+                {"_derived": {"page_stats": {"page_count": 999}}},
+            )
 
-        ``_write_parse_to_db`` merges ``page_stats`` under ``params_json['_derived']``.
-        Callers that round-trip JSON and run ``_validate_parse_params`` must accept
-        that key without treating it as an unknown user parameter.
-        """
-        params: dict[str, object] = {
-            "_derived": {"page_stats": {"total_pages": 3, "pages_with_text": [1, 2]}}
-        }
-        _validate_parse_params(ParseMethod.PYPDF, params)
-
-    def test_validate_parse_params_accepts_derived_with_user_keys_pdfplumber(
+    def test_validate_parse_params_rejects_derived_mixed_with_user_keys(
         self,
     ) -> None:
-        """``_derived`` may coexist with normal whitelisted parse parameters."""
-        params: dict[str, object] = {
-            "extract_tables": True,
-            "_derived": {"page_stats": {"total_pages": 1}},
-        }
-        _validate_parse_params(ParseMethod.PDFPLUMBER, params)
+        """Whitelisted keys do not exempt system-only ``_derived``."""
+        with pytest.raises(DocumentValidationError, match="_derived"):
+            _validate_parse_params(
+                ParseMethod.PDFPLUMBER,
+                {
+                    "extract_tables": True,
+                    "_derived": {"page_stats": {"page_count": 1}},
+                },
+            )
 
     def test_validate_parse_params_rejects_unknown_user_key(self) -> None:
         """Unknown user-supplied keys are still rejected."""
         with pytest.raises(DocumentValidationError, match="Invalid parameter"):
             _validate_parse_params(ParseMethod.PYPDF, {"not_a_real_param": True})
+
+
+class TestParseParamsStorageAndParserContract:
+    """Persisted params vs parser/hash inputs (PR #159 May 15 review)."""
+
+    def test_validate_persisted_parse_params_accepts_derived(self) -> None:
+        from xagent.core.tools.core.RAG_tools.parse.parse_document import (
+            _validate_persisted_parse_params,
+        )
+
+        _validate_persisted_parse_params(
+            ParseMethod.PYPDF,
+            {"_derived": {"page_stats": {"page_count": 3, "page_numbers": [1, 2]}}},
+        )
+
+    def test_strip_system_only_parse_params_removes_derived(self) -> None:
+        from xagent.core.tools.core.RAG_tools.parse.parse_document import (
+            strip_system_only_parse_params,
+        )
+
+        raw = {
+            "extract_tables": True,
+            "_derived": {"page_stats": {"page_count": 1}},
+        }
+        assert strip_system_only_parse_params(raw) == {"extract_tables": True}
+
+    def test_build_parser_kwargs_excludes_derived(self) -> None:
+        from xagent.core.tools.core.RAG_tools.parse.parse_document import (
+            build_parser_kwargs,
+        )
+
+        kwargs = build_parser_kwargs(
+            {"_derived": {"page_stats": {"page_count": 999}}, "extract_tables": True},
+            doc_id="doc-1",
+        )
+        assert "_derived" not in kwargs
+        assert kwargs["extract_tables"] is True
+        assert kwargs["doc_id"] == "doc-1"
 
 
 class TestPageStatsUsesSamePageUnionAsChunking:

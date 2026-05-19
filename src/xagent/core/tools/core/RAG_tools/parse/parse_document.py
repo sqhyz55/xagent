@@ -36,6 +36,9 @@ from ..utils.paragraph_page_utils import collect_pages_from_paragraphs
 
 logger = logging.getLogger(__name__)
 
+# Keys allowed in persisted ``params_json`` but never in user/API parse requests.
+SYSTEM_ONLY_PARSE_PARAM_KEYS: frozenset[str] = frozenset({"_derived"})
+
 
 def parse_document(
     collection: str,
@@ -121,7 +124,8 @@ async def _parse_document_internal(
 
     _validate_parse_params(parse_method, params)
 
-    parse_hash = compute_parse_hash(str(parse_method), params)
+    user_parse_params = strip_system_only_parse_params(params)
+    parse_hash = compute_parse_hash(str(parse_method), user_parse_params)
     logger.info("Computed parse hash: %s", parse_hash)
 
     if _parse_exists(collection, doc_id, parse_hash, user_id, is_admin):
@@ -149,8 +153,7 @@ async def _parse_document_internal(
         else:
             parser_name = str(parse_method)
 
-        # Merge params with doc_id for parsers that need it (e.g., deepdoc for PDF images)
-        parse_params = {**(params or {}), "doc_id": doc_id}
+        parse_params = build_parser_kwargs(params, doc_id=doc_id)
         tool_args = DocumentParseArgs(
             file_path=source_path,
             parser_name=parser_name,
@@ -250,7 +253,7 @@ async def _parse_document_internal(
             doc_id,
             parse_hash,
             str(parse_method),
-            params,
+            user_parse_params,
             enriched_paragraphs,
             user_id,
             page_stats=page_stats,
@@ -406,18 +409,28 @@ def _get_document_from_db(
     return None
 
 
+def strip_system_only_parse_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return user/parser configuration keys only (excludes storage metadata)."""
+    return {k: v for k, v in params.items() if k not in SYSTEM_ONLY_PARSE_PARAM_KEYS}
+
+
+def build_parser_kwargs(params: Dict[str, Any], *, doc_id: str) -> Dict[str, Any]:
+    """Build kwargs for the core document parser without system-only keys."""
+    return {**strip_system_only_parse_params(params), "doc_id": doc_id}
+
+
 def _validate_parse_params(parse_method: ParseMethod, params: Dict[str, Any]) -> None:
-    """Validate parsing parameters against whitelist."""
+    """Validate user-supplied parsing parameters against the method whitelist."""
     valid_methods = set(ParseMethod)
     if parse_method not in valid_methods:
         raise DocumentValidationError(f"Unsupported parse method: {parse_method}")
     try:
         whitelist = get_parse_params_whitelist(str(parse_method))
         for key in params:
-            # System-injected storage metadata (e.g. page_stats) merged into params_json
-            # on write; it is not a user parse knob and must not be rejected on re-read.
-            if key == "_derived":
-                continue
+            if key in SYSTEM_ONLY_PARSE_PARAM_KEYS:
+                raise DocumentValidationError(
+                    f"System-only parameter '{key}' cannot be set in parse requests"
+                )
             if key not in whitelist:
                 raise DocumentValidationError(
                     f"Invalid parameter '{key}' for parse method '{parse_method}'"
@@ -426,6 +439,13 @@ def _validate_parse_params(parse_method: ParseMethod, params: Dict[str, Any]) ->
         if isinstance(e, DocumentValidationError):
             raise
         raise ConfigurationError(f"Parameter validation failed: {e}") from e
+
+
+def _validate_persisted_parse_params(
+    parse_method: ParseMethod, params: Dict[str, Any]
+) -> None:
+    """Validate persisted ``params_json`` (user keys strict; ``_derived`` allowed)."""
+    _validate_parse_params(parse_method, strip_system_only_parse_params(params))
 
 
 def _parse_exists(
