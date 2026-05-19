@@ -201,6 +201,18 @@ def search_sparse(
         )
 
 
+def _build_substring_scan_filters(
+    *,
+    collection: str,
+    filters: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build iter_batches filters with a non-overridable route collection."""
+    scan_filters: Dict[str, Any] = dict(filters) if filters else {}
+    scan_filters.pop("collection", None)
+    scan_filters["collection"] = collection
+    return scan_filters
+
+
 def _substring_fallback(
     *,
     model_tag: str,
@@ -218,9 +230,9 @@ def _substring_fallback(
     vector_store = get_vector_index_store()
     results: List[SearchResult] = []
 
-    query_filters: Dict[str, Any] = {"collection": collection}
-    if filters:
-        query_filters.update(filters)
+    query_filters = _build_substring_scan_filters(
+        collection=collection, filters=filters
+    )
 
     _table = None
     try:
@@ -413,6 +425,8 @@ async def search_sparse_async(
             top_k=top_k,
             filters=filter_expr,
             text_column_name="text",
+            user_id=user_id,
+            is_admin=is_admin,
         )
 
         if not raw_results:
@@ -512,10 +526,9 @@ async def _substring_fallback_async(
     vector_store = get_vector_index_store()
     results: List[SearchResult] = []
 
-    # Build query filters
-    query_filters: Dict[str, Any] = {"collection": collection}
-    if filters:
-        query_filters.update(filters)
+    query_filters = _build_substring_scan_filters(
+        collection=collection, filters=filters
+    )
 
     _table = None
     try:

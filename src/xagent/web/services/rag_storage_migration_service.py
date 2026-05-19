@@ -16,16 +16,9 @@ logger = logging.getLogger(__name__)
 class RAGStorageMigrationService:
     """Run storage compatibility checks and background migrations."""
 
-    async def start_background_migrations(self) -> Optional[asyncio.Task[None]]:
-        """Create a non-blocking background task when auto-migrate is enabled."""
-        if not self._should_start_background_task():
-            logger.info("Skipping background LanceDB migration task (not needed)")
-            return None
+    async def start_background_migrations(self) -> asyncio.Task[None]:
+        """Schedule compatibility checks; backfill execution is env-gated."""
         return asyncio.create_task(self._run_migrations())
-
-    def _should_start_background_task(self) -> bool:
-        """Return whether startup should create a migration background task."""
-        return os.getenv("LANCEDB_AUTO_MIGRATE", "true").lower() == "true"
 
     async def _run_migrations(self) -> None:
         """Run migration checks and backfills in background."""

@@ -20,7 +20,6 @@ async def test_start_background_migrations_creates_task(
         called["run"] += 1
 
     monkeypatch.setattr(service, "_run_migrations", _fake_run)
-    monkeypatch.setattr(service, "_should_start_background_task", lambda: True)
 
     task = await service.start_background_migrations()
     assert task is not None
@@ -76,6 +75,26 @@ async def test_run_migrations_runs_documents_backfill_when_enabled(
 
     assert called["user_id"] == 1
     assert called["docs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_background_migrations_always_schedules_task_when_auto_migrate_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compatibility checks must run even when LANCEDB_AUTO_MIGRATE=false."""
+    service = RAGStorageMigrationService()
+    monkeypatch.setenv("LANCEDB_AUTO_MIGRATE", "false")
+    called = {"run": 0}
+
+    async def _fake_run() -> None:
+        called["run"] += 1
+
+    monkeypatch.setattr(service, "_run_migrations", _fake_run)
+
+    task = await service.start_background_migrations()
+    assert task is not None
+    await task
+    assert called["run"] == 1
 
 
 @pytest.mark.asyncio

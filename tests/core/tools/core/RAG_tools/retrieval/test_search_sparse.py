@@ -401,6 +401,47 @@ class TestSearchSparse:
         assert "Check FTS tokenizer configuration" in warning.message
         assert "update LanceDB to ensure proper tokenisation" in warning.message
 
+    def test_substring_fallback_pins_route_collection_over_caller_override(
+        self,
+    ) -> None:
+        """Route collection must not be replaced by caller filters with the same key."""
+        from xagent.core.tools.core.RAG_tools.retrieval.search_sparse import (
+            _substring_fallback,
+        )
+
+        mock_batch = Mock()
+        mock_batch.to_pandas.return_value = pd.DataFrame(
+            {
+                "doc_id": ["doc1"],
+                "chunk_id": ["chunk1"],
+                "text": ["needle"],
+                "parse_hash": ["hash1"],
+                "created_at": [pd.Timestamp.now()],
+                "metadata": [None],
+            }
+        )
+
+        mock_vector_store = Mock()
+        mock_vector_store.open_embeddings_table.return_value = (Mock(), "embeddings_x")
+        mock_vector_store.iter_batches.return_value = [mock_batch]
+
+        with patch(
+            "xagent.core.tools.core.RAG_tools.retrieval.search_sparse.get_vector_index_store",
+            return_value=mock_vector_store,
+        ):
+            _substring_fallback(
+                model_tag="test_model",
+                collection="route_collection",
+                query_text="needle",
+                top_k=5,
+                filters={"collection": "evil_override", "doc_id": "d1"},
+                current_warnings=[],
+            )
+
+        iter_kwargs = mock_vector_store.iter_batches.call_args.kwargs
+        assert iter_kwargs["filters"]["collection"] == "route_collection"
+        assert iter_kwargs["filters"]["doc_id"] == "d1"
+
 
 @pytest.mark.asyncio
 class TestSearchSparseAsync:
@@ -450,6 +491,8 @@ class TestSearchSparseAsync:
                 "filters"
             ],
             text_column_name="text",
+            user_id=9,
+            is_admin=False,
         )
 
     async def test_search_sparse_async_triggers_fallback(self) -> None:

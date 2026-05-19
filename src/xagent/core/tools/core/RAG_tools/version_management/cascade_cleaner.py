@@ -269,29 +269,24 @@ def cascade_delete(
         if t.startswith("embeddings_")
         and (model_tag is None or t == f"embeddings_{model_tag}")
     ]
-    if target_embeddings_tables:
-        sample_embeddings_table = target_embeddings_tables[0]
+    for t in target_embeddings_tables:
         if target == "collection":
-            embed_filter = _build_collection_filter(
+            predicates[t] = _build_collection_filter(
                 conn=conn,
-                table_name=sample_embeddings_table,
+                table_name=t,
                 collection=collection,
                 user_id=user_id,
                 is_admin=is_admin,
             )
         else:
-            embed_filter = _build_document_filter(
+            predicates[t] = _build_document_filter(
                 conn=conn,
-                table_name=sample_embeddings_table,
+                table_name=t,
                 collection=collection,
                 doc_id=str(doc_id),
                 user_id=user_id,
                 is_admin=is_admin,
             )
-
-        # Reuse one computed embeddings filter across all target embeddings_* tables.
-        for t in target_embeddings_tables:
-            predicates[t] = embed_filter
 
     if preview_only and not confirm:
         return _plan_by_predicates(conn, predicates, model_tag=model_tag)

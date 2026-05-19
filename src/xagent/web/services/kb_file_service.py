@@ -8,7 +8,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from sqlalchemy.orm import Session
 
@@ -79,6 +79,33 @@ class _FileStatusCache:
 
 # Global cache instance
 _file_status_cache = _FileStatusCache(ttl_seconds=5)
+
+
+def _list_document_records_for_file_ids(
+    store: VectorIndexStore,
+    *,
+    file_ids: Sequence[str],
+    user_id: int,
+    is_admin: bool,
+) -> List[DocumentRecord]:
+    """Load document rows for many file IDs without scan-limit truncation."""
+    unique_ids = sorted({file_id for file_id in file_ids if file_id})
+    if not unique_ids:
+        return []
+
+    records: List[DocumentRecord] = []
+    for offset in range(0, len(unique_ids), _FILE_STATUS_BATCH_SIZE):
+        batch = unique_ids[offset : offset + _FILE_STATUS_BATCH_SIZE]
+        records.extend(
+            store.list_document_records(
+                collection_name=None,
+                user_id=user_id,
+                is_admin=is_admin,
+                file_ids=batch,
+                max_results=-1,
+            )
+        )
+    return records
 
 
 def upsert_uploaded_file_record(
@@ -376,11 +403,11 @@ def aggregate_uploaded_file_statuses(
 
     # Cache miss - compute from database via abstraction layer
     store = get_vector_index_store()
-    records = store.list_document_records(
-        collection_name=None,
+    records = _list_document_records_for_file_ids(
+        store,
+        file_ids=normalized_file_ids,
         user_id=user_id,
         is_admin=is_admin,
-        file_ids=normalized_file_ids,
     )
 
     doc_refs_by_file_id: Dict[str, List[tuple[str, str]]] = {
