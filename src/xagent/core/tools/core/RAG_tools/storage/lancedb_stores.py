@@ -26,6 +26,7 @@ from ..utils.lancedb_query_utils import list_table_names, query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from .contracts import (
+    ActiveGenerationStore,
     DocumentRecord,
     FilterCondition,
     FilterExpression,
@@ -3351,4 +3352,229 @@ class LanceDBMainPointerStore(MainPointerStore):
         """Async version of delete_main_pointer."""
         return self.delete_main_pointer(
             collection, doc_id, step_type, model_tag, user_id
+        )
+
+
+class LanceDBActiveGenerationStore(ActiveGenerationStore):
+    """LanceDB implementation for active generation pointer management."""
+
+    def __init__(self) -> None:
+        self._sync_conn: Optional[DBConnection] = None
+
+    def _get_sync_connection(self) -> DBConnection:
+        if self._sync_conn is None:
+            self._sync_conn = get_connection_from_env()
+        return self._sync_conn
+
+    def _ensure_table(self) -> None:
+        from ..LanceDB.schema_manager import ensure_active_generations_table
+
+        ensure_active_generations_table(self._get_sync_connection())
+
+    @staticmethod
+    def _normalize_model_tag(model_tag: Optional[str]) -> str:
+        return model_tag if model_tag is not None else ""
+
+    def publish_active_generation(
+        self,
+        collection: str,
+        doc_id: str,
+        parse_hash: str,
+        user_id: int,
+        model_tag: Optional[str],
+        generation_id: str,
+        config_hash: str,
+        operator: Optional[str] = None,
+    ) -> None:
+        from ..LanceDB.schema_manager import _safe_close_table
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("active_generations")
+        normalized_tag = self._normalize_model_tag(model_tag)
+
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            existing = self.get_active_generation(
+                collection=collection,
+                doc_id=doc_id,
+                parse_hash=parse_hash,
+                user_id=user_id,
+                model_tag=model_tag,
+            )
+            created_at = existing["created_at"] if existing else now
+
+            record = {
+                "collection": collection,
+                "doc_id": doc_id,
+                "parse_hash": parse_hash,
+                "user_id": user_id,
+                "model_tag": normalized_tag,
+                "generation_id": generation_id,
+                "config_hash": config_hash,
+                "created_at": created_at,
+                "updated_at": now,
+                "published_at": now,
+                "operator": operator or "unknown",
+            }
+
+            (
+                table.merge_insert(
+                    on=[
+                        "collection",
+                        "doc_id",
+                        "parse_hash",
+                        "user_id",
+                        "model_tag",
+                    ]
+                )
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute([record])
+            )
+        finally:
+            _safe_close_table(table)
+
+    def get_active_generation(
+        self,
+        collection: str,
+        doc_id: str,
+        parse_hash: str,
+        user_id: int,
+        model_tag: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        from ..LanceDB.schema_manager import _safe_close_table
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("active_generations")
+        normalized_tag = self._normalize_model_tag(model_tag)
+
+        try:
+            filter_expr: FilterExpression = (
+                FilterCondition(
+                    field="collection", operator=FilterOperator.EQ, value=collection
+                ),
+                FilterCondition(
+                    field="doc_id", operator=FilterOperator.EQ, value=doc_id
+                ),
+                FilterCondition(
+                    field="parse_hash", operator=FilterOperator.EQ, value=parse_hash
+                ),
+                FilterCondition(
+                    field="user_id", operator=FilterOperator.EQ, value=user_id
+                ),
+                FilterCondition(
+                    field="model_tag", operator=FilterOperator.EQ, value=normalized_tag
+                ),
+            )
+            filter_str = translate_filter_expression(filter_expr)
+            result = table.search().where(filter_str).to_arrow()
+            if len(result) == 0:
+                return None
+            rows = result.to_pylist()
+            return cast(Dict[str, Any], rows[0])
+        finally:
+            _safe_close_table(table)
+
+    def list_active_generations(
+        self,
+        collection: str,
+        *,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        model_tag: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        from ..LanceDB.schema_manager import _safe_close_table
+
+        conn = self._get_sync_connection()
+        self._ensure_table()
+        table = conn.open_table("active_generations")
+
+        try:
+            conditions: List[FilterExpression] = [
+                FilterCondition(
+                    field="collection", operator=FilterOperator.EQ, value=collection
+                )
+            ]
+            if doc_id is not None:
+                conditions.append(
+                    FilterCondition(
+                        field="doc_id", operator=FilterOperator.EQ, value=doc_id
+                    )
+                )
+            if user_id is not None:
+                conditions.append(
+                    FilterCondition(
+                        field="user_id", operator=FilterOperator.EQ, value=user_id
+                    )
+                )
+            if model_tag is not None:
+                conditions.append(
+                    FilterCondition(
+                        field="model_tag",
+                        operator=FilterOperator.EQ,
+                        value=self._normalize_model_tag(model_tag),
+                    )
+                )
+
+            filter_expr: FilterExpression = (
+                conditions[0] if len(conditions) == 1 else tuple(conditions)
+            )
+            filter_str = translate_filter_expression(filter_expr)
+            result = table.search().where(filter_str).limit(limit).to_arrow()
+            return cast(List[Dict[str, Any]], result.to_pylist())
+        finally:
+            _safe_close_table(table)
+
+    async def publish_active_generation_async(
+        self,
+        collection: str,
+        doc_id: str,
+        parse_hash: str,
+        user_id: int,
+        model_tag: Optional[str],
+        generation_id: str,
+        config_hash: str,
+        operator: Optional[str] = None,
+    ) -> None:
+        return self.publish_active_generation(
+            collection,
+            doc_id,
+            parse_hash,
+            user_id,
+            model_tag,
+            generation_id,
+            config_hash,
+            operator,
+        )
+
+    async def get_active_generation_async(
+        self,
+        collection: str,
+        doc_id: str,
+        parse_hash: str,
+        user_id: int,
+        model_tag: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        return self.get_active_generation(
+            collection, doc_id, parse_hash, user_id, model_tag
+        )
+
+    async def list_active_generations_async(
+        self,
+        collection: str,
+        *,
+        doc_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        model_tag: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        return self.list_active_generations(
+            collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            model_tag=model_tag,
+            limit=limit,
         )
