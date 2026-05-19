@@ -213,18 +213,23 @@ async def run_web_ingestion(
         elapsed_ms = int(
             (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
         )
-        if failed_urls and all(
-            _looks_like_crawler_block(err) for err in failed_urls.values()
-        ):
+        blocking_entry = next(
+            (
+                (url, err)
+                for url, err in failed_urls.items()
+                if _looks_like_crawler_block(err)
+            ),
+            None,
+        )
+        if blocking_entry is not None:
             fail_fast_message = _CRAWLER_BLOCK_MESSAGE
         else:
             reasons: list[str] = []
             for url, reason in list(failed_urls.items())[:3]:
                 reasons.append(f"{url}: {reason}")
             reason_suffix = "; ".join(reasons)
-            fail_fast_message = (
-                "Website crawling failed: no valid pages extracted."
-                + (f" Reasons: {reason_suffix}" if reason_suffix else "")
+            fail_fast_message = "Website crawling failed: no valid pages extracted." + (
+                f" Reasons: {reason_suffix}" if reason_suffix else ""
             )
         return WebIngestionResult(
             status="error",
