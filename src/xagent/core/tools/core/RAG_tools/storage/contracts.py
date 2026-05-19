@@ -334,16 +334,36 @@ class MetadataStore(ABC):
         """Delete persisted metadata/config rows for a collection."""
 
     @abstractmethod
-    async def rename_collection(self, old_name: str, new_name: str) -> None:
-        """Rename persisted control-plane keys after a data-plane collection rename.
+    async def count_users_with_collection_config(self, collection_name: str) -> int:
+        """Count distinct users with a ``collection_config`` row for ``collection_name``.
 
-        Updates rows that gate :meth:`list_collections` visibility (for example
-        per-tenant config rows and aggregate metadata) so they stay aligned with
-        vector tables when the ``collection`` / ``name`` fields change.
+        Args:
+            collection_name: Collection name (sanitized by the caller).
+
+        Returns:
+            Number of distinct ``user_id`` values occupying the name.
+        """
+
+    @abstractmethod
+    async def rename_collection(
+        self,
+        old_name: str,
+        new_name: str,
+        *,
+        user_id: int,
+        is_admin: bool = False,
+    ) -> None:
+        """Rename persisted control-plane keys for one user's collection scope.
+
+        Updates the caller's ``collection_config`` row. Global ``collection_metadata``
+        is renamed only when this user is the sole config occupant of ``old_name``.
 
         Args:
             old_name: Previous collection name (sanitized by the caller).
             new_name: Target collection name (sanitized by the caller).
+            user_id: User whose config (and optionally metadata) should be renamed.
+            is_admin: Whether the operation is performed by an admin on behalf of
+                ``user_id`` (does not broaden vector/config scope beyond ``user_id``).
         """
 
     @abstractmethod

@@ -77,7 +77,10 @@ from ...core.tools.core.RAG_tools.pipelines.web_ingestion import (
 )
 from ...core.tools.core.RAG_tools.progress import get_progress_manager
 from ...core.tools.core.RAG_tools.storage.contracts import DocumentRecord
-from ...core.tools.core.RAG_tools.storage.factory import get_vector_index_store
+from ...core.tools.core.RAG_tools.storage.factory import (
+    get_metadata_store,
+    get_vector_index_store,
+)
 from ...core.tools.core.RAG_tools.utils.string_utils import (
     generate_deterministic_doc_id,
 )
@@ -3916,6 +3919,10 @@ async def delete_document_api(
 async def rename_collection_api(
     collection_name: str,
     new_name: str = Form(..., description="New collection name"),
+    target_user_id: Optional[int] = Form(
+        None,
+        description="Admin only: user whose collection scope to rename",
+    ),
     _user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -3924,6 +3931,7 @@ async def rename_collection_api(
     Args:
         collection_name: Current collection name
         new_name: New collection name
+        target_user_id: Required for admins; scopes rename to that user's data only
 
     Returns:
         Success message
@@ -3933,12 +3941,19 @@ async def rename_collection_api(
         load_ingestion_status,
         write_ingestion_status,
     )
-    from ...core.tools.core.RAG_tools.storage.factory import (
-        get_metadata_store,
-        get_vector_index_store,
-    )
 
+    metadata_store = get_metadata_store()
     vector_store = get_vector_index_store()
+
+    if bool(_user.is_admin):
+        if target_user_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Admin rename requires target_user_id form field",
+            )
+        scope_user_id = int(target_user_id)
+    else:
+        scope_user_id = int(_user.id)
 
     if not new_name or not new_name.strip():
         raise HTTPException(
@@ -3961,12 +3976,40 @@ async def rename_collection_api(
     if safe_new_collection == safe_old_collection:
         return {"status": "success", "message": "Collection name unchanged"}
 
+    is_admin_rename = bool(_user.is_admin)
+    if not is_admin_rename:
+        occupant_count = await metadata_store.count_users_with_collection_config(
+            safe_old_collection
+        )
+        if occupant_count > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Collection name is shared by multiple users; "
+                    "rename is not allowed. Contact an administrator."
+                ),
+            )
+
     # Access control check
-    await _ensure_collection_access(safe_old_collection, _user, hide_missing=False)
+    if is_admin_rename:
+        visible_for_scope = await _list_collections_with_retry(
+            user_id=scope_user_id,
+            is_admin=False,
+            stage="rename_list_visible_collections_for_target_user",
+        )
+        if not any(
+            c.name == safe_old_collection for c in visible_for_scope.collections
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection not found for user: {safe_old_collection}",
+            )
+    else:
+        await _ensure_collection_access(safe_old_collection, _user, hide_missing=False)
 
     # Validate that target collection doesn't exist or user has access
     visible_for_user = await _list_collections_with_retry(
-        user_id=int(_user.id),
+        user_id=scope_user_id,
         is_admin=False,
         stage="rename_list_visible_collections",
     )
@@ -3993,8 +4036,8 @@ async def rename_collection_api(
     new_collection_dir: Optional[Path] = None
     collection_records = vector_store.list_document_records(
         collection_name=safe_old_collection,
-        user_id=int(_user.id),
-        is_admin=bool(_user.is_admin),
+        user_id=scope_user_id,
+        is_admin=False,
     )
     collection_file_ids = {
         file_id
@@ -4006,7 +4049,7 @@ async def rename_collection_api(
 
     physical_rename = rename_collection_storage(
         db,
-        user_id=int(_user.id),
+        user_id=scope_user_id,
         old_collection_name=safe_old_collection,
         new_collection_name=safe_new_collection,
         collection_file_ids=collection_file_ids,
@@ -4031,22 +4074,21 @@ async def rename_collection_api(
         )
 
     # Step 2: Update collection name in all tables (documents, parses, chunks, embeddings)
-    # Use storage abstraction layer which handles all tables including embeddings
-    vector_store = get_vector_index_store()
     warnings.extend(
         vector_store.rename_collection_data(
             collection_name=safe_old_collection,
             new_name=safe_new_collection,
-            user_id=int(_user.id),
-            is_admin=bool(_user.is_admin),
+            user_id=scope_user_id,
+            is_admin=False,
         )
     )
 
     try:
-        metadata_store = get_metadata_store()
         await metadata_store.rename_collection(
             old_name=safe_old_collection,
             new_name=safe_new_collection,
+            user_id=scope_user_id,
+            is_admin=is_admin_rename,
         )
     except Exception as e:
         logger.warning("Failed to rename metadata store keys: %s", e)
@@ -4054,7 +4096,11 @@ async def rename_collection_api(
 
     # Migrate ingestion status from old collection name to new
     try:
-        status_entries = load_ingestion_status(collection=safe_old_collection)
+        status_entries = load_ingestion_status(
+            collection=safe_old_collection,
+            user_id=scope_user_id,
+            is_admin=False,
+        )
         for entry in status_entries:
             doc_id = entry.get("doc_id")
             if doc_id:
@@ -4064,8 +4110,14 @@ async def rename_collection_api(
                     status=entry.get("status", "pending"),
                     message=entry.get("message", ""),
                     parse_hash=entry.get("parse_hash", ""),
+                    user_id=scope_user_id,
                 )
-                clear_ingestion_status(safe_old_collection, doc_id)
+                clear_ingestion_status(
+                    safe_old_collection,
+                    doc_id,
+                    user_id=scope_user_id,
+                    is_admin=False,
+                )
     except Exception as e:
         logger.warning("Failed to update ingestion status: %s", e)
         warnings.append(f"Failed to update ingestion status: {e}")
