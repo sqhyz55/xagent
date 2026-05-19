@@ -88,10 +88,10 @@ def chunk_document(
     Chunk parsed paragraphs and write to chunks table.
 
     Concurrency note:
-        This function uses **last-write-wins** semantics. The ingestion
-        pipeline serialises calls per (collection, source_path) via
-        ``_get_ingestion_lock``, so concurrent chunk replacement races are
-        prevented at the pipeline level.
+        Chunk replacement is serialised per
+        ``(collection, doc_id, parse_hash, user scope)`` via
+        ``generation_ingestion_lock`` (in ``replace_chunks`` and the ingestion
+        pipeline through embedding writes).
 
     Args:
         collection: Collection name for data isolation

@@ -16,8 +16,10 @@ from lancedb.db import DBConnection
 from xagent.providers.vector_store.lancedb import get_connection_from_env
 
 from ..core.config import DEFAULT_VECTOR_STORE_SCAN_LIMIT, IndexPolicy
+from ..core.exceptions import DatabaseOperationError
 from ..core.schemas import CollectionInfo, IndexResult
 from ..LanceDB.schema_manager import ensure_documents_table
+from ..utils.generation_lock import generation_ingestion_lock
 from ..utils.lancedb_query_utils import list_table_names, query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
@@ -1507,10 +1509,13 @@ class LanceDBVectorIndexStore(VectorIndexStore):
         matching *replace_scope* that do not belong to the new generation.
         This insert-before-delete order avoids data loss if the process crashes
         between the two operations (worst case: brief duplicate data, not zero
-        data). Also cascade-deletes orphaned embedding rows from all
+        data).         Also cascade-deletes orphaned embedding rows from all
         ``embeddings_*`` tables.
+
+        Raises:
+            DatabaseOperationError: If cascade deletion from any embeddings table
+                fails (stale embeddings would remain searchable).
         """
-        from ..LanceDB.schema_manager import _safe_close_table, ensure_chunks_table
 
         if not replace_scope:
             raise ValueError("replace_scope must not be empty")
@@ -1519,12 +1524,41 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             if key not in self._REPLACE_CHUNKS_ALLOWED_KEYS:
                 raise ValueError(f"Invalid replace_scope column: {key}")
 
+        collection = str(replace_scope["collection"])
+        doc_id = str(replace_scope["doc_id"])
+        parse_hash = str(replace_scope["parse_hash"])
+
         if records:
             missing = [i for i, r in enumerate(records) if "chunk_id" not in r]
             if missing:
                 raise ValueError(
                     f"records at index {missing} missing required 'chunk_id' field"
                 )
+
+        with generation_ingestion_lock(
+            collection=collection,
+            doc_id=doc_id,
+            parse_hash=parse_hash,
+            user_id=user_id,
+            is_admin=is_admin,
+        ):
+            self._replace_chunks_locked(
+                records,
+                replace_scope=replace_scope,
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+
+    def _replace_chunks_locked(
+        self,
+        records: List[Dict[str, Any]],
+        *,
+        replace_scope: Dict[str, Any],
+        user_id: Optional[int] = None,
+        is_admin: bool = False,
+    ) -> None:
+        """Internal replace_chunks body (caller must hold generation lock)."""
+        from ..LanceDB.schema_manager import _safe_close_table, ensure_chunks_table
 
         conn = self._get_connection()
         ensure_chunks_table(conn)
@@ -1592,6 +1626,7 @@ class LanceDBVectorIndexStore(VectorIndexStore):
             id_list = ", ".join(f"'{escape_lancedb_string(cid)}'" for cid in new_ids)
             embed_filter = f"({embed_filter}) AND chunk_id NOT IN ({id_list})"
 
+        failed_tables: List[str] = []
         for tname in self.list_table_names():
             if not tname.startswith("embeddings_"):
                 continue
@@ -1601,13 +1636,23 @@ class LanceDBVectorIndexStore(VectorIndexStore):
                     etable.delete(embed_filter)
                 finally:
                     _safe_close_table(etable)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Failed to cascade-delete embeddings from %s",
+                    "Failed to cascade-delete embeddings from %s: %s",
                     tname,
+                    exc,
                     exc_info=True,
                 )
+                failed_tables.append(tname)
         self.invalidate_table_cache()
+        if failed_tables:
+            raise DatabaseOperationError(
+                "Failed to cascade-delete stale embeddings after chunk replacement",
+                details={
+                    "failed_tables": failed_tables,
+                    "replace_scope": replace_scope,
+                },
+            )
 
     def upsert_embeddings(self, model_tag: str, records: List[Dict[str, Any]]) -> None:
         """Upsert embedding records to LanceDB with fallback pattern.

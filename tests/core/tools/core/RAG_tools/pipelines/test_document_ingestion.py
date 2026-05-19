@@ -977,114 +977,38 @@ def test_process_document_rejects_absolute_paths_outside_allowed_dir(
 
 
 # ---------------------------------------------------------------------------
-# Ingestion lock tests (PR #202 comment 7)
+# Generation-scope lock integration (PR #202)
 # ---------------------------------------------------------------------------
 
 
-def test_get_ingestion_lock_returns_same_instance() -> None:
-    """_get_ingestion_lock returns the same Lock for the same key."""
-    document_ingestion._ingestion_locks.clear()
-    lock_a = document_ingestion._get_ingestion_lock("col", "/tmp/a.pdf")
-    lock_b = document_ingestion._get_ingestion_lock("col", "/tmp/a.pdf")
-    assert lock_a is lock_b
-
-
-def test_get_ingestion_lock_different_keys() -> None:
-    """Different (collection, source_path) pairs get independent locks."""
-    document_ingestion._ingestion_locks.clear()
-    lock_a = document_ingestion._get_ingestion_lock("col", "/tmp/a.pdf")
-    lock_b = document_ingestion._get_ingestion_lock("col", "/tmp/b.pdf")
-    lock_c = document_ingestion._get_ingestion_lock("other", "/tmp/a.pdf")
-    assert lock_a is not lock_b
-    assert lock_a is not lock_c
-
-
-def test_ingestion_lock_serialises_same_document(
+def test_same_generation_scope_serialises_different_source_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two concurrent process_document calls for the same document run serially."""
-    document_ingestion._ingestion_locks.clear()
+    """Same doc_id/parse_hash must serialise even when source_path differs (file_id path)."""
+    chunk_log: List[str] = []
 
-    execution_log: List[str] = []
-    original_impl = document_ingestion._process_document_impl
-
-    def _slow_impl(*args: object, **kwargs: object) -> IngestionResult:
-        execution_log.append("enter")
-        # Without the lock, both threads would be here simultaneously
-        time.sleep(0.1)
-        execution_log.append("exit")
-        return original_impl(*args, **kwargs)
+    def _slow_chunk(**_: object) -> Dict[str, object]:
+        chunk_log.append("enter")
+        time.sleep(0.15)
+        chunk_log.append("exit")
+        return {"chunk_count": 2, "created": True}
 
     _patch_pipeline_dependencies(monkeypatch)
-    monkeypatch.setattr(document_ingestion, "_process_document_impl", _slow_impl)
+    monkeypatch.setattr(document_ingestion, "chunk_document", _slow_chunk)
 
-    results: List[IngestionResult] = [None, None]  # type: ignore[list-item]
-
-    def _run(idx: int) -> None:
-        results[idx] = document_ingestion.process_document(
-            collection="demo",
-            source_path="/tmp/doc.pdf",
-            config=IngestionConfig(),
-        )
-
-    t1 = threading.Thread(target=_run, args=(0,))
-    t2 = threading.Thread(target=_run, args=(1,))
-    t1.start()
-    t2.start()
-    t1.join(timeout=10)
-    t2.join(timeout=10)
-
-    # With serialisation the pattern must be [enter, exit, enter, exit],
-    # never [enter, enter, ...] which would indicate overlap.
-    assert len(execution_log) == 4
-    assert execution_log == ["enter", "exit", "enter", "exit"]
-
-
-def test_ingestion_lock_allows_different_documents_concurrently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Calls for different documents are NOT serialised (they use independent locks)."""
-    document_ingestion._ingestion_locks.clear()
-
-    entered = threading.Event()
-    gate = threading.Event()
-
-    original_impl = document_ingestion._process_document_impl
-
-    def _blocking_impl(*args: object, **kwargs: object) -> IngestionResult:
-        entered.set()
-        gate.wait(timeout=5)
-        return original_impl(*args, **kwargs)
-
-    _patch_pipeline_dependencies(monkeypatch)
-    monkeypatch.setattr(document_ingestion, "_process_document_impl", _blocking_impl)
-
-    def _run_a() -> None:
+    def _run(source_path: str) -> None:
         document_ingestion.process_document(
             collection="demo",
-            source_path="/tmp/a.pdf",
+            source_path=source_path,
             config=IngestionConfig(),
+            user_id=1,
         )
 
-    def _run_b() -> None:
-        document_ingestion.process_document(
-            collection="demo",
-            source_path="/tmp/b.pdf",
-            config=IngestionConfig(),
-        )
-
-    t1 = threading.Thread(target=_run_a)
-    t2 = threading.Thread(target=_run_b)
+    t1 = threading.Thread(target=_run, args=("/uploads/a/doc.pdf",))
+    t2 = threading.Thread(target=_run, args=("/uploads/b/doc.pdf",))
     t1.start()
-    # Wait for thread 1 to enter _blocking_impl
-    assert entered.wait(timeout=5)
-    entered.clear()
-
     t2.start()
-    # Thread 2 should also enter _blocking_impl (different document, no lock contention)
-    both_entered = entered.wait(timeout=2)
-    gate.set()  # Release both threads
-    t1.join(timeout=5)
-    t2.join(timeout=5)
+    t1.join(timeout=15)
+    t2.join(timeout=15)
 
-    assert both_entered, "Different documents should not block each other"
+    assert chunk_log == ["enter", "exit", "enter", "exit"]
