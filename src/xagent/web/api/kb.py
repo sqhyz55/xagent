@@ -2380,6 +2380,16 @@ async def ingest_web(
             ),
         )
 
+    effective_render_wait_until = render_wait_until or "networkidle"
+    if effective_render_wait_until not in ("load", "domcontentloaded", "networkidle"):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid render_wait_until. Must be one of: "
+                "load, domcontentloaded, networkidle"
+            ),
+        )
+
     logger.info(
         "KB web ingest request received",
         extra={
@@ -2459,7 +2469,7 @@ async def ingest_web(
                 respect_robots_txt if respect_robots_txt is not None else True
             ),
             render_js=bool(render_js),
-            render_wait_until=render_wait_until or "networkidle",
+            render_wait_until=effective_render_wait_until,
             render_timeout_ms=render_timeout_ms or 30000,
         )
 

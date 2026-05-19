@@ -79,6 +79,23 @@ def test_ingest_web_rejects_invalid_start_url(app_with_kb, start_url: str) -> No
         assert "Invalid start_url" in str(detail)
 
 
+def test_ingest_web_rejects_invalid_render_wait_until(app_with_kb) -> None:
+    """Invalid render_wait_until should return 422 at the API boundary."""
+
+    client = TestClient(app_with_kb)
+    resp = client.post(
+        "/api/kb/ingest-web",
+        data={
+            "collection": "test_coll",
+            "start_url": "https://example.com",
+            "render_wait_until": "invalid",
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "Invalid render_wait_until" in str(resp.json().get("detail", ""))
+
+
 def test_ingest_web_accepts_stripped_url(app_with_kb) -> None:
     """Whitespace/newline around a valid URL should be accepted after strip()."""
 

@@ -270,32 +270,33 @@ class WebCrawler:
             },
         )
 
-        httpx_headers: Optional[Dict[str, str]] = None
-        if None in self._tls_chain:
-            user_agent = self.config.user_agent or _DEFAULT_USER_AGENT
-            httpx_headers = {
-                "User-Agent": user_agent,
-                "Accept": (
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,"
-                    "image/avif,image/webp,*/*;q=0.8"
-                ),
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Upgrade-Insecure-Requests": "1",
-                "DNT": "1",
-            }
-
         try:
             if self.config.render_js:
                 ua = self.config.user_agent or _DEFAULT_USER_AGENT
                 await self._start_playwright(user_agent=ua)
+                await self._crawl_loop({})
+            else:
+                httpx_headers: Optional[Dict[str, str]] = None
+                if None in self._tls_chain:
+                    user_agent = self.config.user_agent or _DEFAULT_USER_AGENT
+                    httpx_headers = {
+                        "User-Agent": user_agent,
+                        "Accept": (
+                            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                            "image/avif,image/webp,*/*;q=0.8"
+                        ),
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "none",
+                        "Sec-Fetch-User": "?1",
+                        "Upgrade-Insecure-Requests": "1",
+                        "DNT": "1",
+                    }
 
-            async with self._open_sessions(httpx_headers) as sessions:
-                await self._crawl_loop(sessions)
+                async with self._open_sessions(httpx_headers) as sessions:
+                    await self._crawl_loop(sessions)
         finally:
             if self.config.render_js:
                 await self._stop_playwright()
@@ -699,34 +700,6 @@ class WebCrawler:
             # Only add if not visited and not already pending
             if link not in self.visited_urls and link not in pending_urls_set:
                 self.pending_urls.append((link, next_depth))
-
-    async def _fetch_html(
-        self, client: httpx.AsyncClient, url: str
-    ) -> Tuple[str, Dict[str, object]]:
-        """Fetch HTML either via httpx or Playwright (rendered)."""
-        if self.config.render_js:
-            return await self._fetch_html_rendered(url)
-        return await self._fetch_html_static(client, url)
-
-    async def _fetch_html_static(
-        self, client: httpx.AsyncClient, url: str
-    ) -> Tuple[str, Dict[str, object]]:
-        response = await client.get(url, follow_redirects=True)
-        response.raise_for_status()
-        html = response.text or ""
-        self._log_fetched_page(
-            requested_url=url,
-            final_url=str(response.url),
-            status_code=response.status_code,
-            content_type=response.headers.get("content-type"),
-            html=html,
-            mode="static",
-        )
-        return html, {
-            "mode": "static",
-            "final_url": str(response.url),
-            "status_code": response.status_code,
-        }
 
     async def _fetch_html_rendered(self, url: str) -> Tuple[str, Dict[str, object]]:
         # Lazy import to keep Playwright optional at runtime.
