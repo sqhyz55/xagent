@@ -3358,8 +3358,20 @@ class LanceDBMainPointerStore(MainPointerStore):
 class LanceDBActiveGenerationStore(ActiveGenerationStore):
     """LanceDB implementation for active generation pointer management."""
 
+    _MERGE_KEYS = (
+        "collection",
+        "doc_id",
+        "parse_hash",
+        "user_id",
+        "model_tag",
+    )
+
     def __init__(self) -> None:
         self._sync_conn: Optional[DBConnection] = None
+        # Process-local guard so we only run schema setup once per store
+        # instance; subsequent publish/get/list calls skip the
+        # list_table_names round-trip on the hot path.
+        self._table_ensured: bool = False
 
     def _get_sync_connection(self) -> DBConnection:
         if self._sync_conn is None:
@@ -3367,13 +3379,41 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         return self._sync_conn
 
     def _ensure_table(self) -> None:
+        if self._table_ensured:
+            return
         from ..LanceDB.schema_manager import ensure_active_generations_table
 
         ensure_active_generations_table(self._get_sync_connection())
+        self._table_ensured = True
 
     @staticmethod
     def _normalize_model_tag(model_tag: Optional[str]) -> str:
         return model_tag if model_tag is not None else ""
+
+    @classmethod
+    def _scope_filter_str(
+        cls,
+        collection: str,
+        doc_id: str,
+        parse_hash: str,
+        user_id: int,
+        normalized_tag: str,
+    ) -> str:
+        """Build a SQL filter selecting exactly one pointer scope."""
+        filter_expr: FilterExpression = (
+            FilterCondition(
+                field="collection", operator=FilterOperator.EQ, value=collection
+            ),
+            FilterCondition(field="doc_id", operator=FilterOperator.EQ, value=doc_id),
+            FilterCondition(
+                field="parse_hash", operator=FilterOperator.EQ, value=parse_hash
+            ),
+            FilterCondition(field="user_id", operator=FilterOperator.EQ, value=user_id),
+            FilterCondition(
+                field="model_tag", operator=FilterOperator.EQ, value=normalized_tag
+            ),
+        )
+        return translate_filter_expression(filter_expr)
 
     def publish_active_generation(
         self,
@@ -3395,14 +3435,15 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
 
         try:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            existing = self.get_active_generation(
-                collection=collection,
-                doc_id=doc_id,
-                parse_hash=parse_hash,
-                user_id=user_id,
-                model_tag=model_tag,
+
+            # Look up created_at on the already-opened table to avoid the
+            # extra open_table/close round-trip that calling
+            # get_active_generation() would incur.
+            filter_str = self._scope_filter_str(
+                collection, doc_id, parse_hash, user_id, normalized_tag
             )
-            created_at = existing["created_at"] if existing else now
+            existing_rows = table.search().where(filter_str).to_arrow().to_pylist()
+            created_at = existing_rows[0]["created_at"] if existing_rows else now
 
             record = {
                 "collection": collection,
@@ -3419,15 +3460,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
             }
 
             (
-                table.merge_insert(
-                    on=[
-                        "collection",
-                        "doc_id",
-                        "parse_hash",
-                        "user_id",
-                        "model_tag",
-                    ]
-                )
+                table.merge_insert(on=list(self._MERGE_KEYS))
                 .when_matched_update_all()
                 .when_not_matched_insert_all()
                 .execute([record])
@@ -3451,24 +3484,9 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         normalized_tag = self._normalize_model_tag(model_tag)
 
         try:
-            filter_expr: FilterExpression = (
-                FilterCondition(
-                    field="collection", operator=FilterOperator.EQ, value=collection
-                ),
-                FilterCondition(
-                    field="doc_id", operator=FilterOperator.EQ, value=doc_id
-                ),
-                FilterCondition(
-                    field="parse_hash", operator=FilterOperator.EQ, value=parse_hash
-                ),
-                FilterCondition(
-                    field="user_id", operator=FilterOperator.EQ, value=user_id
-                ),
-                FilterCondition(
-                    field="model_tag", operator=FilterOperator.EQ, value=normalized_tag
-                ),
+            filter_str = self._scope_filter_str(
+                collection, doc_id, parse_hash, user_id, normalized_tag
             )
-            filter_str = translate_filter_expression(filter_expr)
             result = table.search().where(filter_str).to_arrow()
             if len(result) == 0:
                 return None
