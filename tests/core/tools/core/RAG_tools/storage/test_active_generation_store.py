@@ -15,7 +15,10 @@ from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_active_generation_store,
     reset_rag_storage_for_tests,
 )
-from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import LanceDBVectorIndexStore
+from xagent.core.tools.core.RAG_tools.storage.lancedb_stores import (
+    LanceDBActiveGenerationStore,
+    LanceDBVectorIndexStore,
+)
 
 
 @pytest.fixture
@@ -100,6 +103,86 @@ def test_active_generation_scoped_by_user_id(lancedb_conn) -> None:
     )
     assert p1 is not None and p1["generation_id"] == "gen_user_1"
     assert p2 is not None and p2["generation_id"] == "gen_user_2"
+
+
+def test_active_generation_republish_preserves_created_at(lancedb_conn) -> None:
+    """Republishing the same scope must keep created_at while bumping the rest."""
+    ensure_active_generations_table(lancedb_conn)
+    store = get_active_generation_store()
+
+    scope = dict(
+        collection="col_a",
+        doc_id="doc_1",
+        parse_hash="parse_abc",
+        user_id=7,
+        model_tag="text_embedding_v4",
+    )
+
+    store.publish_active_generation(
+        **scope,
+        generation_id="gen_v1",
+        config_hash="cfg_v1",
+        operator="test",
+    )
+    first = store.get_active_generation(**scope)
+    assert first is not None
+    original_created_at = first["created_at"]
+
+    store.publish_active_generation(
+        **scope,
+        generation_id="gen_v2",
+        config_hash="cfg_v2",
+        operator="test",
+    )
+    second = store.get_active_generation(**scope)
+
+    assert second is not None
+    assert second["generation_id"] == "gen_v2"
+    assert second["config_hash"] == "cfg_v2"
+    # created_at must be carried over from the first publish even though
+    # publish does not perform a prior get_active_generation() round-trip.
+    assert second["created_at"] == original_created_at
+    assert second["updated_at"] >= original_created_at
+    assert second["published_at"] >= original_created_at
+
+
+def test_active_generation_ensure_table_runs_once(monkeypatch, lancedb_conn) -> None:
+    """Publish/get hot paths must reuse the cached ensure_table result."""
+    ensure_active_generations_table(lancedb_conn)
+
+    from xagent.core.tools.core.RAG_tools.LanceDB import schema_manager as sm
+
+    call_count = {"n": 0}
+    real_ensure = sm.ensure_active_generations_table
+
+    def counting_ensure(conn):
+        call_count["n"] += 1
+        return real_ensure(conn)
+
+    monkeypatch.setattr(sm, "ensure_active_generations_table", counting_ensure)
+
+    store = LanceDBActiveGenerationStore()
+    scope = dict(
+        collection="col_a",
+        doc_id="doc_1",
+        parse_hash="parse_abc",
+        user_id=11,
+        model_tag="",
+    )
+    store.publish_active_generation(
+        **scope,
+        generation_id="gen_1",
+        config_hash="cfg",
+    )
+    store.publish_active_generation(
+        **scope,
+        generation_id="gen_2",
+        config_hash="cfg",
+    )
+    store.get_active_generation(**scope)
+    store.list_active_generations(collection="col_a")
+
+    assert call_count["n"] == 1
 
 
 def test_chunks_table_persists_generation_id_column(lancedb_conn) -> None:
