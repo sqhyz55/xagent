@@ -26,6 +26,7 @@ from ..utils.lancedb_query_utils import list_table_names, query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from .contracts import (
+    USER_ID_FILTER_UNSET,
     ActiveGenerationStore,
     DocumentRecord,
     FilterCondition,
@@ -35,6 +36,7 @@ from .contracts import (
     MainPointerStore,
     MetadataStore,
     PromptTemplateStore,
+    UserIdFilter,
     VectorIndexStore,
     build_filter_from_dict,
 )
@@ -3358,6 +3360,8 @@ class LanceDBMainPointerStore(MainPointerStore):
 class LanceDBActiveGenerationStore(ActiveGenerationStore):
     """LanceDB implementation for active generation pointer management."""
 
+    LEGACY_USER_ID = -1
+
     _MERGE_KEYS = (
         "collection",
         "doc_id",
@@ -3391,15 +3395,30 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         return model_tag if model_tag is not None else ""
 
     @classmethod
+    def _normalize_user_id(cls, user_id: Optional[int]) -> int:
+        """Map legacy user_id=None scope to a non-null merge key value."""
+        return cls.LEGACY_USER_ID if user_id is None else user_id
+
+    @classmethod
+    def _denormalize_record_user_id(cls, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Hide the internal legacy-user sentinel from store callers."""
+        if record.get("user_id") != cls.LEGACY_USER_ID:
+            return record
+        normalized_record = dict(record)
+        normalized_record["user_id"] = None
+        return normalized_record
+
+    @classmethod
     def _scope_filter_str(
         cls,
         collection: str,
         doc_id: str,
         parse_hash: str,
-        user_id: int,
+        user_id: Optional[int],
         normalized_tag: str,
     ) -> str:
         """Build a SQL filter selecting exactly one pointer scope."""
+        normalized_user_id = cls._normalize_user_id(user_id)
         filter_expr: FilterExpression = (
             FilterCondition(
                 field="collection", operator=FilterOperator.EQ, value=collection
@@ -3408,7 +3427,9 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
             FilterCondition(
                 field="parse_hash", operator=FilterOperator.EQ, value=parse_hash
             ),
-            FilterCondition(field="user_id", operator=FilterOperator.EQ, value=user_id),
+            FilterCondition(
+                field="user_id", operator=FilterOperator.EQ, value=normalized_user_id
+            ),
             FilterCondition(
                 field="model_tag", operator=FilterOperator.EQ, value=normalized_tag
             ),
@@ -3420,7 +3441,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         collection: str,
         doc_id: str,
         parse_hash: str,
-        user_id: int,
+        user_id: Optional[int],
         model_tag: Optional[str],
         generation_id: str,
         config_hash: str,
@@ -3432,6 +3453,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         self._ensure_table()
         table = conn.open_table("active_generations")
         normalized_tag = self._normalize_model_tag(model_tag)
+        normalized_user_id = self._normalize_user_id(user_id)
 
         try:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -3449,7 +3471,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
                 "collection": collection,
                 "doc_id": doc_id,
                 "parse_hash": parse_hash,
-                "user_id": user_id,
+                "user_id": normalized_user_id,
                 "model_tag": normalized_tag,
                 "generation_id": generation_id,
                 "config_hash": config_hash,
@@ -3473,7 +3495,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         collection: str,
         doc_id: str,
         parse_hash: str,
-        user_id: int,
+        user_id: Optional[int],
         model_tag: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         from ..LanceDB.schema_manager import _safe_close_table
@@ -3491,7 +3513,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
             if len(result) == 0:
                 return None
             rows = result.to_pylist()
-            return cast(Dict[str, Any], rows[0])
+            return cast(Dict[str, Any], self._denormalize_record_user_id(rows[0]))
         finally:
             _safe_close_table(table)
 
@@ -3500,7 +3522,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         collection: str,
         *,
         doc_id: Optional[str] = None,
-        user_id: Optional[int] = None,
+        user_id: UserIdFilter = USER_ID_FILTER_UNSET,
         model_tag: Optional[str] = None,
         limit: int = 1000,
     ) -> List[Dict[str, Any]]:
@@ -3522,10 +3544,12 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
                         field="doc_id", operator=FilterOperator.EQ, value=doc_id
                     )
                 )
-            if user_id is not None:
+            if user_id is not USER_ID_FILTER_UNSET:
                 conditions.append(
                     FilterCondition(
-                        field="user_id", operator=FilterOperator.EQ, value=user_id
+                        field="user_id",
+                        operator=FilterOperator.EQ,
+                        value=self._normalize_user_id(cast(Optional[int], user_id)),
                     )
                 )
             if model_tag is not None:
@@ -3542,7 +3566,8 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
             )
             filter_str = translate_filter_expression(filter_expr)
             result = table.search().where(filter_str).limit(limit).to_arrow()
-            return cast(List[Dict[str, Any]], result.to_pylist())
+            rows = result.to_pylist()
+            return [self._denormalize_record_user_id(row) for row in rows]
         finally:
             _safe_close_table(table)
 
@@ -3551,7 +3576,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         collection: str,
         doc_id: str,
         parse_hash: str,
-        user_id: int,
+        user_id: Optional[int],
         model_tag: Optional[str],
         generation_id: str,
         config_hash: str,
@@ -3573,7 +3598,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         collection: str,
         doc_id: str,
         parse_hash: str,
-        user_id: int,
+        user_id: Optional[int],
         model_tag: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         return self.get_active_generation(
@@ -3585,7 +3610,7 @@ class LanceDBActiveGenerationStore(ActiveGenerationStore):
         collection: str,
         *,
         doc_id: Optional[str] = None,
-        user_id: Optional[int] = None,
+        user_id: UserIdFilter = USER_ID_FILTER_UNSET,
         model_tag: Optional[str] = None,
         limit: int = 1000,
     ) -> List[Dict[str, Any]]:

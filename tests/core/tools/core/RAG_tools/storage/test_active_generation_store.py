@@ -105,6 +105,56 @@ def test_active_generation_scoped_by_user_id(lancedb_conn) -> None:
     assert p2 is not None and p2["generation_id"] == "gen_user_2"
 
 
+def test_active_generation_legacy_none_user_scope_republishes_one_row(
+    lancedb_conn,
+) -> None:
+    """Legacy user_id=None scope should upsert one pointer and remain queryable."""
+    ensure_active_generations_table(lancedb_conn)
+    store = get_active_generation_store()
+
+    scope = dict(
+        collection="col_a",
+        doc_id="doc_1",
+        parse_hash="parse_abc",
+        user_id=None,
+        model_tag="text_embedding_v4",
+    )
+
+    store.publish_active_generation(
+        **scope,
+        generation_id="gen_v1",
+        config_hash="cfg_v1",
+        operator="test",
+    )
+    store.publish_active_generation(
+        **scope,
+        generation_id="gen_v2",
+        config_hash="cfg_v2",
+        operator="test",
+    )
+    store.publish_active_generation(
+        collection="col_a",
+        doc_id="doc_1",
+        parse_hash="parse_abc",
+        user_id=42,
+        model_tag="text_embedding_v4",
+        generation_id="gen_user_42",
+        config_hash="cfg_user_42",
+        operator="test",
+    )
+
+    pointer = store.get_active_generation(**scope)
+    assert pointer is not None
+    assert pointer["user_id"] is None
+    assert pointer["generation_id"] == "gen_v2"
+    assert pointer["config_hash"] == "cfg_v2"
+
+    rows = store.list_active_generations(collection="col_a", user_id=None)
+    assert len(rows) == 1
+    assert rows[0]["user_id"] is None
+    assert rows[0]["generation_id"] == "gen_v2"
+
+
 def test_active_generation_republish_preserves_created_at(lancedb_conn) -> None:
     """Republishing the same scope must keep created_at while bumping the rest."""
     ensure_active_generations_table(lancedb_conn)
