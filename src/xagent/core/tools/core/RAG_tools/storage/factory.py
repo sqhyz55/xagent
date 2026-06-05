@@ -379,7 +379,7 @@ def get_active_generation_store() -> ActiveGenerationStore:
     Returns:
         LanceDBActiveGenerationStore instance.
     """
-    return _get_default_factory().get_active_generation_store()
+    return _get_storage_shim().get_active_generation_store()
 
 
 # ============================================================================
